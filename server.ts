@@ -548,47 +548,34 @@ function getRecentTradingDays(count: number = 6): string[] {
   return dates;
 }
 
-// Generate realistic institutional daily chips correlated with real volume
-function generateChips(symbol: string, currentVolume: number, change: number) {
-  const tradingDays = getRecentTradingDays(6);
-  const isUp = change >= 0;
-
-  const history = tradingDays.map((d, i) => {
-    const isToday = i === tradingDays.length - 1;
-    const factor = isToday ? (isUp ? 1 : -1) : (Math.random() > 0.4 ? 1 : -1);
-    const volBase = Math.max(1000, Math.round(currentVolume * 0.25));
-
+// 替換原本 server.ts 中的 generateChips
+async function fetchRealChips(symbol: string) {
+  const token = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiamtqazU2NUBnbWFpbC5jb20iLCJlbWFpbCI6Imprams1NjVAZ21haWwuY29tIiwidG9rZW5fdmVyc2lvbiI6MH0.JgzcTdv088aK6FQuQIV1x_jpQ0nppBTRaOjWNc3j5Ow'; // 於 FinMind 免費申請
+  const today = new Date().toISOString().split('T')[0];
+  
+  // 取得過去 30 天三大法人買賣超真實數據
+  const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id=${symbol}&start_date=2026-09-01&token=${token}`;
+  
+  try {
+    const res = await fetch(url);
+    const json = await res.json();
+    const data = json.data || [];
+    
+    // 取出外資、投信、自營商最新買賣超（單位：張）
+    const foreign = data.filter((d: any) => d.name === 'Foreign_Investor').slice(-1)[0]?.buy - data.filter((d: any) => d.name === 'Foreign_Investor').slice(-1)[0]?.sell;
+    const trust = data.filter((d: any) => d.name === 'Investment_Trust').slice(-1)[0]?.buy - data.filter((d: any) => d.name === 'Investment_Trust').slice(-1)[0]?.sell;
+    const dealer = data.filter((d: any) => d.name === 'Dealer').slice(-1)[0]?.buy - data.filter((d: any) => d.name === 'Dealer').slice(-1)[0]?.sell;
+    
     return {
-      date: d,
-      foreignBuySell: Math.floor(volBase * (0.6 + Math.random() * 0.8) * factor),
-      trustBuySell: Math.floor(volBase * (0.2 + Math.random() * 0.4) * (factor > 0 ? 1.2 : 0.3)),
-      dealerBuySell: Math.floor(volBase * (0.1 + Math.random() * 0.3) * factor),
-      mainForceBuySell: Math.floor(volBase * (0.5 + Math.random() * 0.9) * factor),
-      marginLongChange: Math.floor((Math.random() - 0.45) * 600),
-      marginShortChange: Math.floor((Math.random() - 0.55) * 200),
+      foreignBuySell: Math.round((foreign || 0) / 1000), // 轉成張數
+      trustBuySell: Math.round((trust || 0) / 1000),
+      dealerBuySell: Math.round((dealer || 0) / 1000),
+      totalInstitutional: Math.round(((foreign || 0) + (trust || 0) + (dealer || 0)) / 1000)
     };
-  });
-
-  const latest = history[history.length - 1];
-  const totalInst = latest.foreignBuySell + latest.trustBuySell + latest.dealerBuySell;
-
-  return {
-    date: latest.date,
-    foreignBuySell: latest.foreignBuySell,
-    trustBuySell: latest.trustBuySell,
-    dealerBuySell: latest.dealerBuySell,
-    totalInstitutional: totalInst,
-    mainForceBuySell: latest.mainForceBuySell,
-    chipConcentration: Number((isUp ? 12.5 + Math.random() * 6 : 4.1 + Math.random() * 4).toFixed(1)),
-    marginLongBalance: 15420 + Math.floor(Math.random() * 5000),
-    marginLongChange: latest.marginLongChange,
-    marginShortBalance: 2450 + Math.floor(Math.random() * 600),
-    marginShortChange: latest.marginShortChange,
-    marginShortRatio: Number((11.8 + Math.random() * 7).toFixed(1)),
-    govBankBuySell: Math.floor((isUp ? -800 : 1200) + (Math.random() - 0.5) * 500),
-    largeHolderRatio: Number((isUp ? 75.8 + Math.random() * 3 : 68.2 + Math.random() * 4).toFixed(1)),
-    history,
-  };
+  } catch (err) {
+    console.error('抓取真實籌碼失敗:', err);
+    return null;
+  }
 }
 
 // Fetch single stock with real live prices and chart history
