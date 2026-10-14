@@ -1,0 +1,6 @@
+{
+  "name": "台股雷達 Pro - 即時資金雷達與策略回測分析系統",
+  "description": "專業台股實盤即時資金雷達系統：整合即時題材排行榜、大單資金流入個股排行、台指期與加權櫃買即時報價、講義雙重評定與現價進場時機判斷、主力分點籌碼追蹤與全螢幕放大技術圖表。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

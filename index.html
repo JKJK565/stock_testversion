@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="台股雷達" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <title>台股雷達 Pro - 即時資金雷達與波段核心投組分析系統</title>
+    <meta name="description" content="專業台股實盤即時資金雷達系統：整合即時題材排行榜、大單資金流入個股排行、台指近全與加權櫃買即時報價、講義雙重評定與現價進場時機判斷、4檔千金股與6檔低基期轉型小公司波段配置、主力籌碼追蹤與全螢幕放大技術圖表。" />
+    <meta property="og:title" content="台股雷達 Pro - 即時資金雷達與波段核心投組分析系統" />
+    <meta property="og:description" content="專業台股實盤即時資金雷達系統：整合即時題材排行榜、大單資金流入個股排行、台指近全與加權櫃買即時報價、講義雙重評定與現價進場時機判斷、4檔千金股與6檔低基期轉型小公司波段配置、主力籌碼追蹤與全螢幕放大技術圖表。" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+      (function () {
+        // Intercept console.error and console.warn for harmless Vite HMR WebSocket errors
+        var origConsoleError = console.error;
+        console.error = function () {
+          var args = Array.prototype.slice.call(arguments);
+          var msg = args
+            .map(function (a) {
+              return a instanceof Error ? a.message + ' ' + (a.stack || '') : String(a);
+            })
+            .join(' ');
+          if (
+            msg.indexOf('WebSocket closed without opened') !== -1 ||
+            (msg.indexOf('[vite]') !== -1 && msg.indexOf('WebSocket') !== -1) ||
+            (msg.indexOf('WebSocket') !== -1 && (msg.indexOf('closed') !== -1 || msg.indexOf('failed') !== -1))
+          ) {
+            return;
+          }
+          return origConsoleError.apply(console, args);
+        };
+
+        var origConsoleWarn = console.warn;
+        console.warn = function () {
+          var args = Array.prototype.slice.call(arguments);
+          var msg = args
+            .map(function (a) {
+              return a instanceof Error ? a.message : String(a);
+            })
+            .join(' ');
+          if (
+            msg.indexOf('WebSocket closed without opened') !== -1 ||
+            (msg.indexOf('[vite]') !== -1 && msg.indexOf('WebSocket') !== -1)
+          ) {
+            return;
+          }
+          return origConsoleWarn.apply(console, args);
+        };
+
+        window.addEventListener(
+          'error',
+          function (event) {
+            var msg = (event && (event.message || (event.error && event.error.message))) || '';
+            if (
+              msg.indexOf('WebSocket') !== -1 ||
+              msg.indexOf('ws://') !== -1 ||
+              msg.indexOf('wss://') !== -1 ||
+              msg.indexOf('[vite]') !== -1
+            ) {
+              if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+              if (event.preventDefault) event.preventDefault();
+              return true;
+            }
+          },
+          true
+        );
+
+        window.addEventListener(
+          'unhandledrejection',
+          function (event) {
+            var reason = (event && event.reason && (event.reason.message || String(event.reason))) || '';
+            if (
+              reason.indexOf('WebSocket') !== -1 ||
+              reason.indexOf('ws://') !== -1 ||
+              reason.indexOf('wss://') !== -1 ||
+              reason.indexOf('[vite]') !== -1
+            ) {
+              if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+              if (event.preventDefault) event.preventDefault();
+              return true;
+            }
+          },
+          true
+        );
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
