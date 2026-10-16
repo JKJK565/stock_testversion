@@ -9,9 +9,9 @@ import {
  * Fetch Market Overview: TAIEX, TPEx, WTX& (Futures), US 4 indices, Morning Report
  * Backed by 15-second server cache
  */
-export async function fetchMarketOverview(): Promise<MarketOverviewResponse | null> {
+export async function fetchMarketOverview(force = false): Promise<MarketOverviewResponse | null> {
   try {
-    const res = await fetch('/api/market', {
+    const res = await fetch(`/api/market${force ? '?force=true' : ''}`, {
       headers: { Accept: 'application/json' },
     });
     if (!res.ok) {

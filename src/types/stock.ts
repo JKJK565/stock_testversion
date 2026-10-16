@@ -76,13 +76,24 @@ export interface ScreenerStockItem {
   trustNetLots: number; // 投信今日買賣超 (張)
   dealerNetLots: number; // 自營商今日買賣超 (張)
   // 波段交易策略錨定
-  isMatched: boolean; // 完全符合講義條件
+  isMatched: boolean; // 完全符合條件
+  isIntradaySignal?: boolean; // 🟢 盤中即時進場訊號
+  isVerifiedByTrust?: boolean; // 🔵 盤後投信確認大買
+  estVolume?: number; // 盤中預估全天成交量 (張)
+  estVolumeRatio?: number; // 預估成交量比 (estVolume / volumeAvg5d)
+  atr20?: number; // 20日平均真實波動度
+  atrPct?: number; // 20日 ATR 波動度百分比 %
+  industryTheme?: string; // 聚焦產業白名單主題
+  isPriorityWhiteList?: boolean; // 符合優先聚焦產業白名單
   suggestedEntryPrice: number;
   stopLossPrice: number;
   targetPrice: number;
   riskRewardRatio: number;
   actionNote: string;
+  updateTime?: string; // 即時撮合時間
 }
+
+export type ScreenerMode = 'intraday' | 'after_hours';
 
 export interface ScreenerResponse {
   cachedAt: string;
@@ -91,6 +102,11 @@ export interface ScreenerResponse {
   totalMatched: number;
   screenerList: ScreenerStockItem[];
   allStocks: ScreenerStockItem[];
+  mode: ScreenerMode;
+  modeLabel: string;
+  isMarketOpen: boolean;
+  marketStatusText: string;
+  lastUpdated?: string;
 }
 
 export interface TurnaroundStockItem {
@@ -102,6 +118,8 @@ export interface TurnaroundStockItem {
   change: number;
   changePercent: number;
   prevClose: number;
+  volume?: number; // 即時累計成交張數
+  updateTime?: string; // 即時撮合時間
   yearLow: number;
   yearHigh: number;
   positionPct: number; // 位階百分比 (例如 18.0)
@@ -117,6 +135,11 @@ export interface TurnaroundStockItem {
   catalyst: string; // 轉型爆發題材說明
   stopLossPrice: number; // 建議防守價 (跌破年最低點出場)
   actionNote: string;
+  atr20?: number; // 20日平均真實波動度
+  atrPct?: number; // 20日 ATR 波動度百分比 % (必須 >= 1.8%)
+  volumeAvg5d?: number; // 5日平均成交量 (必須 > 1,000張)
+  industryTheme?: string; // 聚焦產業白名單主題
+  isPriorityWhiteList?: boolean; // 符合優先聚焦產業白名單
 }
 
 export interface TurnaroundScreenerResponse {
@@ -126,6 +149,12 @@ export interface TurnaroundScreenerResponse {
   totalMatched: number;
   screenerList: TurnaroundStockItem[];
   allStocks: TurnaroundStockItem[];
+  lastUpdated?: string;
+  isRealtime?: boolean;
+  mode?: ScreenerMode;
+  modeLabel?: string;
+  isMarketOpen?: boolean;
+  marketStatusText?: string;
 }
 
 export interface MorningBriefingResponse {
@@ -134,6 +163,8 @@ export interface MorningBriefingResponse {
   model: string;
   cachedAt: string;
   expiresInSeconds: number;
+  dailyDate?: string;
+  isDailyCached?: boolean;
 }
 
 export interface PortfolioStockItem {
@@ -153,6 +184,33 @@ export interface PortfolioStockItem {
   returnPct?: number; // 報酬率 %
   isStopLossTriggered?: boolean;
   isTargetTriggered?: boolean;
+  // Health Evaluation Details
+  ma5?: number;
+  ma10?: number;
+  ma20?: number;
+  trustNetBuyDays?: number;
+  trustNetBuyLots?: number;
+  decisionRating?: 'BUY' | 'HOLD' | 'TRIM' | 'SELL';
+  healthAlerts?: WatchlistAlertDetail[];
+}
+
+export interface WatchlistAlertDetail {
+  type: 'STOP_LOSS' | 'RATING_BEARISH' | 'MA_BEARISH' | 'TRUST_SELLING';
+  title: string;
+  description: string;
+  severity: 'danger' | 'warning';
+}
+
+export interface NotificationItem {
+  id: string;
+  stockSymbol: string;
+  stockName: string;
+  type: 'danger' | 'warning' | 'info' | 'success';
+  title: string;
+  message: string;
+  alertType: 'STOP_LOSS' | 'RATING_BEARISH' | 'MA_BEARISH' | 'TRUST_SELLING' | 'GENERAL';
+  timestamp: string;
+  isRead: boolean;
 }
 
 export interface KlineData {
