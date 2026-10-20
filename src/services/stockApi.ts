@@ -3,6 +3,7 @@ import {
   ScreenerResponse,
   TurnaroundScreenerResponse,
   MorningBriefingResponse,
+  StockDetailResponse,
 } from '../types/stock';
 
 /**
@@ -143,15 +144,48 @@ export async function refreshTurnaroundScreenerData(): Promise<{
 }
 
 /**
- * Fetch single stock historical price & chips from server
+ * Batch Quote Item from /api/market/quotes
  */
-export async function fetchStockDetail(symbol: string): Promise<any | null> {
+export interface BatchQuoteItem {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  prevClose: number;
+  volumeLots: number;
+  updateTime: string;
+  industryTheme?: string;
+  isPriorityWhiteList?: boolean;
+}
+
+/**
+ * Fetch real-time batch quotes for multiple stock symbols (e.g. watchlist)
+ */
+export async function fetchBatchQuotes(symbols: string[]): Promise<BatchQuoteItem[]> {
+  if (!symbols || symbols.length === 0) return [];
+  try {
+    const res = await fetch(`/api/market/quotes?symbols=${encodeURIComponent(symbols.join(','))}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.quotes) ? data.quotes : [];
+  } catch (e) {
+    console.error('Failed to fetch batch quotes:', e);
+    return [];
+  }
+}
+
+/**
+ * Fetch single stock historical price, chips, and major broker trading summary
+ */
+export async function fetchStockDetail(symbol: string): Promise<StockDetailResponse | null> {
   try {
     const res = await fetch(`/api/stocks/${encodeURIComponent(symbol)}`);
     if (!res.ok) return null;
     return await res.json();
   } catch (e) {
-    console.error(`Failed to fetch stock ${symbol}:`, e);
+    console.error(`Failed to fetch stock detail for ${symbol}:`, e);
     return null;
   }
 }
+

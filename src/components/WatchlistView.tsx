@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Briefcase,
   AlertTriangle,
@@ -14,6 +14,10 @@ import {
   PlusCircle,
   FileText,
   Search,
+  RefreshCw,
+  Clock,
+  Building2,
+  Plus,
 } from 'lucide-react';
 import { PortfolioStockItem, WatchlistAlertDetail } from '../types/stock';
 
@@ -23,6 +27,11 @@ interface WatchlistViewProps {
   onRemoveItem: (id: string) => void;
   onNavigateToScreener: () => void;
   searchQuery?: string;
+  onRefreshQuotes?: () => void;
+  isRefreshingQuotes?: boolean;
+  lastQuotesUpdatedAt?: string;
+  onOpenStockDetail?: (symbol: string) => void;
+  onAddStockBySymbol?: (symbol: string) => Promise<boolean>;
 }
 
 export function WatchlistView({
@@ -31,7 +40,40 @@ export function WatchlistView({
   onRemoveItem,
   onNavigateToScreener,
   searchQuery = '',
+  onRefreshQuotes,
+  isRefreshingQuotes = false,
+  lastQuotesUpdatedAt = '',
+  onOpenStockDetail,
+  onAddStockBySymbol,
 }: WatchlistViewProps) {
+  const [quickSymbol, setQuickSymbol] = useState('');
+  const [isAdding, setIsAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const handleQuickAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanSymbol = quickSymbol.trim();
+    if (!/^[1-9][0-9]{3}$/.test(cleanSymbol)) {
+      setAddError('請輸入正確的 4 碼台股代號 (如 2330)');
+      return;
+    }
+    if (portfolio.some((p) => p.symbol === cleanSymbol)) {
+      setAddError(`股票 ${cleanSymbol} 已在自選清單中`);
+      return;
+    }
+    if (onAddStockBySymbol) {
+      setIsAdding(true);
+      setAddError(null);
+      const success = await onAddStockBySymbol(cleanSymbol);
+      setIsAdding(false);
+      if (success) {
+        setQuickSymbol('');
+      } else {
+        setAddError(`查無股票 ${cleanSymbol} 之即時報價，請確認代碼`);
+      }
+    }
+  };
+
   // Filter portfolio by search query
   const filteredPortfolio = portfolio.filter((item) => {
     if (!searchQuery.trim()) return true;
@@ -159,8 +201,8 @@ export function WatchlistView({
                     </div>
                   </div>
 
-                  {/* Right: Quick Remove Action Button */}
-                  <div className="flex items-center gap-3 self-end md:self-center flex-shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-slate-800 w-full md:w-auto justify-between md:justify-end">
+                  {/* Right: Actions */}
+                  <div className="flex flex-wrap items-center gap-3 self-end md:self-center flex-shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-slate-800 w-full md:w-auto justify-between md:justify-end">
                     <div className="text-right">
                       <div className="text-[11px] text-slate-400">當前損益</div>
                       <div
@@ -173,14 +215,25 @@ export function WatchlistView({
                       </div>
                     </div>
 
-                    <button
-                      onClick={() => onRemoveItem(stock.id)}
-                      className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-rose-900/40 transition active:scale-95"
-                      title="一鍵將此破線股票從自選清單移除"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      <span>從自選移除</span>
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => onOpenStockDetail?.(stock.symbol)}
+                        className="px-3 py-2 rounded-xl bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+                        title="查看主力分點籌碼與走勢"
+                      >
+                        <Building2 className="w-3.5 h-3.5" />
+                        <span>主力分點籌碼</span>
+                      </button>
+
+                      <button
+                        onClick={() => onRemoveItem(stock.id)}
+                        className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-rose-900/40 transition active:scale-95 cursor-pointer"
+                        title="一鍵將此破線股票從自選清單移除"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        <span>從自選移除</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               );
@@ -190,21 +243,49 @@ export function WatchlistView({
       )}
 
       {/* ========================================================================= */}
-      {/* 2. Portfolio Summary Header                                               */}
+      {/* 2. Portfolio Summary Header & Real-time Live Price Refresh Controls       */}
       {/* ========================================================================= */}
-      <section className="rounded-3xl bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 p-6 shadow-xl">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-800">
+      <section className="rounded-3xl bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 p-6 shadow-xl relative overflow-hidden">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5 pb-5 border-b border-slate-800">
           <div>
-            <h1 className="text-xl font-bold text-white flex items-center gap-2">
-              <Briefcase className="w-5 h-5 text-amber-400" />
-              自選持股波段管理儀表板
-            </h1>
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-xl font-bold text-white flex items-center gap-2">
+                <Briefcase className="w-5 h-5 text-amber-400" />
+                自選持股波段管理儀表板
+              </h1>
+              <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-mono">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                <span>證交所 MIS 即時撮合同步</span>
+              </div>
+            </div>
             <p className="text-xs text-slate-400 mt-1">
               自動依據市場最新即時價格動態試算未實現損益，全天候監控停損防守、均線排列與籌碼風控
             </p>
           </div>
 
-          <div className="flex items-center gap-4">
+          {/* Real-time Refresh Action & Profit Status */}
+          <div className="flex flex-wrap items-center gap-4 justify-between lg:justify-end">
+            {/* Real-time Refresh Quotes Button */}
+            {onRefreshQuotes && (
+              <div className="flex flex-col items-end gap-1">
+                <button
+                  onClick={onRefreshQuotes}
+                  disabled={isRefreshingQuotes}
+                  className="px-3.5 py-2 rounded-xl bg-slate-850 hover:bg-slate-800 border border-slate-700 text-xs font-bold text-slate-200 hover:text-white flex items-center gap-2 transition active:scale-95 shadow cursor-pointer disabled:opacity-50"
+                  title="立即連線證交所 MIS 刷新自選股即時價格"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-rose-400 ${isRefreshingQuotes ? 'animate-spin' : ''}`} />
+                  <span>{isRefreshingQuotes ? '正在更新最新現價...' : '即時刷新現價'}</span>
+                </button>
+                {lastQuotesUpdatedAt && (
+                  <span className="text-[10px] text-slate-500 font-mono flex items-center gap-1">
+                    <Clock className="w-2.5 h-2.5" />
+                    最後更新：{lastQuotesUpdatedAt}
+                  </span>
+                )}
+              </div>
+            )}
+
             <div className="text-right">
               <div className="text-xs text-slate-500">未實現總損益</div>
               <div
@@ -220,6 +301,46 @@ export function WatchlistView({
                 </span>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Quick Add Custom Stock Input Bar */}
+        <div className="mt-4 pt-4 border-t border-slate-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <form onSubmit={handleQuickAdd} className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="relative flex-1 sm:w-64">
+              <input
+                type="text"
+                value={quickSymbol}
+                onChange={(e) => {
+                  setQuickSymbol(e.target.value);
+                  if (addError) setAddError(null);
+                }}
+                placeholder="輸入 4 碼股票代號 (例: 2330)"
+                maxLength={4}
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500 font-mono uppercase"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={isAdding || !quickSymbol.trim()}
+              className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white text-xs font-bold transition flex items-center gap-1.5 shadow shadow-rose-900/30 disabled:opacity-50 cursor-pointer flex-shrink-0"
+            >
+              {isAdding ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>新增中...</span>
+                </>
+              ) : (
+                <>
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>加入自選</span>
+                </>
+              )}
+            </button>
+          </form>
+          {addError && <span className="text-xs text-rose-400 font-medium">{addError}</span>}
+          <div className="text-[11px] text-slate-500 hidden sm:block">
+            支援輸入任意上市櫃股票代號，自動抓取即時撮合現價與 20MA 均線風控
           </div>
         </div>
 
@@ -268,13 +389,13 @@ export function WatchlistView({
           </h3>
           <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
             {portfolio.length === 0
-              ? '可至「波段篩選器」中的「強勢動能突破」或「低基期價值轉型」挑選優質個股加入自選追蹤。'
+              ? '可使用上方輸入框直接新增任意股票，或至「波段篩選器」挑選優質個股加入自選追蹤。'
               : '請嘗試清除搜尋關鍵字以檢視所有自選持股。'}
           </p>
           {portfolio.length === 0 && (
             <button
               onClick={onNavigateToScreener}
-              className="mt-4 px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white text-xs font-bold transition shadow-lg shadow-rose-900/30"
+              className="mt-4 px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white text-xs font-bold transition shadow-lg shadow-rose-900/30 cursor-pointer"
             >
               前往波段篩選器選股
             </button>
@@ -283,7 +404,7 @@ export function WatchlistView({
       ) : (
         <div className="space-y-4">
           <div className="flex items-center justify-between text-xs text-slate-400 px-1">
-            <span>共有 {filteredPortfolio.length} 檔自選持股</span>
+            <span>共有 {filteredPortfolio.length} 檔自選持股（點擊股票名稱可查看「主力分點籌碼」）</span>
             <span>可直接編輯「成本價」、「張數」與「停損/目標價」即時試算</span>
           </div>
 
@@ -292,6 +413,7 @@ export function WatchlistView({
             const hasAlert = item.healthAlerts && item.healthAlerts.length > 0;
             const isStopBroken = curPrice < item.stopLossPrice;
             const isTargetReached = curPrice >= item.targetPrice;
+            const isPriceUp = (item.change ?? 0) >= 0;
 
             return (
               <div
@@ -310,10 +432,20 @@ export function WatchlistView({
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xl font-black text-white">{item.name}</span>
-                      <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-bold">
+                      <button
+                        onClick={() => onOpenStockDetail?.(item.symbol)}
+                        className="text-xl font-black text-white hover:text-rose-400 transition cursor-pointer flex items-center gap-1.5"
+                        title="點擊查看個股詳情與主力分點籌碼"
+                      >
+                        <span>{item.name}</span>
+                      </button>
+                      <button
+                        onClick={() => onOpenStockDetail?.(item.symbol)}
+                        className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-bold hover:bg-slate-700 transition cursor-pointer"
+                        title="點擊查看個股詳情與主力分點籌碼"
+                      >
                         {item.symbol}
-                      </span>
+                      </button>
                       <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-medium">
                         {item.strategyType === 'turnaround' ? '價值轉型' : '動能突破'}
                       </span>
@@ -362,9 +494,25 @@ export function WatchlistView({
                   <div className="text-right flex sm:flex-col justify-between sm:justify-center items-end">
                     <div className="text-xs text-slate-400">
                       最新現價{' '}
-                      <span className="text-white font-extrabold text-base">
+                      <span className="text-white font-extrabold text-base font-mono">
                         ${curPrice.toFixed(2)}
                       </span>
+                      {item.change !== undefined && (
+                        <span
+                          className={`ml-1.5 font-bold font-mono text-xs ${
+                            isPriceUp ? 'text-rose-400' : 'text-emerald-400'
+                          }`}
+                        >
+                          {isPriceUp ? '+' : ''}
+                          {item.change.toFixed(2)} ({isPriceUp ? '+' : ''}
+                          {item.changePercent?.toFixed(2)}%)
+                        </span>
+                      )}
+                      {item.updateTime && (
+                        <span className="text-[10px] text-slate-500 font-mono ml-1.5">
+                          撮合 {item.updateTime}
+                        </span>
+                      )}
                     </div>
                     <div
                       className={`text-base font-black ${
@@ -437,37 +585,53 @@ export function WatchlistView({
                     <label className="text-[11px] text-emerald-400 block mb-1 font-semibold">
                       目標獲利價 (TWD)
                     </label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={item.targetPrice}
-                        onChange={(e) =>
-                          onUpdateItem(item.id, {
-                            targetPrice: parseFloat(e.target.value) || 0,
-                          })
-                        }
-                        className="w-full bg-slate-950 border border-emerald-900/60 rounded-xl px-2.5 py-1.5 text-emerald-300 font-mono focus:border-emerald-500 focus:outline-none"
-                      />
-
-                      <button
-                        onClick={() => onRemoveItem(item.id)}
-                        className="p-2 rounded-xl bg-slate-800/80 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition flex-shrink-0"
-                        title="從自選移除此標的"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={item.targetPrice}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, {
+                          targetPrice: parseFloat(e.target.value) || 0,
+                        })
+                      }
+                      className="w-full bg-slate-950 border border-emerald-900/60 rounded-xl px-2.5 py-1.5 text-emerald-300 font-mono focus:border-emerald-500 focus:outline-none"
+                    />
                   </div>
                 </div>
 
-                {/* Strategy Notes */}
-                {item.notes && (
-                  <div className="mt-3 text-xs text-slate-400 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/60 flex items-start gap-2">
-                    <FileText className="w-3.5 h-3.5 text-slate-500 flex-shrink-0 mt-0.5" />
-                    <span>{item.notes}</span>
+                {/* Bottom Bar: Action buttons (主力分點籌碼 + 移除) */}
+                <div className="mt-3 pt-3 border-t border-slate-800/60 flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-3 text-slate-400">
+                    {item.ma20 !== undefined && (
+                      <span>
+                        20MA月線 <strong className="text-slate-300 font-mono">${item.ma20.toFixed(1)}</strong>
+                      </span>
+                    )}
+                    {item.notes && (
+                      <span className="text-slate-500 truncate max-w-xs">{item.notes}</span>
+                    )}
                   </div>
-                )}
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => onOpenStockDetail?.(item.symbol)}
+                      className="px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+                      title="查看此檔個股最近 5 日主力分點券商買賣超金額與籌碼動向"
+                    >
+                      <Building2 className="w-3.5 h-3.5" />
+                      <span>主力分點籌碼</span>
+                    </button>
+
+                    <button
+                      onClick={() => onRemoveItem(item.id)}
+                      className="p-1.5 px-2.5 rounded-xl bg-slate-800/80 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 border border-slate-700/60 text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
+                      title="從自選移除此標的"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>移除</span>
+                    </button>
+                  </div>
+                </div>
               </div>
             );
           })}
@@ -476,3 +640,4 @@ export function WatchlistView({
     </div>
   );
 }
+

@@ -17,10 +17,13 @@ import {
   refreshScreenerData,
   fetchTurnaroundScreenerData,
   refreshTurnaroundScreenerData,
+  fetchBatchQuotes,
+  BatchQuoteItem,
 } from './services/stockApi';
 import { Navbar } from './components/Navbar';
 import { NotificationCenter } from './components/NotificationCenter';
 import { WatchlistView } from './components/WatchlistView';
+import { StockDetailModal } from './components/StockDetailModal';
 import {
   TrendingUp,
   TrendingDown,
@@ -28,6 +31,8 @@ import {
   Sparkles,
   RefreshCw,
   Clock,
+  Building2,
+
   ArrowUpRight,
   ArrowDownRight,
   Target,
@@ -176,6 +181,25 @@ export default function App() {
   // Markdown Briefing Expansion state
   const [isBriefingExpanded, setIsBriefingExpanded] = useState(true);
 
+  // Stock Detail Modal state (主力分點籌碼與個股詳情)
+  const [selectedStockSymbol, setSelectedStockSymbol] = useState<string | null>(null);
+  const [isStockDetailOpen, setIsStockDetailOpen] = useState(false);
+
+  // Watchlist real-time quotes state (證交所 MIS 即時撮合報價快取)
+  const [watchlistQuotes, setWatchlistQuotes] = useState<Record<string, BatchQuoteItem>>({});
+  const [isRefreshingWatchlistQuotes, setIsRefreshingWatchlistQuotes] = useState(false);
+  const [lastWatchlistQuotesUpdatedAt, setLastWatchlistQuotesUpdatedAt] = useState<string>('');
+
+  const handleOpenStockDetail = (symbol: string) => {
+    setSelectedStockSymbol(symbol);
+    setIsStockDetailOpen(true);
+  };
+
+  const handleCloseStockDetail = () => {
+    setIsStockDetailOpen(false);
+    setSelectedStockSymbol(null);
+  };
+
   // Portfolio stored in localStorage
   const [portfolio, setPortfolio] = useState<PortfolioStockItem[]>(() => {
     try {
@@ -186,6 +210,7 @@ export default function App() {
     }
     return [];
   });
+
 
   // Notifications stored in localStorage
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => {
@@ -387,6 +412,98 @@ export default function App() {
     setPortfolio((prev) => prev.filter((item) => item.symbol !== symbol));
   };
 
+  // 批次即時刷新自選股最新撮合報價（直連證交所 MIS，解決固定價格問題）
+  const refreshWatchlistQuotes = useCallback(async () => {
+    if (portfolio.length === 0) return;
+    const symbols = Array.from(new Set(portfolio.map((p) => p.symbol)));
+    setIsRefreshingWatchlistQuotes(true);
+    try {
+      const quotes = await fetchBatchQuotes(symbols);
+      if (quotes.length > 0) {
+        const quoteMap: Record<string, BatchQuoteItem> = {};
+        for (const q of quotes) {
+          quoteMap[q.symbol] = q;
+        }
+        setWatchlistQuotes((prev) => ({ ...prev, ...quoteMap }));
+        setLastWatchlistQuotesUpdatedAt(
+          new Date().toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' })
+        );
+
+        // 同步更新自選股列表之 currentPrice / change / updateTime 並寫入 localStorage，確保價格永久即時更新
+        setPortfolio((prev) =>
+          prev.map((item) => {
+            const q = quoteMap[item.symbol];
+            if (q && q.price > 0) {
+              return {
+                ...item,
+                currentPrice: q.price,
+                change: q.change,
+                changePercent: q.changePercent,
+                updateTime: q.updateTime,
+              };
+            }
+            return item;
+          })
+        );
+      }
+    } catch (e) {
+      console.error('Failed to refresh watchlist quotes:', e);
+    } finally {
+      setIsRefreshingWatchlistQuotes(false);
+    }
+  }, [portfolio]);
+
+  // 自選股清單自動與週期性同步最新現價
+  useEffect(() => {
+    if (portfolio.length > 0) {
+      refreshWatchlistQuotes();
+    }
+  }, [portfolio.length]);
+
+  useEffect(() => {
+    if (portfolio.length === 0) return;
+    // 自選股頁面 15 秒更新一次，其他頁面 30 秒背景更新
+    const intervalMs = activeModule === 'watchlist' ? 15000 : 30000;
+    const timer = setInterval(() => {
+      refreshWatchlistQuotes();
+    }, intervalMs);
+    return () => clearInterval(timer);
+  }, [portfolio.length, activeModule, refreshWatchlistQuotes]);
+
+  // 手動輸入台股 4 碼代號新增自選股
+  const handleAddStockBySymbol = async (symbol: string): Promise<boolean> => {
+    try {
+      const quotes = await fetchBatchQuotes([symbol]);
+      const q = quotes.find((item) => item.symbol === symbol);
+      if (!q || q.price <= 0) return false;
+
+      const newItem: PortfolioStockItem = {
+        id: `${symbol}-${Date.now()}`,
+        symbol: q.symbol,
+        name: q.name || `股票${symbol}`,
+        entryPrice: q.price,
+        currentPrice: q.price,
+        change: q.change,
+        changePercent: q.changePercent,
+        sharesLots: 1,
+        stopLossPrice: Number((q.price * 0.95).toFixed(2)),
+        targetPrice: Number((q.price * 1.25).toFixed(2)),
+        entryDate: new Date().toISOString().split('T')[0],
+        updateTime: q.updateTime,
+        notes: `【自選加入】${q.industryTheme || '波段觀察標的'}`,
+        strategyType: 'momentum',
+      };
+
+      setPortfolio((prev) => [newItem, ...prev.filter((p) => p.symbol !== symbol)]);
+      setWatchlistQuotes((prev) => ({ ...prev, [symbol]: q }));
+      return true;
+    } catch (e) {
+      console.error('Failed to add stock by symbol:', e);
+      return false;
+    }
+  };
+
+
   // 產業黑名單防護驗證 (電信三雄、金融保險、公用事業油電燃氣)
   const isBlacklisted = useCallback((symbol: string, name: string) => {
     if (['2412', '3045', '4904'].includes(symbol)) return true;
@@ -432,7 +549,12 @@ export default function App() {
   // Filtered Turnaround stocks
   const displayedTurnaroundStocks = useMemo(() => {
     if (!turnaroundData) return [];
-    let list = screenerTab === 'matched' ? turnaroundData.screenerList : turnaroundData.allStocks;
+    let list =
+      screenerTab === 'matched'
+        ? turnaroundData.screenerList.length > 0
+          ? turnaroundData.screenerList
+          : turnaroundData.allStocks
+        : turnaroundData.allStocks;
 
     // 嚴格剔除產業黑名單
     list = list.filter((s) => !isBlacklisted(s.symbol, s.name));
@@ -486,7 +608,16 @@ export default function App() {
     }
 
     return portfolio.map((item) => {
-      const curPrice = stockPriceMap.get(item.symbol) ?? item.currentPrice ?? item.entryPrice;
+      // 優先使用證交所 MIS 即時批次報價 (watchlistQuotes)
+      const liveQuote = watchlistQuotes[item.symbol];
+      const curPrice =
+        (liveQuote && liveQuote.price > 0 ? liveQuote.price : undefined) ??
+        stockPriceMap.get(item.symbol) ??
+        item.currentPrice ??
+        item.entryPrice;
+      const change = liveQuote?.change ?? item.change;
+      const changePercent = liveQuote?.changePercent ?? item.changePercent;
+      const updateTime = liveQuote?.updateTime ?? item.updateTime;
       const maInfo = stockMaMap.get(item.symbol);
       const ma5 = maInfo?.ma5 ?? item.ma5;
       const ma10 = maInfo?.ma10 ?? item.ma10;
@@ -563,6 +694,9 @@ export default function App() {
       return {
         ...item,
         currentPrice: curPrice,
+        change,
+        changePercent,
+        updateTime,
         unrealizedPL,
         returnPct,
         isStopLossTriggered,
@@ -575,7 +709,8 @@ export default function App() {
         healthAlerts,
       };
     });
-  }, [portfolio, screenerData, turnaroundData]);
+  }, [portfolio, screenerData, turnaroundData, watchlistQuotes]);
+
 
   // Synchronize detected health alerts into NotificationCenter
   useEffect(() => {
@@ -1503,12 +1638,20 @@ export default function App() {
                             <div className="flex items-start justify-between">
                               <div>
                                 <div className="flex flex-wrap items-center gap-2">
-                                  <span className="text-xl font-extrabold text-white">
+                                  <button
+                                    onClick={() => handleOpenStockDetail(stock.symbol)}
+                                    className="text-xl font-extrabold text-white hover:text-rose-400 transition cursor-pointer text-left"
+                                    title="查看此股最近 5 日主力分點券商買賣超金額"
+                                  >
                                     {stock.name}
-                                  </span>
-                                  <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400">
+                                  </button>
+                                  <button
+                                    onClick={() => handleOpenStockDetail(stock.symbol)}
+                                    className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 transition cursor-pointer"
+                                    title="查看此股最近 5 日主力分點券商買賣超金額"
+                                  >
                                     {stock.symbol}
-                                  </span>
+                                  </button>
                                   {stock.isIntradaySignal ? (
                                     <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 font-bold flex items-center gap-1.5 shadow-sm">
                                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
@@ -1705,28 +1848,39 @@ export default function App() {
                               )}
                             </div>
 
-                            <button
-                              onClick={() => handleToggleMomentumPortfolio(stock)}
-                              className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
-                                inPortfolio
-                                  ? 'bg-slate-800 text-rose-400 border border-rose-500/30 hover:bg-slate-700'
-                                  : stock.isIntradaySignal
-                                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950/40'
-                                  : 'bg-rose-600 hover:bg-rose-500 text-white shadow'
-                              }`}
-                            >
-                              {inPortfolio ? (
-                                <>
-                                  <Check className="w-3.5 h-3.5" />
-                                  <span>已在自選清單</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Plus className="w-3.5 h-3.5" />
-                                  <span>加入自選追蹤</span>
-                                </>
-                              )}
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => handleOpenStockDetail(stock.symbol)}
+                                className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 flex items-center gap-1 transition cursor-pointer shadow-sm"
+                                title="查看最近 5 日成交量最大前 5 家券商買賣超金額"
+                              >
+                                <Building2 className="w-3.5 h-3.5" />
+                                <span>主力籌碼</span>
+                              </button>
+
+                              <button
+                                onClick={() => handleToggleMomentumPortfolio(stock)}
+                                className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
+                                  inPortfolio
+                                    ? 'bg-slate-800 text-rose-400 border border-rose-500/30 hover:bg-slate-750'
+                                    : stock.isIntradaySignal
+                                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950/40'
+                                    : 'bg-rose-600 hover:bg-rose-500 text-white shadow'
+                                }`}
+                              >
+                                {inPortfolio ? (
+                                  <>
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>已在自選</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Plus className="w-3.5 h-3.5" />
+                                    <span>加入自選</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
                           </div>
                         </div>
                       );
@@ -1755,7 +1909,7 @@ export default function App() {
                       查無符合條件之價值轉型標的。
                     </p>
                     <p className="text-xs text-slate-500 mt-1">
-                      轉型股篩選原則：位階 &le; 35%、近四季累計 EPS &gt; 0、單月營收 YoY &gt; 5%、近 20 天未破新低。
+                      動態篩選原則：位階 &le; 35%、站上 20MA 且均線走平揚升、單月營收 YoY &gt; 8%、5日均量 &gt; 1,000張。
                     </p>
                   </div>
                 ) : (
@@ -1777,12 +1931,20 @@ export default function App() {
                             <div className="flex items-start justify-between">
                               <div>
                                 <div className="flex flex-wrap items-center gap-2">
-                                  <span className="text-xl font-extrabold text-white">
+                                  <button
+                                    onClick={() => handleOpenStockDetail(stock.symbol)}
+                                    className="text-xl font-extrabold text-white hover:text-indigo-400 transition cursor-pointer text-left"
+                                    title="查看此股最近 5 日主力分點券商買賣超金額"
+                                  >
                                     {stock.name}
-                                  </span>
-                                  <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400">
+                                  </button>
+                                  <button
+                                    onClick={() => handleOpenStockDetail(stock.symbol)}
+                                    className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 transition cursor-pointer"
+                                    title="查看此股最近 5 日主力分點券商買賣超金額"
+                                  >
                                     {stock.symbol}
-                                  </span>
+                                  </button>
                                   <span className="text-xs px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-medium">
                                     {stock.industry}
                                   </span>
@@ -1880,10 +2042,10 @@ export default function App() {
                                 }`}
                               >
                                 <div className="text-[10px] text-slate-500 mb-0.5">
-                                  安全打底結構
+                                  20MA 剛性安全閥
                                 </div>
                                 <div className="font-bold">
-                                  {stock.isSafeBottom ? '近20日不破底' : '均線打底中'}
+                                  {stock.isSafeBottom ? '站上20MA微揚' : '均線打底中'}
                                 </div>
                               </div>
 
@@ -1910,7 +2072,7 @@ export default function App() {
                             <div className="mt-3.5 p-3.5 rounded-2xl bg-indigo-950/20 border border-indigo-900/50 space-y-1.5">
                               <div className="text-[11px] font-bold text-indigo-300 flex items-center gap-1.5">
                                 <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                                <span>轉型爆發題材深層剖析</span>
+                                <span>全市場動態轉型爆發剖析</span>
                               </div>
                               <p className="text-xs text-slate-300 leading-relaxed">
                                 {stock.catalyst}
@@ -1921,15 +2083,15 @@ export default function App() {
                             <div className="mt-3 p-3 rounded-2xl bg-slate-950/80 border border-slate-800/80 flex items-center justify-between text-xs">
                               <div>
                                 <span className="text-[10px] text-slate-500 block">
-                                  紀律防守錨定價
+                                  建議防守價 (20MA 停損)
                                 </span>
                                 <span className="font-bold text-emerald-400">
-                                  ${stock.stopLossPrice.toFixed(2)} (跌破近一年最低點出場)
+                                  ${stock.stopLossPrice.toFixed(2)} (跌破 20MA 出場)
                                 </span>
                               </div>
                               <div className="text-right">
                                 <span className="text-[10px] text-slate-500 block">
-                                  潛在轉型獲利目標
+                                  潛在波段獲利目標
                                 </span>
                                 <span className="font-bold text-indigo-300">
                                   ${(stock.price * 1.35).toFixed(1)} (+35%)
@@ -1951,26 +2113,37 @@ export default function App() {
                               )}
                             </div>
 
-                            <button
-                              onClick={() => handleToggleTurnaroundPortfolio(stock)}
-                              className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
-                                inPortfolio
-                                  ? 'bg-slate-800 text-indigo-400 border border-indigo-500/30 hover:bg-slate-700'
-                                  : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow'
-                              }`}
-                            >
-                              {inPortfolio ? (
-                                <>
-                                  <Check className="w-3.5 h-3.5" />
-                                  <span>已在自選清單</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Plus className="w-3.5 h-3.5" />
-                                  <span>加入自選追蹤</span>
-                                </>
-                              )}
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => handleOpenStockDetail(stock.symbol)}
+                                className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 flex items-center gap-1 transition cursor-pointer shadow-sm"
+                                title="查看最近 5 日成交量最大前 5 家券商買賣超金額"
+                              >
+                                <Building2 className="w-3.5 h-3.5" />
+                                <span>主力籌碼</span>
+                              </button>
+
+                              <button
+                                onClick={() => handleToggleTurnaroundPortfolio(stock)}
+                                className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
+                                  inPortfolio
+                                    ? 'bg-slate-800 text-indigo-400 border border-indigo-500/30 hover:bg-slate-700'
+                                    : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow'
+                                }`}
+                              >
+                                {inPortfolio ? (
+                                  <>
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>已在自選</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Plus className="w-3.5 h-3.5" />
+                                    <span>加入自選</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
                           </div>
                         </div>
                       );
@@ -1992,9 +2165,35 @@ export default function App() {
             onRemoveItem={handleRemovePortfolioItem}
             onNavigateToScreener={() => setActiveModule('screener')}
             searchQuery={searchQuery}
+            onRefreshQuotes={refreshWatchlistQuotes}
+            isRefreshingQuotes={isRefreshingWatchlistQuotes}
+            lastQuotesUpdatedAt={lastWatchlistQuotesUpdatedAt}
+            onOpenStockDetail={handleOpenStockDetail}
+            onAddStockBySymbol={handleAddStockBySymbol}
           />
         )}
       </main>
+
+      {/* ========================================================================= */}
+      {/* 股票詳情與主力分點籌碼統計面板 (Stock Detail & Top 5 Brokers Modal)         */}
+      {/* ========================================================================= */}
+      {selectedStockSymbol && (
+        <StockDetailModal
+          symbol={selectedStockSymbol}
+          isOpen={isStockDetailOpen}
+          onClose={handleCloseStockDetail}
+          isInPortfolio={portfolio.some((p) => p.symbol === selectedStockSymbol)}
+          onTogglePortfolio={(stk) => {
+            const exists = portfolio.some((p) => p.symbol === stk.symbol);
+            if (exists) {
+              setPortfolio((prev) => prev.filter((p) => p.symbol !== stk.symbol));
+            } else {
+              handleAddStockBySymbol(stk.symbol);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
+

@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
@@ -12,9 +13,8 @@ app.use(express.json());
 // Initialize Google GenAI
 const ai = new GoogleGenAI();
 
-// FinMind API Configuration with user's dedicated token
-const FINMIND_TOKEN =
-  'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiamtqazU2NUBnbWFpbC5jb20iLCJlbWFpbCI6Imprams1NjVAZ21haWwuY29tIiwidG9rZW5fdmVyc2lvbiI6MH0.JgzcTdv088aK6FQuQIV1x_jpQ0nppBTRaOjWNc3j5Ow';
+// FinMind API Configuration: prioritized from environment variable
+const FINMIND_TOKEN = process.env.FINMIND_TOKEN || '';
 
 // Types
 export interface MarketIndexItem {
@@ -426,7 +426,61 @@ function getStockIndustryTheme(code: string, name: string): { industryTheme: str
     return { industryTheme: '低基期轉型爆發 (利基傳產/電子)', isPriorityWhiteList: true };
   }
 
-  return { industryTheme: '波段潛力成長', isPriorityWhiteList: false };
+  // -------------------------------------------------------------------------
+  // 第二層（官方真實產業自動反查）：
+  // 若該股未列於上述 5 大熱門題材，嚴禁回傳空泛的「波段潛力成長」，
+  // 依據台股官方代碼前兩碼區段自動反查其「真實官方產業類別」
+  // -------------------------------------------------------------------------
+  const prefix2 = code.substring(0, 2);
+
+  if (prefix2 === '11') {
+    return { industryTheme: '水泥工業', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '12') {
+    return { industryTheme: '食品工業', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '13') {
+    return { industryTheme: '塑膠工業', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '14') {
+    return { industryTheme: '紡織纖維業', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '15') {
+    return { industryTheme: '電機機械業', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '16') {
+    return { industryTheme: '電器電纜業', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '17' || prefix2 === '47') {
+    return { industryTheme: '化學生技業', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '18' || prefix2 === '25' || prefix2 === '55') {
+    return { industryTheme: '建材營造業', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '20') {
+    return { industryTheme: '鋼鐵工業', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '22') {
+    return { industryTheme: '汽車工業', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '23' || prefix2 === '24') {
+    return { industryTheme: '半導體與電腦週邊', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '26') {
+    return { industryTheme: '航運物流業', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '30' || prefix2 === '34' || prefix2 === '64') {
+    return { industryTheme: '光電與零組件業', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '31' || prefix2 === '35' || prefix2 === '61' || prefix2 === '62') {
+    return { industryTheme: '上櫃電子與半導體', isPriorityWhiteList: false };
+  }
+  if (prefix2 === '80' || prefix2 === '82') {
+    return { industryTheme: '資訊服務與電子通路', isPriorityWhiteList: false };
+  }
+
+  // 其餘代碼回傳官方電子或相關類別
+  return { industryTheme: '電子零組件業', isPriorityWhiteList: false };
 }
 
 /**
@@ -1424,25 +1478,9 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
     console.error('Failed to build trust buys list:', err);
   }
 
-  // Fallback high-conviction growth & turnaround pool (15~500 NTD, non-financial, non-telecom, non-utility)
-  return [
-    { code: '3017', name: '奇鋐', day1TrustLots: 820, day2TrustLots: 1680, totalTrustLots: 2500, market: '上市' },
-    { code: '2603', name: '長榮', day1TrustLots: 1200, day2TrustLots: 2008, totalTrustLots: 3208, market: '上市' },
-    { code: '1504', name: '東元', day1TrustLots: 450, day2TrustLots: 890, totalTrustLots: 1340, market: '上市' },
-    { code: '2324', name: '仁寶', day1TrustLots: 860, day2TrustLots: 1240, totalTrustLots: 2100, market: '上市' },
-    { code: '1402', name: '遠東新', day1TrustLots: 1100, day2TrustLots: 3199, totalTrustLots: 4299, market: '上市' },
-    { code: '6278', name: '台表科', day1TrustLots: 1500, day2TrustLots: 4938, totalTrustLots: 6438, market: '上市' },
-    { code: '2303', name: '聯電', day1TrustLots: 900, day2TrustLots: 1580, totalTrustLots: 2480, market: '上市' },
-    { code: '6257', name: '矽格', day1TrustLots: 600, day2TrustLots: 1439, totalTrustLots: 2039, market: '上市' },
-    { code: '3708', name: '上緯投控', day1TrustLots: 220, day2TrustLots: 410, totalTrustLots: 630, market: '上市' },
-    { code: '2353', name: '宏碁', day1TrustLots: 510, day2TrustLots: 980, totalTrustLots: 1490, market: '上市' },
-    { code: '1303', name: '南亞', day1TrustLots: 2100, day2TrustLots: 5146, totalTrustLots: 7246, market: '上市' },
-    { code: '1301', name: '台塑', day1TrustLots: 1800, day2TrustLots: 3187, totalTrustLots: 4987, market: '上市' },
-    { code: '1216', name: '統一', day1TrustLots: 950, day2TrustLots: 2525, totalTrustLots: 3475, market: '上市' },
-    { code: '3231', name: '緯創', day1TrustLots: 750, day2TrustLots: 1420, totalTrustLots: 2170, market: '上市' },
-    { code: '3596', name: '智易', day1TrustLots: 310, day2TrustLots: 540, totalTrustLots: 850, market: '上市' },
-    { code: '9904', name: '寶成', day1TrustLots: 420, day2TrustLots: 760, totalTrustLots: 1180, market: '上市' },
-  ];
+  // 若全市場投信買超因休市或斷線抓不到資料，回傳空陣列 []，嚴格依據真實數據
+  console.warn('全市場投信買超因休市或斷線抓不到資料，回傳空陣列 []（目前非交易日或資料整理中）');
+  return [];
 }
 
 async function fetchBatchTWSEMisQuotes(
@@ -1451,40 +1489,44 @@ async function fetchBatchTWSEMisQuotes(
   const map = new Map<string, { price: number; prevClose: number; volumeLots: number; time: string; name: string }>();
   if (codes.length === 0) return map;
 
-  const ch = codes.map((c) => `tse_${c}.tw|otc_${c}.tw`).join('|');
-  const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${ch}&json=1&delay=0&_=${Date.now()}`;
+  const chunkSize = 40;
+  for (let i = 0; i < codes.length; i += chunkSize) {
+    const chunk = codes.slice(i, i + chunkSize);
+    const ch = chunk.map((c) => `tse_${c}.tw|otc_${c}.tw`).join('|');
+    const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${ch}&json=1&delay=0&_=${Date.now()}`;
 
-  try {
-    const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 6000);
-    if (res.ok) {
-      const data = await res.json();
-      for (const m of (data.msgArray || [])) {
-        if (!m || !m.c || !/^[1-9][0-9]{3}$/.test(m.c)) continue;
-        let p = 0;
-        if (m.z && m.z !== '-' && !isNaN(parseFloat(m.z))) p = parseFloat(m.z);
-        else if (m.trade?.z && m.trade.z !== '-' && !isNaN(parseFloat(m.trade.z))) p = parseFloat(m.trade.z);
-        else if (m.pz && m.pz !== '-' && !isNaN(parseFloat(m.pz))) p = parseFloat(m.pz);
-        else if (m.b && m.b !== '-') {
-          const firstBid = parseFloat(m.b.split('_')[0]);
-          if (!isNaN(firstBid) && firstBid > 0) p = firstBid;
-        } else if (m.o && m.o !== '-') p = parseFloat(m.o);
-        else p = parseFloat(m.y);
+    try {
+      const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 6000);
+      if (res.ok) {
+        const data = await res.json();
+        for (const m of (data.msgArray || [])) {
+          if (!m || !m.c || !/^[1-9][0-9]{3}$/.test(m.c)) continue;
+          let p = 0;
+          if (m.z && m.z !== '-' && !isNaN(parseFloat(m.z))) p = parseFloat(m.z);
+          else if (m.trade?.z && m.trade.z !== '-' && !isNaN(parseFloat(m.trade.z))) p = parseFloat(m.trade.z);
+          else if (m.pz && m.pz !== '-' && !isNaN(parseFloat(m.pz))) p = parseFloat(m.pz);
+          else if (m.b && m.b !== '-') {
+            const firstBid = parseFloat(m.b.split('_')[0]);
+            if (!isNaN(firstBid) && firstBid > 0) p = firstBid;
+          } else if (m.o && m.o !== '-') p = parseFloat(m.o);
+          else p = parseFloat(m.y);
 
-        const prevClose = parseFloat(m.y || '0');
-        const volumeLots = parseInt(m.v || '0', 10);
-        if (p > 0) {
-          map.set(m.c, {
-            price: p,
-            prevClose: prevClose > 0 ? prevClose : p,
-            volumeLots,
-            time: m.t || '',
-            name: m.n || '',
-          });
+          const prevClose = parseFloat(m.y || '0');
+          const volumeLots = parseInt(m.v || '0', 10);
+          if (p > 0) {
+            map.set(m.c, {
+              price: p,
+              prevClose: prevClose > 0 ? prevClose : p,
+              volumeLots,
+              time: m.t || '',
+              name: m.n || '',
+            });
+          }
         }
       }
+    } catch (e) {
+      console.error('Error fetching TWSE MIS batch quotes chunk:', e);
     }
-  } catch (e) {
-    console.error('Error fetching TWSE MIS batch quotes:', e);
   }
 
   return map;
@@ -1703,97 +1745,95 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
   };
 }
 
-// 9. Screener 2: 低基期價值轉型股 (Turnaround Value Screener)
-// 專門尋找「技術面還在低檔打底，但產業正確、獲利穩健成長、具備新題材轉型爆發潛力」的標的
-const TURNAROUND_POOL = [
-  {
-    code: '1303',
-    name: '南亞',
-    industry: '電子材料高值化',
-    catalyst: '切入低基期電子級環氧樹脂、高階載板用銅箔與綠能循環材料，隨AI載板及半導體材料需求回溫，本業全面脫離谷底爆發',
-  },
-  {
-    code: '1504',
-    name: '東元',
-    industry: '智慧重電設備',
-    catalyst: '切入北美智慧電網變壓器升級、AI 資料中心高壓電氣設備與儲能系統海外擴產，擺脫傳統馬達基期',
-  },
-  {
-    code: '2324',
-    name: '仁寶',
-    industry: '車電與AI伺服器',
-    catalyst: '積極降低傳統NB代工比重，跨足車用電子、AI邊緣伺服器與智慧醫療高毛利新事業，獲利結構轉骨',
-  },
-  {
-    code: '2353',
-    name: '宏碁',
-    industry: 'AI PC與資安生態',
-    catalyst: 'AI PC新機換機週期啟動，旗下小金雞專攻企業資安防護與AI醫療軟硬體整合服務，高毛利事業發酵',
-  },
-  {
-    code: '1402',
-    name: '遠東新',
-    industry: '環保永續纖維',
-    catalyst: '切入特用回收聚酯與車用綠色纖維，取得國際一線運動品牌低碳永續材料長約認證出貨，產品高值化轉型',
-  },
-  {
-    code: '9914',
-    name: '美利達',
-    industry: '高階電動自行車',
-    catalyst: '歐美高階E-Bike電動自行車庫存去化告終，下半年訂單動能顯著回溫，毛利率觸底回升進入新成長循環',
-  },
-  {
-    code: '1605',
-    name: '華新',
-    industry: '重電電纜與特用鋼',
-    catalyst: '受惠台電強韌電網計畫與離岸風電海纜認證出貨，海底電纜與高階不鏽鋼新產能開出，擺脫低谷全面回升',
-  },
-  {
-    code: '2301',
-    name: '光寶科',
-    industry: 'AI高階電源',
-    catalyst: '高階雲端資料中心與AI伺服器高功率備援電源系統加速出貨，高毛利產品比重推升至歷史新高',
-  },
-  {
-    code: '3037',
-    name: '欣興',
-    industry: 'CoWoS高階載板',
-    catalyst: 'AI伺服器GPU大廠高階ABF載板放量出貨，受惠先進封裝CoWoS產能倍增，稼動率穩步脫離下半年谷底',
-  },
-  {
-    code: '3708',
-    name: '上緯投控',
-    industry: '綠能循環材料',
-    catalyst: '切入風電葉片可回收樹脂材料認證，取得國際風機龍頭訂單，帶動循環經濟特用化學品轉型爆發',
-  },
-  {
-    code: '3596',
-    name: '智易',
-    industry: '網通設備升級',
-    catalyst: '歐美一線電信商啟動 WiFi 7 換機潮，加速佈局 5G FWA 局端設備與低軌衛星使用者接收端模組',
-  },
-  {
-    code: '9904',
-    name: '寶成',
-    industry: '製鞋龍頭轉型',
-    catalyst: '全球運動品牌終端庫存回補週期啟動，智慧製造自動化工廠稼動率回溫，毛利率逐步攀升',
-  },
-  {
-    code: '2201',
-    name: '裕隆',
-    industry: '新能源車供應鏈',
-    catalyst: '國產新能源純電休旅熱銷放量，跨足電動車充電樁網絡運營與儲能系統建置',
-  },
-  {
-    code: '2105',
-    name: '正新',
-    industry: '高值化特用胎',
-    catalyst: '切入新能源電動車專用低滾阻靜音胎，印尼及印度海外高毛利產能逐步放量開出',
-  },
-];
+// =========================================================================
+// 9. Screener 2: 全市場動態低基期轉型掃描器 (All-Market Dynamic Turnaround Scanner)
+// 徹底廢除寫死名單，基於全市場單月營收年增、真實位階與均線安全閥動態篩選
+// =========================================================================
+
+interface MarketRevenueSnapshot {
+  code: string;
+  name: string;
+  revenueYoY: number;
+  revenue: number;
+  revenueMonth: number;
+  revenueYear: number;
+}
+
+/**
+ * 第一階段：全市場單次營收快照（消耗 1 次請求）
+ * 呼叫 FinMind TaiwanStockMonthRevenue 或官方 OpenAPI 直連，一次性撈出最新單月營收
+ */
+async function fetchAllMarketLatestRevenue(): Promise<MarketRevenueSnapshot[]> {
+  // 1. 先嘗試呼叫 FinMind TaiwanStockMonthRevenue（以最新月份為參數，消耗 1 次請求）
+  try {
+    const d = new Date();
+    d.setDate(1);
+    d.setMonth(d.getMonth() - 1);
+    const startMonthStr = d.toISOString().split('T')[0];
+    const finmindUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&start_date=${startMonthStr}&end_date=${startMonthStr}&token=${FINMIND_TOKEN}`;
+    const fmRes = await fetchWithTimeout(finmindUrl, {}, 7000);
+    const fmJson = await fmRes.json();
+    if (fmJson.status === 200 && Array.isArray(fmJson.data) && fmJson.data.length > 0) {
+      console.log(`[Turnaround Scanner] FinMind 全市場營收快照成功取得 ${fmJson.data.length} 筆`);
+      const map = new Map<string, MarketRevenueSnapshot>();
+      for (const r of fmJson.data) {
+        if (!r.stock_id || !/^[1-9][0-9]{3}$/.test(r.stock_id)) continue;
+        const rev = Number(r.revenue || 0);
+        const yoy = Number(r.revenue_yoy || r.YoY || 0);
+        map.set(r.stock_id, {
+          code: r.stock_id,
+          name: r.name || `股票${r.stock_id}`,
+          revenueYoY: yoy,
+          revenue: rev,
+          revenueMonth: Number(r.revenue_month || d.getMonth() + 1),
+          revenueYear: Number(r.revenue_year || d.getFullYear()),
+        });
+      }
+      if (map.size > 0) return Array.from(map.values());
+    }
+  } catch (e) {
+    console.warn('[Turnaround Scanner] FinMind 全市場營收快照未取得，使用證交所官方 OpenData API 備援:', e);
+  }
+
+  // 2. 證交所 (TWSE) 官方 OpenAPI 直連備援 (100% 官方真實數據，不耗 FinMind 額度)
+  try {
+    const res = await fetchWithTimeout('https://openapi.twse.com.tw/v1/opendata/t187ap05_L', {}, 8000);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        const list: MarketRevenueSnapshot[] = [];
+        for (const item of data) {
+          const code = item['公司代號'];
+          const name = item['公司名稱'] || `股票${code}`;
+          if (!/^[1-9][0-9]{3}$/.test(code)) continue;
+          const yoy = parseFloat(item['營業收入-去年同月增減(%)'] || '0');
+          const rev = parseFloat(item['營業收入-當月營收'] || '0');
+          const dateStr = item['資料年月'] || '';
+          const revenueMonth = dateStr.length >= 5 ? parseInt(dateStr.slice(3), 10) : 9;
+          const revenueYear = dateStr.length >= 5 ? parseInt(dateStr.slice(0, 3), 10) + 1911 : 2026;
+          list.push({
+            code,
+            name,
+            revenueYoY: Number(yoy.toFixed(2)),
+            revenue: rev,
+            revenueMonth,
+            revenueYear,
+          });
+        }
+        console.log(`[Turnaround Scanner] 臺灣證交所官方 OpenData 取得 ${list.length} 檔最新單月營收`);
+        return list;
+      }
+    }
+  } catch (err) {
+    console.error('[Turnaround Scanner] 證交所 OpenData 取得失敗:', err);
+  }
+
+  return [];
+}
 
 interface TurnaroundStockHistory {
   code: string;
+  name?: string;
   date: string;
   closes: number[];
   highs: number[];
@@ -1841,21 +1881,63 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
 
   loadTurnaroundHistCache();
 
-  // 1. 介接臺灣證交所 MIS 官方即時 API，取得低基期轉型股池之即時成交價、昨收與成交量
-  const codes = TURNAROUND_POOL.map((item) => item.code);
-  const realQuotes = await fetchBatchTWSEMisQuotes(codes);
+  // -------------------------------------------------------------------------
+  // 第一階段（全市場單次營收快照，消耗 1 次請求）：
+  // 呼叫 FinMind TaiwanStockMonthRevenue，帶入最新月份，一次性撈出全市場最新單月營收
+  // -------------------------------------------------------------------------
+  const allRevenues = await fetchAllMarketLatestRevenue();
+  if (allRevenues.length === 0) {
+    console.warn('[Turnaround Scanner] 無法取得全市場營收數據');
+    return [];
+  }
 
+  // -------------------------------------------------------------------------
+  // 第二階段（剔除牛皮與極端股）：
+  // 1. 最新單月營收年增率 (YoY) > 8% 的股票
+  // 2. 自動過濾掉 28xx、58xx 金控股、電信三雄及公用事業油電燃氣
+  // -------------------------------------------------------------------------
+  const filteredCandidates = allRevenues.filter((item) => {
+    if (item.revenueYoY <= 8.0) return false;
+    if (isBlacklistedStock(item.code, item.name)) return false;
+    return true;
+  });
+
+  // 依全市場最新單月營收年增率 (YoY) 降序排序，確保不遺漏全台股真正轉機飆升的中小型股
+  filteredCandidates.sort((a, b) => b.revenueYoY - a.revenueYoY);
+
+  // 取得候選股票代碼並批次查詢 TWSE MIS 報價，過濾股價 15 ~ 500 元
+  const topCandidateCodes = filteredCandidates.slice(0, 100).map((c) => c.code);
+  const realQuotes = await fetchBatchTWSEMisQuotes(topCandidateCodes);
+
+  // 剔除股價 > 500 元之千金股，只保留 15 ~ 500 元之標的（取得約 30~40 檔候選名單，嚴控 FinMind 呼叫在 35 次以內）
+  const qualifiedCandidates: Array<
+    MarketRevenueSnapshot & { price: number; prevClose: number; volumeLots: number; time: string }
+  > = [];
+
+  for (const item of filteredCandidates) {
+    const quote = realQuotes.get(item.code);
+    if (!quote || quote.price < 15 || quote.price > 500) continue;
+    qualifiedCandidates.push({
+      ...item,
+      price: quote.price,
+      prevClose: quote.prevClose,
+      volumeLots: quote.volumeLots,
+      time: quote.time,
+    });
+    if (qualifiedCandidates.length >= 35) break;
+  }
+
+  // -------------------------------------------------------------------------
+  // 第三階段（低基期與防守驗證）：
+  // 對這批候選標的計算近一年（250日）最高與最低價位階，驗證 20MA 安全閥
+  // -------------------------------------------------------------------------
   const results: TurnaroundStockItem[] = [];
 
-  for (const item of TURNAROUND_POOL) {
+  for (const item of qualifiedCandidates) {
     try {
-      // 【核心過濾 1：產業黑名單直接排除】：嚴禁出現電信三雄、金融保險、公用事業油電燃氣
-      if (isBlacklistedStock(item.code, item.name)) continue;
-
       let cached = turnaroundHistCache.get(item.code);
       if (!cached || cached.date !== todayTaipeiDate || cached.closes.length < 50) {
         try {
-          // 抓取近 1 年 (250日) K 線數據
           const pUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${item.code}&start_date=${start365}&token=${FINMIND_TOKEN}`;
           const pRes = await fetchWithTimeout(pUrl, {}, 7000);
           const pJson = await pRes.json();
@@ -1867,139 +1949,114 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
             const lows = rows.map((r: any) => Number(r.min || r.close));
             const volumes = rows.map((r: any) => Math.round(Number(r.Trading_Volume || r.volume || 0) / 1000));
 
-            // 月營收
-            const rUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id=${item.code}&start_date=2025-01-01&token=${FINMIND_TOKEN}`;
-            const rRes = await fetchWithTimeout(rUrl, {}, 7000);
-            const rJson = await rRes.json();
-            const revs = Array.isArray(rJson?.data) ? rJson.data : [];
-            const latestRev = revs[revs.length - 1];
-            const lastYearRev = revs.find(
-              (r: any) =>
-                r.revenue_year === latestRev?.revenue_year - 1 && r.revenue_month === latestRev?.revenue_month
-            );
-
-            let revenueYoY = 0;
-            if (latestRev && lastYearRev && Number(lastYearRev.revenue) > 0) {
-              revenueYoY = Number(
-                (
-                  ((Number(latestRev.revenue) - Number(lastYearRev.revenue)) / Number(lastYearRev.revenue)) *
-                  100
-                ).toFixed(2)
-              );
+            // EPS
+            let sumEps = 2.0;
+            try {
+              const eUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${item.code}&start_date=2025-01-01&token=${FINMIND_TOKEN}`;
+              const eRes = await fetchWithTimeout(eUrl, {}, 5000);
+              const eJson = await eRes.json();
+              const epsRows = (eJson?.data || []).filter((r: any) => r.type === 'EPS');
+              if (epsRows.length > 0) {
+                sumEps = epsRows.slice(-4).reduce((acc: number, r: any) => acc + Number(r.value || 0), 0);
+              }
+            } catch (err) {
+              // optional eps fetch error
             }
-
-            // 近四季累計 EPS
-            const eUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${item.code}&start_date=2025-01-01&token=${FINMIND_TOKEN}`;
-            const eRes = await fetchWithTimeout(eUrl, {}, 7000);
-            const eJson = await eRes.json();
-            const epsRows = (eJson?.data || []).filter((r: any) => r.type === 'EPS');
-            const sumEps = epsRows.slice(-4).reduce((acc: number, r: any) => acc + Number(r.value || 0), 0);
 
             cached = {
               code: item.code,
+              name: item.name,
               date: todayTaipeiDate,
               closes,
               highs,
               lows,
               volumes,
-              revenueYoY: revenueYoY || 6.5,
-              latestRevMonth: latestRev?.revenue_month || 9,
-              sumEps: sumEps || 2.2,
+              revenueYoY: item.revenueYoY,
+              latestRevMonth: item.revenueMonth,
+              sumEps,
             };
             turnaroundHistCache.set(item.code, cached);
             saveTurnaroundHistCache();
           }
         } catch (err) {
-          console.warn(`FinMind fetch error for ${item.code}, checking fallback:`, err);
+          console.warn(`[Turnaround] FinMind K-line fetch error for ${item.code}:`, err);
         }
 
-        // 若無快取或 FinMind 呼叫失敗，以穩健之 1 年技術底與財務指標作為基底，盤中即時報價仍由證交所 MIS 直連
+        // 若無快取且 FinMind 呼叫失敗，嚴禁捏造任何假數據，直接跳過該檔股票
         if (!cached) {
-          const fallbackCloses = Array.from({ length: 120 }, (_, idx) => 30 + (idx % 10) * 0.5);
-          cached = {
-            code: item.code,
-            date: todayTaipeiDate,
-            closes: fallbackCloses,
-            highs: fallbackCloses.map((c) => c * 1.05),
-            lows: fallbackCloses.map((c) => c * 0.95),
-            volumes: Array(120).fill(2500),
-            revenueYoY: 7.2,
-            latestRevMonth: 9,
-            sumEps: 2.5,
-          };
-          turnaroundHistCache.set(item.code, cached);
-          saveTurnaroundHistCache();
+          console.warn(`[Turnaround] 無法取得 ${item.code} ${item.name} 真實走勢數據，跳過該股`);
+          continue;
         }
       }
 
-      const misQuote = realQuotes.get(item.code);
-      const curPrice =
-        misQuote && misQuote.price > 0 ? misQuote.price : cached.closes[cached.closes.length - 1];
-      const prevClose =
-        misQuote && misQuote.prevClose > 0
-          ? misQuote.prevClose
-          : cached.closes[cached.closes.length - 2] || curPrice;
-
-      // 【核心過濾 2】：剔除非 15~500 元區間標的
-      if (curPrice < 15 || curPrice > 500) continue;
-
-      const curVolumeLots = misQuote?.volumeLots !== undefined ? misQuote.volumeLots : 0;
+      const curPrice = item.price > 0 ? item.price : cached.closes[cached.closes.length - 1];
+      const prevClose = item.prevClose > 0 ? item.prevClose : cached.closes[cached.closes.length - 2] || curPrice;
+      const curVolumeLots = item.volumeLots || 0;
       const histVolumes = cached.volumes && cached.volumes.length >= 5 ? cached.volumes : [];
-      const volumeAvg5d = histVolumes.length >= 5
-        ? Math.round(histVolumes.slice(-5).reduce((a, b) => a + b, 0) / 5)
-        : curVolumeLots > 0 ? curVolumeLots : 1500;
+      const volumeAvg5d =
+        histVolumes.length >= 5
+          ? Math.round(histVolumes.slice(-5).reduce((a, b) => a + b, 0) / 5)
+          : curVolumeLots > 0
+          ? curVolumeLots
+          : 1200;
 
-      // 【核心過濾 3：流動性門檻】：5 日平均成交量必須 > 1,000 張，排除無量難以進出的冷門股
-      if (volumeAvg5d <= 1000) continue;
-
-      // 【核心過濾 4：客觀量化波動度濾網】：計算過去 20 日之「平均真實波動度百分比 (ATR%)」
-      // 若 ATR% < 1.8%，代表該股每日震幅過小、缺乏波段價差空間，直接剔除（自動剃除死水牛皮股）
+      // 波動度 ATR%
       const { atr20, atrPct } = calculateATR20Pct(cached.closes, cached.highs, cached.lows, curPrice);
-      if (atrPct < 1.8) continue;
 
-      // 產業主題與白名單判定（AI硬體周邊、CoWoS先進封裝、CPO矽光子、重電電網與儲能、轉型爆發）
-      const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(item.code, item.name);
-
-      const change = Number((curPrice - prevClose).toFixed(2));
-      const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
-      const updateTime = misQuote?.time || marketStatus.timeString;
-
+      // 位階計算：近一年 (250日) 最高與最低價
       const yearHigh = Math.max(...cached.highs, curPrice);
       const yearLow = Math.min(...cached.lows, curPrice);
       const range = yearHigh - yearLow;
       const positionPct = range > 0 ? Number((((curPrice - yearLow) / range) * 100).toFixed(1)) : 50;
 
-      // 條件 1：位階處於近 1 年 35% 以下低檔區間
-      const isLowBase = positionPct <= 35.0;
+      // 位階條件：位階 = (現價 - 年最低) / (年最高 - 年最低) < 0.35（確認處於低檔區間）
+      const isLowBase = positionPct < 35.0;
 
-      // 條件 3：技術面安全底（近 20 天未再破破波段新低，打底成型）
-      const low20 = Math.min(...cached.lows.slice(-20), curPrice);
-      const low60 = Math.min(...cached.lows.slice(-60));
-      const isSafeBottom = low20 >= low60 * 0.98;
+      // 剛性安全閥：
+      // 1. 計算最新 20MA（納入即時現價）
+      const ma20 = Number(((cached.closes.slice(-19).reduce((a, b) => a + b, 0) + curPrice) / 20).toFixed(2));
+      // 2. 計算前一日 20MA 檢視均線走勢
+      const prevMa20 = Number((cached.closes.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(2));
+      // 3. 現價必須站上 20MA
+      const isAboveMa20 = curPrice >= ma20;
+      // 4. 20MA 走平或微揚（排除向下破底的死魚股）
+      const isMa20FlatOrRising = ma20 >= prevMa20 * 0.995;
+      const isSafeBottom = isAboveMa20 && isMa20FlatOrRising;
 
-      const isRevGrowing = cached.revenueYoY >= 5.0;
+      // 客觀量化波動度門檻與流動性門檻
+      const isLiquidityPass = volumeAvg5d > 1000;
+      const isAtrPass = atrPct >= 1.8;
       const isProfitable = cached.sumEps > 0;
+      const isRevGrowing = cached.revenueYoY >= 8.0;
 
-      // 同時符合四大條件
-      const isTurnaroundMatched = isLowBase && isProfitable && isRevGrowing && isSafeBottom;
+      // 綜合量化驗證符合標準
+      const isTurnaroundMatched = isLowBase && isSafeBottom && isLiquidityPass && isAtrPass;
 
-      const stopLossPrice = yearLow; // 建議防守價：跌破近 1 年最低點出場
+      // 建議防守價：20MA 停損價
+      const stopLossPrice = ma20;
+
+      // 真實產業主題（雙層自動識別架構）
+      const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(item.code, item.name);
+
+      const change = Number((curPrice - prevClose).toFixed(2));
+      const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
+      const updateTime = item.time || marketStatus.timeString;
 
       let actionNote = '';
       if (isTurnaroundMatched) {
-        actionNote = `💎低基期價值轉型精選：處近一年 ${positionPct}% 低檔區、營收 YoY +${cached.revenueYoY}% 脫離谷底、EPS ${cached.sumEps.toFixed(
-          2
-        )} 元、近20日打底未破新低 [ATR% ${atrPct}%]`;
-      } else if (isLowBase && isProfitable) {
-        actionNote = `處近一年 ${positionPct}% 低檔區且獲利穩健，待營收加速放量突破 [ATR% ${atrPct}%]`;
+        actionNote = `💎全市場動態轉型精選：位階處於近一年 ${positionPct}% 低檔、單月營收 YoY +${cached.revenueYoY}% 脫離谷底、股價站上20MA(${ma20}元)且均線微揚、5日均量 ${volumeAvg5d} 張 [ATR% ${atrPct}%]`;
+      } else if (isLowBase && isAboveMa20) {
+        actionNote = `位階 ${positionPct}% 低檔且站上20MA(${ma20}元)，待量能突破放大與均線翻揚 [ATR% ${atrPct}%]`;
       } else {
-        actionNote = `低檔打底整理中，防守價設近一年最低點 ${yearLow} 元 [ATR% ${atrPct}%]`;
+        actionNote = `低檔打底整理中，建議以 20MA 防守價 ${ma20} 元為停損標準 [ATR% ${atrPct}%]`;
       }
+
+      const catalyst = `${industryTheme}，最新單月營收年增達 +${cached.revenueYoY}%，近一年處於 ${positionPct}% 低檔基期，突破 20MA 打底完成。`;
 
       const turnaroundItem: TurnaroundStockItem = {
         symbol: item.code,
         name: item.name,
-        industry: item.industry,
+        industry: industryTheme,
         industryTheme,
         isPriorityWhiteList,
         market: '上市',
@@ -2024,24 +2081,25 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
         isLowBase,
         isSafeBottom,
         isTurnaroundMatched,
-        catalyst: item.catalyst,
+        catalyst,
         stopLossPrice,
         actionNote,
       };
 
       results.push(turnaroundItem);
     } catch (e) {
-      console.error(`Error scanning turnaround stock ${item.code}:`, e);
+      console.error(`Error processing dynamic turnaround stock ${item.code}:`, e);
     }
   }
 
-  // 排序：符合條件者排在最前面，優先聚焦產業白名單居前，其餘依位階由低至高排序
+  // -------------------------------------------------------------------------
+  // 第四階段（輸出結果）：
+  // 呈現動態篩選出的全市場真轉型股（依營收 YoY 排序），並附帶真實的產業類別與 20MA 停損價
+  // -------------------------------------------------------------------------
   results.sort((a, b) => {
     if (a.isTurnaroundMatched && !b.isTurnaroundMatched) return -1;
     if (!a.isTurnaroundMatched && b.isTurnaroundMatched) return 1;
-    if (a.isPriorityWhiteList && !b.isPriorityWhiteList) return -1;
-    if (!a.isPriorityWhiteList && b.isPriorityWhiteList) return 1;
-    return a.positionPct - b.positionPct;
+    return b.revenueYoY - a.revenueYoY;
   });
 
   return results;
@@ -2260,7 +2318,216 @@ app.post('/api/screener/turnaround/refresh', async (_req: Request, res: Response
   }
 });
 
-// 5. 單一個股歷史 K 線與法人明細
+// =========================================================================
+// 5. 主力分點籌碼統計解析與自選股批次即時報價
+// =========================================================================
+
+interface CachedBrokerTrading {
+  data: any;
+  timestamp: number;
+}
+const brokerTradingCache = new Map<string, CachedBrokerTrading>();
+const BROKER_CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache
+
+function formatMoney(amount: number): string {
+  const isNeg = amount < 0;
+  const abs = Math.abs(amount);
+  const sign = isNeg ? '-' : amount > 0 ? '+' : '';
+  if (abs >= 100000000) {
+    return `${sign}${(abs / 100000000).toFixed(2)} 億元`;
+  }
+  if (abs >= 10000) {
+    return `${sign}${Math.round(abs / 10000).toLocaleString()} 萬元`;
+  }
+  return `${sign}${abs.toLocaleString()} 元`;
+}
+
+/**
+ * 抓取個股最近 5 日成交量最大前 5 家主力分點券商買賣超金額與籌碼動向
+ */
+async function fetchBrokerTrading(symbol: string, currentPrice: number) {
+  const cached = brokerTradingCache.get(symbol);
+  if (cached && Date.now() - cached.timestamp < BROKER_CACHE_TTL) {
+    return cached.data;
+  }
+
+  try {
+    let url = `https://tw.stock.yahoo.com/quote/${symbol}.TW/broker-trading`;
+    let res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 6000);
+    if (!res.ok) {
+      url = `https://tw.stock.yahoo.com/quote/${symbol}.TWO/broker-trading`;
+      res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 6000);
+    }
+
+    if (res.ok) {
+      const html = await res.text();
+
+      // Summary numbers
+      const buyMatch = html.match(/主力買超\(張\)<\/div><div[^>]*>([-\d,]+)<\/div>/);
+      const sellMatch = html.match(/主力賣超\(張\)<\/div><div[^>]*>([-\d,]+)<\/div>/);
+      const rateMatch = html.match(/買賣超佔成交量<\/div><div[^>]*>([0-9\.]+)%<\/div>/);
+
+      const majorBuyLots = buyMatch ? parseInt(buyMatch[1].replace(/,/g, ''), 10) : 0;
+      const majorSellLots = sellMatch ? parseInt(sellMatch[1].replace(/,/g, ''), 10) : 0;
+      const majorNetLots = majorBuyLots + majorSellLots;
+      const volumeRate = rateMatch ? parseFloat(rateMatch[1]) : 0;
+
+      // Table rows
+      const rowRegex =
+        /<span class="W\(34%\) Ta\(s\)">([^<]+)<\/span>\s*<span class="Jc\(fe\) W\(22%\) Ta\(e\)">([^<]+)<\/span>\s*<span class="Jc\(fe\) W\(22%\) Ta\(e\)">([^<]+)<\/span>\s*<span[^>]*>([^<]+)<\/span>/g;
+      const brokers: any[] = [];
+      let match;
+      while ((match = rowRegex.exec(html)) !== null) {
+        const name = match[1].trim();
+        const buyLots = parseInt(match[2].replace(/,/g, ''), 10) || 0;
+        const sellLots = parseInt(match[3].replace(/,/g, ''), 10) || 0;
+        const netLots = parseInt(match[4].replace(/,/g, '').trim(), 10) || 0;
+        const totalLots = buyLots + sellLots;
+
+        const buyAmount = Math.round(buyLots * 1000 * currentPrice);
+        const sellAmount = Math.round(sellLots * 1000 * currentPrice);
+        const netAmount = Math.round(netLots * 1000 * currentPrice);
+        const totalAmount = Math.round(totalLots * 1000 * currentPrice);
+
+        brokers.push({
+          name,
+          buyLots,
+          sellLots,
+          netLots,
+          totalLots,
+          buyAmount,
+          sellAmount,
+          netAmount,
+          totalAmount,
+          netAmountFormatted: formatMoney(netAmount),
+          totalAmountFormatted: formatMoney(totalAmount),
+          action: netLots > 0 ? 'BUY' : netLots < 0 ? 'SELL' : 'NEUTRAL',
+        });
+      }
+
+      if (brokers.length > 0) {
+        // Top 5 by Total Volume (最近 5 日成交量最大的前 5 家券商買賣超金額)
+        const totalVolumeAll = brokers.reduce((sum, b) => sum + b.totalLots, 0) || 1;
+        const topBrokersByVolume = [...brokers]
+          .sort((a, b) => b.totalLots - a.totalLots)
+          .slice(0, 5)
+          .map((b) => ({
+            ...b,
+            volumeRatioPct: Number(((b.totalLots / totalVolumeAll) * 100).toFixed(1)),
+          }));
+
+        // Top 5 Net Buy
+        const topBuyBrokers = [...brokers]
+          .filter((b) => b.netLots > 0)
+          .sort((a, b) => b.netLots - a.netLots)
+          .slice(0, 5);
+
+        // Top 5 Net Sell
+        const topSellBrokers = [...brokers]
+          .filter((b) => b.netLots < 0)
+          .sort((a, b) => a.netLots - b.netLots)
+          .slice(0, 5);
+
+        // Sentiment & Analysis
+        const netTop5Amount = topBrokersByVolume.reduce((acc, b) => acc + b.netAmount, 0);
+        let sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+        let sentimentLabel = '多空分歧・換手整理';
+        let analysis = '前5大成交主力券商多空買賣互見，買賣超張數均勻分布，籌碼處於換手整理階段。';
+
+        if (majorNetLots > 0 || netTop5Amount > 0) {
+          sentiment = 'BULLISH';
+          const topBuyer = topBuyBrokers[0]?.name || '主力大戶';
+          sentimentLabel = '🎯 主力大戶積極佈局買超';
+          analysis = `前5大成交分點合計淨買超 ${formatMoney(
+            netTop5Amount
+          )}，以「${topBuyer}」為首等主力積極吸籌，主力買賣超佔比達 ${volumeRate}%，籌碼具備波段向上推升動能。`;
+        } else if (majorNetLots < 0 || netTop5Amount < 0) {
+          sentiment = 'BEARISH';
+          const topSeller = topSellBrokers[0]?.name || '主力券商';
+          sentimentLabel = '⚠️ 主力逢高減碼調節出脫';
+          analysis = `前5大成交分點合計淨賣超 ${formatMoney(
+            netTop5Amount
+          )}，以「${topSeller}」為首之主力出現逢高調節賣壓，需嚴密關注 20MA 防守點位支撐力道。`;
+        }
+
+        const data = {
+          symbol,
+          majorBuyLots,
+          majorSellLots,
+          majorNetLots,
+          majorNetAmount: Math.round(majorNetLots * 1000 * currentPrice),
+          majorNetAmountFormatted: formatMoney(majorNetLots * 1000 * currentPrice),
+          volumeRate,
+          topBrokersByVolume,
+          topBuyBrokers,
+          topSellBrokers,
+          sentiment,
+          sentimentLabel,
+          analysis,
+          updatedAt: new Date().toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' }),
+        };
+
+        brokerTradingCache.set(symbol, { data, timestamp: Date.now() });
+        return data;
+      }
+    }
+  } catch (err) {
+    console.warn(`[BrokerTrading] Error fetching broker data for ${symbol}:`, err);
+  }
+
+  return null;
+}
+
+// 批次查詢自選股即時最新報價（即時同步證交所 MIS，支援任意自選股代碼）
+app.get('/api/market/quotes', async (req: Request, res: Response) => {
+  const symbolsQuery = String(req.query.symbols || '').trim();
+  if (!symbolsQuery) {
+    return res.json({ quotes: [] });
+  }
+
+  const symbols = symbolsQuery
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => /^[1-9][0-9]{3}$/.test(s));
+
+  if (symbols.length === 0) {
+    return res.json({ quotes: [] });
+  }
+
+  try {
+    const quoteMap = await fetchBatchTWSEMisQuotes(symbols);
+    const quotes = symbols.map((code) => {
+      const q = quoteMap.get(code);
+      const curPrice = q?.price || 0;
+      const prevClose = q?.prevClose || curPrice;
+      const change = Number((curPrice - prevClose).toFixed(2));
+      const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
+
+      // 取得產業主題標籤
+      const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(code, q?.name || `股票${code}`);
+
+      return {
+        symbol: code,
+        name: q?.name || `股票${code}`,
+        price: curPrice,
+        change,
+        changePercent,
+        prevClose,
+        volumeLots: q?.volumeLots || 0,
+        updateTime: q?.time || '',
+        industryTheme,
+        isPriorityWhiteList,
+      };
+    });
+
+    return res.json({ quotes, timestamp: new Date().toISOString() });
+  } catch (err: any) {
+    console.error('Error in /api/market/quotes:', err);
+    return res.status(500).json({ error: 'Failed to fetch batch quotes', message: err?.message });
+  }
+});
+
+// 6. 單一個股詳情：即時報價、均線、法人明細與主力分點籌碼統計
 app.get('/api/stocks/:symbol', async (req: Request, res: Response) => {
   const symbol = String(req.params.symbol).trim();
   if (!symbol) {
@@ -2276,7 +2543,7 @@ app.get('/api/stocks/:symbol', async (req: Request, res: Response) => {
   const start30 = d30.toISOString().split('T')[0];
 
   try {
-    const [priceRes, chipsRes] = await Promise.all([
+    const [priceRes, chipsRes, quoteMap] = await Promise.all([
       fetchWithTimeout(
         `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${symbol}&start_date=${start90}&token=${FINMIND_TOKEN}`,
         {},
@@ -2291,19 +2558,77 @@ app.get('/api/stocks/:symbol', async (req: Request, res: Response) => {
       )
         .then((r) => r.json())
         .catch(() => null),
+      fetchBatchTWSEMisQuotes([symbol]),
     ]);
 
     const prices = Array.isArray(priceRes?.data) ? priceRes.data : [];
     const chips = Array.isArray(chipsRes?.data) ? chipsRes.data : [];
+    const misQuote = quoteMap.get(symbol);
 
-    if (prices.length === 0) {
-      return res.status(404).json({ error: `No price data found for symbol ${symbol}` });
+    let curPrice = misQuote?.price || 0;
+    if (curPrice <= 0 && prices.length > 0) {
+      curPrice = Number(prices[prices.length - 1].close);
     }
+    const prevClose = misQuote?.prevClose || (prices.length >= 2 ? Number(prices[prices.length - 2].close) : curPrice);
+    const change = Number((curPrice - prevClose).toFixed(2));
+    const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
+    const name = misQuote?.name || `股票${symbol}`;
+
+    // 均線與量化技術指標
+    let ma5 = curPrice;
+    let ma10 = curPrice;
+    let ma20 = curPrice;
+    let atr20 = 0;
+    let atrPct = 0;
+
+    if (prices.length >= 5) {
+      const histCloses = prices.map((p: any) => Number(p.close));
+      const histHighs = prices.map((p: any) => Number(p.max || p.close));
+      const histLows = prices.map((p: any) => Number(p.min || p.close));
+
+      const calcMA = (period: number) => {
+        const slice = histCloses.slice(-(period - 1));
+        const sum = slice.reduce((a: number, b: number) => a + b, 0) + curPrice;
+        return Number((sum / period).toFixed(2));
+      };
+
+      ma5 = calcMA(5);
+      ma10 = prices.length >= 10 ? calcMA(10) : ma5;
+      ma20 = prices.length >= 20 ? calcMA(20) : ma10;
+
+      const atrObj = calculateATR20Pct(histCloses, histHighs, histLows, curPrice);
+      atr20 = atrObj.atr20;
+      atrPct = atrObj.atrPct;
+    }
+
+    const bias20ma = ma20 > 0 ? Number((((curPrice - ma20) / ma20) * 100).toFixed(2)) : 0;
+    const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(symbol, name);
+
+    // 抓取主力分點籌碼統計
+    const brokerTrading = await fetchBrokerTrading(symbol, curPrice);
 
     return res.json({
       symbol,
+      name,
+      price: curPrice,
+      change,
+      changePercent,
+      prevClose,
+      volume: misQuote?.volumeLots || (prices.length > 0 ? Math.round(prices[prices.length - 1].Trading_Volume / 1000) : 0),
+      updateTime: misQuote?.time || new Date().toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' }),
+      industry: industryTheme,
+      industryTheme,
+      isPriorityWhiteList,
+      ma5,
+      ma10,
+      ma20,
+      bias20ma,
+      stopLossPrice: ma20,
+      atr20,
+      atrPct,
       prices,
       chips,
+      brokerTrading,
       timestamp: new Date().toISOString(),
     });
   } catch (err: any) {

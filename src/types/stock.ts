@@ -180,6 +180,9 @@ export interface PortfolioStockItem {
   strategyType?: 'momentum' | 'turnaround';
   // Dynamic computed fields based on current market price
   currentPrice?: number;
+  change?: number;
+  changePercent?: number;
+  updateTime?: string;
   unrealizedPL?: number; // 損益金額 (TWD)
   returnPct?: number; // 報酬率 %
   isStopLossTriggered?: boolean;
@@ -199,6 +202,63 @@ export interface WatchlistAlertDetail {
   title: string;
   description: string;
   severity: 'danger' | 'warning';
+}
+
+export interface BrokerTradeItem {
+  name: string;
+  buyLots: number;
+  sellLots: number;
+  netLots: number;
+  totalLots: number;
+  buyAmount: number;
+  sellAmount: number;
+  netAmount: number; // 買賣超金額 (正為買超，負為賣超)
+  totalAmount: number;
+  netAmountFormatted: string; // e.g. "+19.41 億元" or "-47.24 億元"
+  totalAmountFormatted: string;
+  action: 'BUY' | 'SELL' | 'NEUTRAL';
+  volumeRatioPct?: number; // 佔個股成交量比重 %
+}
+
+export interface BrokerTradingSummary {
+  symbol: string;
+  majorBuyLots: number;
+  majorSellLots: number;
+  majorNetLots: number;
+  majorNetAmount: number;
+  majorNetAmountFormatted: string;
+  volumeRate: number; // 買賣超佔成交量 %
+  topBrokersByVolume: BrokerTradeItem[]; // 最近 5 日成交量最大的前 5 家券商買賣超金額
+  topBuyBrokers: BrokerTradeItem[];
+  topSellBrokers: BrokerTradeItem[];
+  sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  sentimentLabel: string;
+  analysis: string;
+  updatedAt: string;
+}
+
+export interface StockDetailResponse {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  prevClose: number;
+  volume: number;
+  updateTime: string;
+  industry?: string;
+  industryTheme?: string;
+  isPriorityWhiteList?: boolean;
+  ma5?: number;
+  ma10?: number;
+  ma20?: number;
+  bias20ma?: number;
+  stopLossPrice?: number;
+  atr20?: number;
+  atrPct?: number;
+  prices?: any[];
+  chips?: any[];
+  brokerTrading?: BrokerTradingSummary | null;
 }
 
 export interface NotificationItem {
