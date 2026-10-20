@@ -1,285 +1,390 @@
 {
-  "date": "2026-10-15",
+  "date": "2026-10-19",
   "candidates": [
     {
-      "code": "1303",
-      "name": "南亞",
-      "day1TrustLots": 0,
-      "day2TrustLots": 5146,
-      "totalTrustLots": 5146,
-      "market": "上市"
-    },
-    {
-      "code": "6278",
-      "name": "台表科",
-      "day1TrustLots": 0,
-      "day2TrustLots": 4938,
-      "totalTrustLots": 4938,
-      "market": "上市"
-    },
-    {
-      "code": "2330",
-      "name": "台積電",
-      "day1TrustLots": 0,
-      "day2TrustLots": 3235,
-      "totalTrustLots": 3235,
-      "market": "上市"
-    },
-    {
-      "code": "1402",
-      "name": "遠東新",
-      "day1TrustLots": 0,
-      "day2TrustLots": 3199,
-      "totalTrustLots": 3199,
-      "market": "上市"
-    },
-    {
-      "code": "1301",
-      "name": "台塑",
-      "day1TrustLots": 0,
-      "day2TrustLots": 3187,
-      "totalTrustLots": 3187,
-      "market": "上市"
-    },
-    {
-      "code": "3711",
-      "name": "日月光投控",
-      "day1TrustLots": 0,
-      "day2TrustLots": 2536,
-      "totalTrustLots": 2536,
-      "market": "上市"
-    },
-    {
-      "code": "1216",
-      "name": "統一",
-      "day1TrustLots": 0,
-      "day2TrustLots": 2525,
-      "totalTrustLots": 2525,
-      "market": "上市"
+      "code": "6770",
+      "name": "力積電",
+      "day1TrustLots": -41,
+      "day2TrustLots": 12775,
+      "totalTrustLots": 12734,
+      "market": "上市",
+      "foreignNetLots": -46466,
+      "dealerNetLots": -1632,
+      "consecutiveTrustDays": 1
     },
     {
       "code": "2603",
       "name": "長榮",
-      "day1TrustLots": 0,
-      "day2TrustLots": 2008,
-      "totalTrustLots": 2008,
-      "market": "上市"
+      "day1TrustLots": 3078,
+      "day2TrustLots": 2017,
+      "totalTrustLots": 5095,
+      "market": "上市",
+      "foreignNetLots": -1003,
+      "dealerNetLots": 473,
+      "consecutiveTrustDays": 5
     },
     {
-      "code": "2327",
-      "name": "國巨*",
-      "day1TrustLots": 0,
-      "day2TrustLots": 1981,
-      "totalTrustLots": 1981,
-      "market": "上市"
+      "code": "2330",
+      "name": "台積電",
+      "day1TrustLots": 710,
+      "day2TrustLots": 3885,
+      "totalTrustLots": 4595,
+      "market": "上市",
+      "foreignNetLots": -9835,
+      "dealerNetLots": 1346,
+      "consecutiveTrustDays": 5
     },
     {
-      "code": "3037",
-      "name": "欣興",
-      "day1TrustLots": 0,
-      "day2TrustLots": 1752,
-      "totalTrustLots": 1752,
-      "market": "上市"
+      "code": "2027",
+      "name": "大成鋼",
+      "day1TrustLots": 3615,
+      "day2TrustLots": 915,
+      "totalTrustLots": 4530,
+      "market": "上市",
+      "foreignNetLots": 1900,
+      "dealerNetLots": 578,
+      "consecutiveTrustDays": 2
     },
     {
       "code": "2368",
       "name": "金像電",
-      "day1TrustLots": 0,
-      "day2TrustLots": 1737,
-      "totalTrustLots": 1737,
-      "market": "上市"
+      "day1TrustLots": 2952,
+      "day2TrustLots": 1214,
+      "totalTrustLots": 4166,
+      "market": "上市",
+      "foreignNetLots": -1647,
+      "dealerNetLots": 306,
+      "consecutiveTrustDays": 5
     },
     {
-      "code": "2303",
-      "name": "聯電",
-      "day1TrustLots": 0,
-      "day2TrustLots": 1580,
-      "totalTrustLots": 1580,
-      "market": "上市"
+      "code": "1326",
+      "name": "台化",
+      "day1TrustLots": 2139,
+      "day2TrustLots": 1500,
+      "totalTrustLots": 3639,
+      "market": "上市",
+      "foreignNetLots": -7490,
+      "dealerNetLots": -579,
+      "consecutiveTrustDays": 3
     },
     {
-      "code": "6257",
-      "name": "矽格",
-      "day1TrustLots": 0,
-      "day2TrustLots": 1439,
-      "totalTrustLots": 1439,
-      "market": "上市"
+      "code": "2609",
+      "name": "陽明",
+      "day1TrustLots": 2657,
+      "day2TrustLots": 713,
+      "totalTrustLots": 3370,
+      "market": "上市",
+      "foreignNetLots": -2015,
+      "dealerNetLots": -585,
+      "consecutiveTrustDays": 2
     },
     {
-      "code": "2351",
-      "name": "順德",
-      "day1TrustLots": 0,
-      "day2TrustLots": 1371,
-      "totalTrustLots": 1371,
-      "market": "上市"
+      "code": "2409",
+      "name": "友達",
+      "day1TrustLots": 72,
+      "day2TrustLots": 3141,
+      "totalTrustLots": 3213,
+      "market": "上市",
+      "foreignNetLots": 8762,
+      "dealerNetLots": 3489,
+      "consecutiveTrustDays": 5
     },
     {
-      "code": "2317",
-      "name": "鴻海",
-      "day1TrustLots": 0,
-      "day2TrustLots": 1244,
-      "totalTrustLots": 1244,
-      "market": "上市"
+      "code": "1303",
+      "name": "南亞",
+      "day1TrustLots": 1051,
+      "day2TrustLots": 1921,
+      "totalTrustLots": 2972,
+      "market": "上市",
+      "foreignNetLots": -8895,
+      "dealerNetLots": 1565,
+      "consecutiveTrustDays": 5
     },
     {
-      "code": "2382",
-      "name": "廣達",
-      "day1TrustLots": 0,
-      "day2TrustLots": 1086,
-      "totalTrustLots": 1086,
-      "market": "上市"
-    },
-    {
-      "code": "2347",
-      "name": "聯強",
-      "day1TrustLots": 0,
-      "day2TrustLots": 1037,
-      "totalTrustLots": 1037,
-      "market": "上市"
-    },
-    {
-      "code": "3231",
-      "name": "緯創",
-      "day1TrustLots": 0,
-      "day2TrustLots": 1026,
-      "totalTrustLots": 1026,
-      "market": "上市"
+      "code": "2301",
+      "name": "光寶科",
+      "day1TrustLots": -111,
+      "day2TrustLots": 2789,
+      "totalTrustLots": 2678,
+      "market": "上市",
+      "foreignNetLots": -1219,
+      "dealerNetLots": 564,
+      "consecutiveTrustDays": 1
     },
     {
       "code": "3189",
       "name": "景碩",
-      "day1TrustLots": 0,
-      "day2TrustLots": 961,
-      "totalTrustLots": 961,
-      "market": "上市"
+      "day1TrustLots": 699,
+      "day2TrustLots": 1789,
+      "totalTrustLots": 2488,
+      "market": "上市",
+      "foreignNetLots": -3323,
+      "dealerNetLots": -476,
+      "consecutiveTrustDays": 5
     },
     {
-      "code": "8046",
-      "name": "南電",
-      "day1TrustLots": 0,
-      "day2TrustLots": 885,
-      "totalTrustLots": 885,
-      "market": "上市"
-    },
-    {
-      "code": "4958",
-      "name": "臻鼎-KY",
-      "day1TrustLots": 0,
-      "day2TrustLots": 820,
-      "totalTrustLots": 820,
-      "market": "上市"
-    },
-    {
-      "code": "6213",
-      "name": "聯茂",
-      "day1TrustLots": 0,
-      "day2TrustLots": 695,
-      "totalTrustLots": 695,
-      "market": "上市"
-    },
-    {
-      "code": "2458",
-      "name": "義隆",
-      "day1TrustLots": 0,
-      "day2TrustLots": 629,
-      "totalTrustLots": 629,
-      "market": "上市"
-    },
-    {
-      "code": "2308",
-      "name": "台達電",
-      "day1TrustLots": 0,
-      "day2TrustLots": 582,
-      "totalTrustLots": 582,
-      "market": "上市"
-    },
-    {
-      "code": "3014",
-      "name": "聯陽",
-      "day1TrustLots": 0,
-      "day2TrustLots": 534,
-      "totalTrustLots": 534,
-      "market": "上市"
-    },
-    {
-      "code": "3016",
-      "name": "嘉晶",
-      "day1TrustLots": 0,
-      "day2TrustLots": 475,
-      "totalTrustLots": 475,
-      "market": "上市"
-    },
-    {
-      "code": "6715",
-      "name": "嘉基",
-      "day1TrustLots": 0,
-      "day2TrustLots": 450,
-      "totalTrustLots": 450,
-      "market": "上市"
-    },
-    {
-      "code": "2454",
-      "name": "聯發科",
-      "day1TrustLots": 0,
-      "day2TrustLots": 445,
-      "totalTrustLots": 445,
-      "market": "上市"
-    },
-    {
-      "code": "3481",
-      "name": "群創",
-      "day1TrustLots": 0,
-      "day2TrustLots": 405,
-      "totalTrustLots": 405,
-      "market": "上市"
-    },
-    {
-      "code": "6239",
-      "name": "力成",
-      "day1TrustLots": 0,
-      "day2TrustLots": 401,
-      "totalTrustLots": 401,
-      "market": "上市"
-    },
-    {
-      "code": "3406",
-      "name": "玉晶光",
-      "day1TrustLots": 0,
-      "day2TrustLots": 389,
-      "totalTrustLots": 389,
-      "market": "上市"
-    },
-    {
-      "code": "2345",
-      "name": "智邦",
-      "day1TrustLots": 0,
-      "day2TrustLots": 372,
-      "totalTrustLots": 372,
-      "market": "上市"
-    },
-    {
-      "code": "3034",
-      "name": "聯詠",
-      "day1TrustLots": 0,
-      "day2TrustLots": 369,
-      "totalTrustLots": 369,
-      "market": "上市"
+      "code": "2313",
+      "name": "華通",
+      "day1TrustLots": 1302,
+      "day2TrustLots": 1133,
+      "totalTrustLots": 2435,
+      "market": "上市",
+      "foreignNetLots": -1733,
+      "dealerNetLots": 308,
+      "consecutiveTrustDays": 5
     },
     {
       "code": "2337",
       "name": "旺宏",
-      "day1TrustLots": 0,
-      "day2TrustLots": 363,
-      "totalTrustLots": 363,
-      "market": "上市"
+      "day1TrustLots": -20,
+      "day2TrustLots": 2415,
+      "totalTrustLots": 2395,
+      "market": "上市",
+      "foreignNetLots": -13980,
+      "dealerNetLots": -252,
+      "consecutiveTrustDays": 1
     },
     {
-      "code": "4961",
-      "name": "天鈺",
-      "day1TrustLots": 0,
-      "day2TrustLots": 346,
-      "totalTrustLots": 346,
-      "market": "上市"
+      "code": "3264",
+      "name": "股票3264",
+      "day1TrustLots": -2087,
+      "day2TrustLots": 4315,
+      "totalTrustLots": 2228,
+      "market": "上櫃",
+      "foreignNetLots": -2011,
+      "dealerNetLots": -501,
+      "consecutiveTrustDays": 1
+    },
+    {
+      "code": "6548",
+      "name": "股票6548",
+      "day1TrustLots": 2157,
+      "day2TrustLots": 2,
+      "totalTrustLots": 2159,
+      "market": "上櫃",
+      "foreignNetLots": -367,
+      "dealerNetLots": -20,
+      "consecutiveTrustDays": 5
+    },
+    {
+      "code": "2382",
+      "name": "廣達",
+      "day1TrustLots": 1583,
+      "day2TrustLots": 454,
+      "totalTrustLots": 2037,
+      "market": "上市",
+      "foreignNetLots": -4140,
+      "dealerNetLots": 627,
+      "consecutiveTrustDays": 4
+    },
+    {
+      "code": "8021",
+      "name": "尖點",
+      "day1TrustLots": -7,
+      "day2TrustLots": 1887,
+      "totalTrustLots": 1880,
+      "market": "上市",
+      "foreignNetLots": -1155,
+      "dealerNetLots": -31,
+      "consecutiveTrustDays": 1
+    },
+    {
+      "code": "4958",
+      "name": "臻鼎-KY",
+      "day1TrustLots": 1032,
+      "day2TrustLots": 794,
+      "totalTrustLots": 1826,
+      "market": "上市",
+      "foreignNetLots": -4663,
+      "dealerNetLots": -88,
+      "consecutiveTrustDays": 5
+    },
+    {
+      "code": "3037",
+      "name": "欣興",
+      "day1TrustLots": 1086,
+      "day2TrustLots": 703,
+      "totalTrustLots": 1789,
+      "market": "上市",
+      "foreignNetLots": -1733,
+      "dealerNetLots": 0,
+      "consecutiveTrustDays": 4
+    },
+    {
+      "code": "3702",
+      "name": "大聯大",
+      "day1TrustLots": -440,
+      "day2TrustLots": 2014,
+      "totalTrustLots": 1574,
+      "market": "上市",
+      "foreignNetLots": -3346,
+      "dealerNetLots": 349,
+      "consecutiveTrustDays": 1
+    },
+    {
+      "code": "2351",
+      "name": "順德",
+      "day1TrustLots": 918,
+      "day2TrustLots": 651,
+      "totalTrustLots": 1569,
+      "market": "上市",
+      "foreignNetLots": -124,
+      "dealerNetLots": -10,
+      "consecutiveTrustDays": 3
+    },
+    {
+      "code": "9945",
+      "name": "潤泰新",
+      "day1TrustLots": -22,
+      "day2TrustLots": 1417,
+      "totalTrustLots": 1395,
+      "market": "上市",
+      "foreignNetLots": 1752,
+      "dealerNetLots": -36,
+      "consecutiveTrustDays": 1
+    },
+    {
+      "code": "2610",
+      "name": "華航",
+      "day1TrustLots": 5818,
+      "day2TrustLots": -4443,
+      "totalTrustLots": 1375,
+      "market": "上市",
+      "foreignNetLots": -305,
+      "dealerNetLots": -189,
+      "consecutiveTrustDays": 0
+    },
+    {
+      "code": "6805",
+      "name": "富世達",
+      "day1TrustLots": 569,
+      "day2TrustLots": 658,
+      "totalTrustLots": 1227,
+      "market": "上市",
+      "foreignNetLots": -349,
+      "dealerNetLots": -8,
+      "consecutiveTrustDays": 2
+    },
+    {
+      "code": "3605",
+      "name": "宏致",
+      "day1TrustLots": 245,
+      "day2TrustLots": 969,
+      "totalTrustLots": 1214,
+      "market": "上市",
+      "foreignNetLots": 262,
+      "dealerNetLots": -54,
+      "consecutiveTrustDays": 5
+    },
+    {
+      "code": "6274",
+      "name": "股票6274",
+      "day1TrustLots": 453,
+      "day2TrustLots": 706,
+      "totalTrustLots": 1159,
+      "market": "上櫃",
+      "foreignNetLots": -1070,
+      "dealerNetLots": -140,
+      "consecutiveTrustDays": 5
+    },
+    {
+      "code": "3017",
+      "name": "奇鋐",
+      "day1TrustLots": 592,
+      "day2TrustLots": 509,
+      "totalTrustLots": 1101,
+      "market": "上市",
+      "foreignNetLots": -527,
+      "dealerNetLots": -6,
+      "consecutiveTrustDays": 5
+    },
+    {
+      "code": "2441",
+      "name": "超豐",
+      "day1TrustLots": 1018,
+      "day2TrustLots": 4,
+      "totalTrustLots": 1022,
+      "market": "上市",
+      "foreignNetLots": -964,
+      "dealerNetLots": -67,
+      "consecutiveTrustDays": 5
+    },
+    {
+      "code": "8046",
+      "name": "南電",
+      "day1TrustLots": 363,
+      "day2TrustLots": 573,
+      "totalTrustLots": 936,
+      "market": "上市",
+      "foreignNetLots": -793,
+      "dealerNetLots": -79,
+      "consecutiveTrustDays": 5
+    },
+    {
+      "code": "6147",
+      "name": "股票6147",
+      "day1TrustLots": -2323,
+      "day2TrustLots": 3229,
+      "totalTrustLots": 906,
+      "market": "上櫃",
+      "foreignNetLots": 2236,
+      "dealerNetLots": -505,
+      "consecutiveTrustDays": 1
+    },
+    {
+      "code": "5347",
+      "name": "股票5347",
+      "day1TrustLots": 1428,
+      "day2TrustLots": -556,
+      "totalTrustLots": 872,
+      "market": "上櫃",
+      "foreignNetLots": -617,
+      "dealerNetLots": -149,
+      "consecutiveTrustDays": 0
+    },
+    {
+      "code": "3167",
+      "name": "大量",
+      "day1TrustLots": 681,
+      "day2TrustLots": 187,
+      "totalTrustLots": 868,
+      "market": "上市",
+      "foreignNetLots": -672,
+      "dealerNetLots": -25,
+      "consecutiveTrustDays": 5
+    },
+    {
+      "code": "2458",
+      "name": "義隆",
+      "day1TrustLots": 842,
+      "day2TrustLots": -1,
+      "totalTrustLots": 841,
+      "market": "上市",
+      "foreignNetLots": -200,
+      "dealerNetLots": 9,
+      "consecutiveTrustDays": 0
+    },
+    {
+      "code": "1815",
+      "name": "股票1815",
+      "day1TrustLots": 349,
+      "day2TrustLots": 489,
+      "totalTrustLots": 838,
+      "market": "上櫃",
+      "foreignNetLots": 20235,
+      "dealerNetLots": -156,
+      "consecutiveTrustDays": 2
+    },
+    {
+      "code": "5483",
+      "name": "股票5483",
+      "day1TrustLots": 912,
+      "day2TrustLots": -128,
+      "totalTrustLots": 784,
+      "market": "上櫃",
+      "foreignNetLots": -723,
+      "dealerNetLots": 224,
+      "consecutiveTrustDays": 0
     }
   ]
 }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   X,
   Sparkles,
@@ -45,6 +45,99 @@ export function StockDetailModal({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'topVolume' | 'topBuy' | 'topSell' | 'institutional' | 'prices'>('topVolume');
+
+  // Helper to translate institutional names to Chinese
+  const getInstitutionalNameZh = (name: string): string => {
+    if (/Foreign_Investor|外資/i.test(name)) return '外資';
+    if (/Foreign_Dealer_Self|外資自營商/i.test(name)) return '外資自營商';
+    if (/Investment_Trust|Trust|投信/i.test(name)) return '投信';
+    if (/Dealer_self|自營商自行買賣/i.test(name)) return '自營商(自行買賣)';
+    if (/Dealer_Hedging|自營商避險/i.test(name)) return '自營商(避險)';
+    if (/Dealer|自營商/i.test(name)) return '自營商';
+    return name || '法人';
+  };
+
+  // Group institutional chips by date and aggregate Foreign, Trust, Dealer
+  const dailyChips = useMemo(() => {
+    if (!data?.chips || !Array.isArray(data.chips) || data.chips.length === 0) return [];
+
+    const mapByDate = new Map<
+      string,
+      {
+        foreignBuy: number;
+        foreignSell: number;
+        trustBuy: number;
+        trustSell: number;
+        dealerBuy: number;
+        dealerSell: number;
+      }
+    >();
+
+    for (const c of data.chips) {
+      if (!c.date) continue;
+      if (!mapByDate.has(c.date)) {
+        mapByDate.set(c.date, {
+          foreignBuy: 0,
+          foreignSell: 0,
+          trustBuy: 0,
+          trustSell: 0,
+          dealerBuy: 0,
+          dealerSell: 0,
+        });
+      }
+      const entry = mapByDate.get(c.date)!;
+      const name = String(c.name || '').trim();
+      const buy = Number(c.buy) || 0;
+      const sell = Number(c.sell) || 0;
+
+      if (/Foreign/i.test(name) || /外資/i.test(name)) {
+        entry.foreignBuy += buy;
+        entry.foreignSell += sell;
+      } else if (/Trust/i.test(name) || /投信/i.test(name)) {
+        entry.trustBuy += buy;
+        entry.trustSell += sell;
+      } else if (/Dealer/i.test(name) || /自營/i.test(name)) {
+        entry.dealerBuy += buy;
+        entry.dealerSell += sell;
+      } else {
+        entry.foreignBuy += buy;
+        entry.foreignSell += sell;
+      }
+    }
+
+    // Sort dates descending (latest trading day first)
+    const sortedDates = Array.from(mapByDate.keys()).sort((a, b) => b.localeCompare(a));
+    const recent10Dates = sortedDates.slice(0, 10);
+
+    return recent10Dates.map((date) => {
+      const d = mapByDate.get(date)!;
+      const foreignNet = Math.round((d.foreignBuy - d.foreignSell) / 1000);
+      const trustNet = Math.round((d.trustBuy - d.trustSell) / 1000);
+      const dealerNet = Math.round((d.dealerBuy - d.dealerSell) / 1000);
+      const totalNet = foreignNet + trustNet + dealerNet;
+
+      return {
+        date,
+        foreignNet,
+        trustNet,
+        dealerNet,
+        totalNet,
+      };
+    });
+  }, [data?.chips]);
+
+  const chip10DaysTotals = useMemo(() => {
+    return dailyChips.reduce(
+      (acc, day) => {
+        acc.foreignNet += day.foreignNet;
+        acc.trustNet += day.trustNet;
+        acc.dealerNet += day.dealerNet;
+        acc.totalNet += day.totalNet;
+        return acc;
+      },
+      { foreignNet: 0, trustNet: 0, dealerNet: 0, totalNet: 0 }
+    );
+  }, [dailyChips]);
 
   // Load detail whenever symbol changes or modal opens
   const loadDetail = async () => {
@@ -669,53 +762,217 @@ export function StockDetailModal({
               </section>
 
               {/* --------------------------------------------------------------------- */}
-              {/* 3. 三大法人近 10 日買賣超明細                                           */}
+              {/* 3. 三大法人近 10 日籌碼進出紀錄（依日期分組彙總）                       */}
               {/* --------------------------------------------------------------------- */}
-              {data.chips && data.chips.length > 0 && (
+              {dailyChips.length > 0 && (
                 <section className="rounded-3xl bg-slate-950/80 border border-slate-800 p-5 shadow-lg">
-                  <h4 className="text-sm font-bold text-white flex items-center gap-2 mb-3">
-                    <BarChart3 className="w-4 h-4 text-rose-400" />
-                    <span>三大法人近 10 日籌碼進出紀錄</span>
-                  </h4>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                    <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                      <BarChart3 className="w-4 h-4 text-rose-400" />
+                      <span>三大法人近 10 個交易日每日籌碼進出彙總</span>
+                    </h4>
+                    <span className="text-[11px] text-slate-400 font-mono">
+                      單位：張數・依日期合併外資/投信/自營商
+                    </span>
+                  </div>
+
+                  {/* 10-Day Institutional Totals */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4 text-xs">
+                    <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+                      <span className="text-[10px] text-slate-500 block">外資 10 日累計</span>
+                      <span
+                        className={`text-sm font-black font-mono ${
+                          chip10DaysTotals.foreignNet > 0
+                            ? 'text-rose-400'
+                            : chip10DaysTotals.foreignNet < 0
+                            ? 'text-emerald-400'
+                            : 'text-slate-400'
+                        }`}
+                      >
+                        {chip10DaysTotals.foreignNet > 0 ? '+' : ''}
+                        {chip10DaysTotals.foreignNet.toLocaleString()} 張
+                      </span>
+                    </div>
+
+                    <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+                      <span className="text-[10px] text-slate-500 block">投信 10 日累計</span>
+                      <span
+                        className={`text-sm font-black font-mono ${
+                          chip10DaysTotals.trustNet > 0
+                            ? 'text-rose-400'
+                            : chip10DaysTotals.trustNet < 0
+                            ? 'text-emerald-400'
+                            : 'text-slate-400'
+                        }`}
+                      >
+                        {chip10DaysTotals.trustNet > 0 ? '+' : ''}
+                        {chip10DaysTotals.trustNet.toLocaleString()} 張
+                      </span>
+                    </div>
+
+                    <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+                      <span className="text-[10px] text-slate-500 block">自營商 10 日累計</span>
+                      <span
+                        className={`text-sm font-black font-mono ${
+                          chip10DaysTotals.dealerNet > 0
+                            ? 'text-rose-400'
+                            : chip10DaysTotals.dealerNet < 0
+                            ? 'text-emerald-400'
+                            : 'text-slate-400'
+                        }`}
+                      >
+                        {chip10DaysTotals.dealerNet > 0 ? '+' : ''}
+                        {chip10DaysTotals.dealerNet.toLocaleString()} 張
+                      </span>
+                    </div>
+
+                    <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+                      <span className="text-[10px] text-slate-500 block">三大法人 10 日總計</span>
+                      <span
+                        className={`text-sm font-black font-mono ${
+                          chip10DaysTotals.totalNet > 0
+                            ? 'text-rose-400'
+                            : chip10DaysTotals.totalNet < 0
+                            ? 'text-emerald-400'
+                            : 'text-slate-400'
+                        }`}
+                      >
+                        {chip10DaysTotals.totalNet > 0 ? '+' : ''}
+                        {chip10DaysTotals.totalNet.toLocaleString()} 張
+                      </span>
+                    </div>
+                  </div>
+
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-xs">
                       <thead>
-                        <tr className="border-b border-slate-800 text-[11px] text-slate-500">
-                          <th className="pb-2">日期</th>
-                          <th className="pb-2 text-right">法人名稱</th>
-                          <th className="pb-2 text-right">買進張數</th>
-                          <th className="pb-2 text-right">賣出張數</th>
-                          <th className="pb-2 text-right font-bold text-white">淨買賣超 (張)</th>
+                        <tr className="border-b border-slate-800 text-[11px] text-slate-400 bg-slate-900/60">
+                          <th className="py-2.5 px-3 rounded-l-lg">交易日期</th>
+                          <th className="py-2.5 px-3 text-right">外資 (張)</th>
+                          <th className="py-2.5 px-3 text-right">投信 (張)</th>
+                          <th className="py-2.5 px-3 text-right">自營商 (張)</th>
+                          <th className="py-2.5 px-3 text-right font-bold text-white rounded-r-lg">
+                            三大法人合計 (張)
+                          </th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-850">
-                        {data.chips.slice(-15).reverse().map((chip: any, i: number) => {
-                          const net = Math.round(((chip.buy || 0) - (chip.sell || 0)) / 1000);
-                          const isNetBuy = net >= 0;
+                        {dailyChips.map((day) => {
+                          const isForeignBuy = day.foreignNet > 0;
+                          const isTrustBuy = day.trustNet > 0;
+                          const isDealerBuy = day.dealerNet > 0;
+                          const isTotalBuy = day.totalNet > 0;
+
                           return (
-                            <tr key={i} className="hover:bg-slate-900/50">
-                              <td className="py-1.5 font-mono text-slate-400">{chip.date}</td>
-                              <td className="py-1.5 text-right font-medium text-slate-300">
-                                {chip.name || '法人'}
-                              </td>
-                              <td className="py-1.5 text-right font-mono text-slate-400">
-                                {Math.round((chip.buy || 0) / 1000).toLocaleString()}
-                              </td>
-                              <td className="py-1.5 text-right font-mono text-slate-400">
-                                {Math.round((chip.sell || 0) / 1000).toLocaleString()}
+                            <tr key={day.date} className="hover:bg-slate-900/50 transition-colors">
+                              <td className="py-2.5 px-3 font-mono text-slate-300 font-medium">
+                                {day.date}
                               </td>
                               <td
-                                className={`py-1.5 text-right font-mono font-bold ${
-                                  isNetBuy ? 'text-rose-400' : 'text-emerald-400'
+                                className={`py-2.5 px-3 text-right font-mono font-semibold ${
+                                  day.foreignNet === 0
+                                    ? 'text-slate-500'
+                                    : isForeignBuy
+                                    ? 'text-rose-400'
+                                    : 'text-emerald-400'
                                 }`}
                               >
-                                {isNetBuy ? '+' : ''}
-                                {net.toLocaleString()}
+                                {day.foreignNet > 0 ? '+' : ''}
+                                {day.foreignNet.toLocaleString()}
+                              </td>
+                              <td
+                                className={`py-2.5 px-3 text-right font-mono font-semibold ${
+                                  day.trustNet === 0
+                                    ? 'text-slate-500'
+                                    : isTrustBuy
+                                    ? 'text-rose-400'
+                                    : 'text-emerald-400'
+                                }`}
+                              >
+                                {day.trustNet > 0 ? '+' : ''}
+                                {day.trustNet.toLocaleString()}
+                              </td>
+                              <td
+                                className={`py-2.5 px-3 text-right font-mono font-semibold ${
+                                  day.dealerNet === 0
+                                    ? 'text-slate-500'
+                                    : isDealerBuy
+                                    ? 'text-rose-400'
+                                    : 'text-emerald-400'
+                                }`}
+                              >
+                                {day.dealerNet > 0 ? '+' : ''}
+                                {day.dealerNet.toLocaleString()}
+                              </td>
+                              <td
+                                className={`py-2.5 px-3 text-right font-mono font-black ${
+                                  day.totalNet === 0
+                                    ? 'text-slate-400'
+                                    : isTotalBuy
+                                    ? 'text-rose-400 bg-rose-500/10'
+                                    : 'text-emerald-400 bg-emerald-500/10'
+                                }`}
+                              >
+                                {day.totalNet > 0 ? '+' : ''}
+                                {day.totalNet.toLocaleString()}
                               </td>
                             </tr>
                           );
                         })}
                       </tbody>
+                      <tfoot>
+                        <tr className="border-t-2 border-slate-700 bg-slate-900/80 font-bold text-xs">
+                          <td className="py-2.5 px-3 text-slate-300">近 10 日合計</td>
+                          <td
+                            className={`py-2.5 px-3 text-right font-mono ${
+                              chip10DaysTotals.foreignNet > 0
+                                ? 'text-rose-400'
+                                : chip10DaysTotals.foreignNet < 0
+                                ? 'text-emerald-400'
+                                : 'text-slate-400'
+                            }`}
+                          >
+                            {chip10DaysTotals.foreignNet > 0 ? '+' : ''}
+                            {chip10DaysTotals.foreignNet.toLocaleString()}
+                          </td>
+                          <td
+                            className={`py-2.5 px-3 text-right font-mono ${
+                              chip10DaysTotals.trustNet > 0
+                                ? 'text-rose-400'
+                                : chip10DaysTotals.trustNet < 0
+                                ? 'text-emerald-400'
+                                : 'text-slate-400'
+                            }`}
+                          >
+                            {chip10DaysTotals.trustNet > 0 ? '+' : ''}
+                            {chip10DaysTotals.trustNet.toLocaleString()}
+                          </td>
+                          <td
+                            className={`py-2.5 px-3 text-right font-mono ${
+                              chip10DaysTotals.dealerNet > 0
+                                ? 'text-rose-400'
+                                : chip10DaysTotals.dealerNet < 0
+                                ? 'text-emerald-400'
+                                : 'text-slate-400'
+                            }`}
+                          >
+                            {chip10DaysTotals.dealerNet > 0 ? '+' : ''}
+                            {chip10DaysTotals.dealerNet.toLocaleString()}
+                          </td>
+                          <td
+                            className={`py-2.5 px-3 text-right font-mono font-black ${
+                              chip10DaysTotals.totalNet > 0
+                                ? 'text-rose-400'
+                                : chip10DaysTotals.totalNet < 0
+                                ? 'text-emerald-400'
+                                : 'text-slate-400'
+                            }`}
+                          >
+                            {chip10DaysTotals.totalNet > 0 ? '+' : ''}
+                            {chip10DaysTotals.totalNet.toLocaleString()}
+                          </td>
+                        </tr>
+                      </tfoot>
                     </table>
                   </div>
                 </section>

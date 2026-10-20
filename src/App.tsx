@@ -1749,7 +1749,11 @@ export default function App() {
                               >
                                 <div className="text-[10px] text-slate-500 mb-0.5">投信籌碼</div>
                                 <div className="font-bold">
-                                  {stock.isVerifiedByTrust ? '投信正式大買認養' : '連 2 日買超認養'}
+                                  {stock.isVerifiedByTrust
+                                    ? '投信正式大買認養'
+                                    : stock.consecutiveTrustDays > 0
+                                    ? `連 ${stock.consecutiveTrustDays} 日買超認養`
+                                    : '投信買超認養'}
                                 </div>
                               </div>
 
@@ -1784,6 +1788,64 @@ export default function App() {
                                 </div>
                               </div>
                             ) : null}
+
+                            {/* 三大法人當日籌碼買賣超 */}
+                            <div className="mt-3 px-3.5 py-2.5 rounded-2xl bg-slate-950/70 border border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+                              <span className="text-[11px] font-semibold text-slate-400">三大法人籌碼</span>
+                              <div className="flex flex-wrap items-center gap-3 font-mono">
+                                <span>
+                                  <span className="text-slate-500 mr-1 font-sans">外資</span>
+                                  <strong
+                                    className={
+                                      stock.foreignNetLots === null
+                                        ? 'text-slate-500 font-normal'
+                                        : stock.foreignNetLots > 0
+                                        ? 'text-rose-400'
+                                        : stock.foreignNetLots < 0
+                                        ? 'text-emerald-400'
+                                        : 'text-slate-300'
+                                    }
+                                  >
+                                    {stock.foreignNetLots !== null
+                                      ? `${stock.foreignNetLots > 0 ? '+' : ''}${stock.foreignNetLots.toLocaleString()} 張`
+                                      : '無數據'}
+                                  </strong>
+                                </span>
+                                <span>
+                                  <span className="text-slate-500 mr-1 font-sans">投信</span>
+                                  <strong
+                                    className={
+                                      stock.trustNetLots > 0
+                                        ? 'text-rose-400'
+                                        : stock.trustNetLots < 0
+                                        ? 'text-emerald-400'
+                                        : 'text-slate-300'
+                                    }
+                                  >
+                                    {stock.trustNetLots > 0 ? '+' : ''}
+                                    {stock.trustNetLots.toLocaleString()} 張
+                                  </strong>
+                                </span>
+                                <span>
+                                  <span className="text-slate-500 mr-1 font-sans">自營商</span>
+                                  <strong
+                                    className={
+                                      stock.dealerNetLots === null
+                                        ? 'text-slate-500 font-normal'
+                                        : stock.dealerNetLots > 0
+                                        ? 'text-rose-400'
+                                        : stock.dealerNetLots < 0
+                                        ? 'text-emerald-400'
+                                        : 'text-slate-300'
+                                    }
+                                  >
+                                    {stock.dealerNetLots !== null
+                                      ? `${stock.dealerNetLots > 0 ? '+' : ''}${stock.dealerNetLots.toLocaleString()} 張`
+                                      : '無數據'}
+                                  </strong>
+                                </span>
+                              </div>
+                            </div>
 
                             {/* Quant Anchors */}
                             <div

@@ -96,9 +96,9 @@ export interface ScreenerStockItem {
   isOverheated: boolean; // bias20ma > 10%
   isMajorLocked: boolean; // foreignNet > 0 && trustNet > 0
   consecutiveTrustDays: number; // 投信連續買超天數
-  foreignNetLots: number; // 外資今日買賣超 (張)
+  foreignNetLots: number | null; // 外資今日買賣超 (張，無數據時為 null，嚴禁偽造為 0)
   trustNetLots: number; // 投信今日買賣超 (張)
-  dealerNetLots: number; // 自營商今日買賣超 (張)
+  dealerNetLots: number | null; // 自營商今日買賣超 (張，無數據時為 null，嚴禁偽造為 0)
   // 波段交易策略錨定
   isMatched: boolean; // 完全符合條件
   isIntradaySignal?: boolean; // 🟢 盤中即時進場訊號
@@ -1178,13 +1178,13 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
 async function fetchRecentTradingDates(): Promise<string[]> {
   try {
     const d = new Date();
-    d.setDate(d.getDate() - 15);
+    d.setDate(d.getDate() - 20);
     const startDate = d.toISOString().split('T')[0];
     const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=TAIEX&start_date=${startDate}&token=${FINMIND_TOKEN}`;
     const res = await fetchWithTimeout(url, {}, 6000);
     if (res.ok) {
       const json = await res.json();
-      if (Array.isArray(json?.data)) {
+      if (Array.isArray(json?.data) && json.data.length > 0) {
         return json.data.map((item: any) => String(item.date)).filter(Boolean);
       }
     }
@@ -1194,7 +1194,7 @@ async function fetchRecentTradingDates(): Promise<string[]> {
 
   const dates: string[] = [];
   const now = new Date();
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 10; i++) {
     const d = new Date(now);
     d.setDate(d.getDate() - i);
     const day = d.getDay();
@@ -1202,38 +1202,20 @@ async function fetchRecentTradingDates(): Promise<string[]> {
       dates.unshift(d.toISOString().split('T')[0]);
     }
   }
-  return dates.slice(-3);
+  return dates.slice(-5);
 }
 
-async function fetchDayTrustBuys(dateStr: string): Promise<Map<string, number>> {
-  const map = new Map<string, number>();
+interface DayInstData {
+  foreignNetLots: number | null;
+  trustNetLots: number;
+  dealerNetLots: number | null;
+  market: '上市' | '上櫃';
+}
 
-  // 1. FinMind
-  try {
-    const fmUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&start_date=${dateStr}&end_date=${dateStr}&token=${FINMIND_TOKEN}`;
-    const res = await fetchWithTimeout(fmUrl, {}, 6000);
-    if (res.ok) {
-      const json = await res.json();
-      if (Array.isArray(json?.data) && json.data.length > 0) {
-        for (const item of json.data) {
-          if (item.name === 'Investment_Trust') {
-            const netShares = Number(item.buy || 0) - Number(item.sell || 0);
-            if (netShares > 0) {
-              const code = String(item.stock_id).trim();
-              map.set(code, Math.round(netShares / 1000));
-            }
-          }
-        }
-        if (map.size > 0) {
-          return map;
-        }
-      }
-    }
-  } catch (e) {
-    // Continue to fallback
-  }
+async function fetchDayInstitutional(dateStr: string): Promise<Map<string, DayInstData>> {
+  const map = new Map<string, DayInstData>();
 
-  // 2. TWSE Official T86
+  // 1. TWSE Official T86 (全台股上市三大法人當日買賣超真實數據)
   try {
     const dTwse = dateStr.replace(/-/g, '');
     const twseUrl = `https://www.twse.com.tw/rwd/zh/fund/T86?date=${dTwse}&selectType=ALL&response=json`;
@@ -1255,10 +1237,19 @@ async function fetchDayTrustBuys(dateStr: string): Promise<Map<string, number>> 
       if (Array.isArray(json.data)) {
         for (const row of json.data) {
           const code = String(row[0] || '').trim();
+          if (!/^[1-9][0-9]{3}$/.test(code)) continue;
+          const foreignNetShares =
+            parseInt(String(row[4] || '0').replace(/,/g, ''), 10) +
+            parseInt(String(row[7] || '0').replace(/,/g, ''), 10);
           const trustNetShares = parseInt(String(row[10] || '0').replace(/,/g, ''), 10);
-          if (trustNetShares > 0) {
-            map.set(code, Math.round(trustNetShares / 1000));
-          }
+          const dealerNetShares = parseInt(String(row[11] || '0').replace(/,/g, ''), 10);
+
+          map.set(code, {
+            foreignNetLots: Math.round(foreignNetShares / 1000),
+            trustNetLots: Math.round(trustNetShares / 1000),
+            dealerNetLots: Math.round(dealerNetShares / 1000),
+            market: '上市',
+          });
         }
       }
     }
@@ -1266,6 +1257,60 @@ async function fetchDayTrustBuys(dateStr: string): Promise<Map<string, number>> 
     console.error(`TWSE T86 fetch failed for date ${dateStr}:`, err);
   }
 
+  // 2. TPEx Official (全台股上櫃三大法人當日買賣超真實數據)
+  try {
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+      const rocDate = `${parseInt(parts[0], 10) - 1911}/${parts[1]}/${parts[2]}`;
+      const tpexUrl = `https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d=${rocDate}`;
+      const res = await fetchWithTimeout(
+        tpexUrl,
+        {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            Accept: 'application/json, text/plain, */*',
+          },
+        },
+        7000
+      );
+
+      if (res.ok) {
+        const json = await res.json();
+        const rows = json.tables?.[0]?.data;
+        if (Array.isArray(rows)) {
+          for (const row of rows) {
+            const code = String(row[0] || '').trim();
+            if (!/^[1-9][0-9]{3}$/.test(code)) continue;
+            const foreignNetShares = parseInt(String(row[10] || '0').replace(/,/g, ''), 10);
+            const trustNetShares = parseInt(String(row[13] || '0').replace(/,/g, ''), 10);
+            const dealerNetShares = parseInt(String(row[22] || '0').replace(/,/g, ''), 10);
+
+            map.set(code, {
+              foreignNetLots: Math.round(foreignNetShares / 1000),
+              trustNetLots: Math.round(trustNetShares / 1000),
+              dealerNetLots: Math.round(dealerNetShares / 1000),
+              market: '上櫃',
+            });
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`TPEx fetch failed for date ${dateStr}:`, err);
+  }
+
+  return map;
+}
+
+async function fetchDayTrustBuys(dateStr: string): Promise<Map<string, number>> {
+  const instMap = await fetchDayInstitutional(dateStr);
+  const map = new Map<string, number>();
+  for (const [code, data] of instMap.entries()) {
+    if (data.trustNetLots > 0) {
+      map.set(code, data.trustNetLots);
+    }
+  }
   return map;
 }
 
@@ -1334,6 +1379,9 @@ interface CachedTrustBuyItem {
   day2TrustLots: number;
   totalTrustLots: number;
   market: '上市' | '上櫃';
+  foreignNetLots: number | null;
+  dealerNetLots: number | null;
+  consecutiveTrustDays: number;
 }
 
 const TRUST_BUYS_CACHE_FILE = path.join(process.cwd(), '.cached_trust_buys.json');
@@ -1423,62 +1471,96 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
   try {
     const tradingDates = await fetchRecentTradingDates();
     if (tradingDates.length >= 2) {
-      let dateDay2 = tradingDates[tradingDates.length - 1];
-      let dateDay1 = tradingDates[tradingDates.length - 2];
-      let mapDay2 = await fetchDayTrustBuys(dateDay2);
-      let mapDay1 = await fetchDayTrustBuys(dateDay1);
+      // 依日期由近至遠，檢查並取得有法人結算資料的最近交易日（若當日尚未收盤結算，自動退回前一交易日）
+      const reversedDates = [...tradingDates].reverse();
+      const validInstDays: { date: string; map: Map<string, DayInstData> }[] = [];
 
-      if (mapDay2.size === 0 && tradingDates.length >= 3) {
-        dateDay2 = tradingDates[tradingDates.length - 2];
-        dateDay1 = tradingDates[tradingDates.length - 3];
-        mapDay2 = await fetchDayTrustBuys(dateDay2);
-        mapDay1 = await fetchDayTrustBuys(dateDay1);
+      for (const d of reversedDates) {
+        const instMap = await fetchDayInstitutional(d);
+        if (instMap && instMap.size > 0) {
+          validInstDays.push({ date: d, map: instMap });
+          if (validInstDays.length >= 5) break; // 最多取近 5 個有資料的交易日進行連續買超統計
+        }
       }
 
-      const marketQuotes = await fetchMarketQuotes();
-      const candidates: CachedTrustBuyItem[] = [];
+      if (validInstDays.length >= 1) {
+        const latestInst = validInstDays[0].map;
+        const prev1Inst = validInstDays[1]?.map || new Map<string, DayInstData>();
+        const latestDate = validInstDays[0].date;
 
-      for (const [code, day2Lots] of mapDay2.entries()) {
-        if (!/^[1-9][0-9]{3}$/.test(code)) continue;
-        const q = marketQuotes.get(code);
-        const name = q?.name || `股票${code}`;
-        if (isFinancialStock(code, name)) continue;
+        const marketQuotes = await fetchMarketQuotes();
+        const candidates: CachedTrustBuyItem[] = [];
 
-        const day1Lots = mapDay1.get(code) || 0;
-        const total = day1Lots + day2Lots;
-        if (total > 0) {
+        for (const [code, inst0] of latestInst.entries()) {
+          if (!/^[1-9][0-9]{3}$/.test(code)) continue;
+
+          const day2Trust = inst0.trustNetLots || 0;
+          const day1Trust = prev1Inst.get(code)?.trustNetLots || 0;
+          const totalTrust = day1Trust + day2Trust;
+
+          // 僅篩選投信近兩日合計或當日有積極買超之標的
+          if (day2Trust <= 0 && totalTrust <= 0) continue;
+
+          const q = marketQuotes.get(code);
+          const name = q?.name || `股票${code}`;
+          if (isFinancialStock(code, name)) continue;
+
+          // 計算投信連續買超天數 (consecutiveTrustDays)，真實依序往前回推
+          let consecutiveTrustDays = 0;
+          for (const dayObj of validInstDays) {
+            const lots = dayObj.map.get(code)?.trustNetLots ?? 0;
+            if (lots > 0) {
+              consecutiveTrustDays++;
+            } else {
+              break;
+            }
+          }
+
+          // 外資與自營商真實買賣超張數（若該檔股票於當日法人無交易數據則標記 null，嚴禁偽造為 0）
+          const foreignNetLots =
+            inst0.foreignNetLots !== undefined && inst0.foreignNetLots !== null
+              ? inst0.foreignNetLots
+              : null;
+          const dealerNetLots =
+            inst0.dealerNetLots !== undefined && inst0.dealerNetLots !== null
+              ? inst0.dealerNetLots
+              : null;
+
           candidates.push({
             code,
             name,
-            day1TrustLots: day1Lots,
-            day2TrustLots: day2Lots,
-            totalTrustLots: total,
-            market: '上市',
+            day1TrustLots: day1Trust,
+            day2TrustLots: day2Trust,
+            totalTrustLots: totalTrust,
+            market: inst0.market || '上市',
+            foreignNetLots,
+            dealerNetLots,
+            consecutiveTrustDays,
           });
         }
-      }
 
-      candidates.sort((a, b) => b.totalTrustLots - a.totalTrustLots);
-      const topCandidates = candidates.slice(0, 35);
+        candidates.sort((a, b) => b.totalTrustLots - a.totalTrustLots);
+        const topCandidates = candidates.slice(0, 35);
 
-      if (topCandidates.length > 0) {
-        try {
-          fs.writeFileSync(
-            TRUST_BUYS_CACHE_FILE,
-            JSON.stringify({ date: dateDay2, candidates: topCandidates }, null, 2),
-            'utf-8'
-          );
-        } catch (e) {
-          console.warn('Error saving trust buys cache:', e);
+        if (topCandidates.length > 0) {
+          try {
+            fs.writeFileSync(
+              TRUST_BUYS_CACHE_FILE,
+              JSON.stringify({ date: latestDate, candidates: topCandidates }, null, 2),
+              'utf-8'
+            );
+          } catch (e) {
+            console.warn('Error saving trust buys cache:', e);
+          }
+          return topCandidates;
         }
-        return topCandidates;
       }
     }
   } catch (err) {
     console.error('Failed to build trust buys list:', err);
   }
 
-  // 若全市場投信買超因休市或斷線抓不到資料，回傳空陣列 []，嚴格依據真實數據
+  // 若全市場投信買超因休市或斷線抓不到資料，回傳空陣列 []，嚴格依據真實數據，絕不捏造或回傳寫死之投信張數
   console.warn('全市場投信買超因休市或斷線抓不到資料，回傳空陣列 []（目前非交易日或資料整理中）');
   return [];
 }
@@ -1689,13 +1771,17 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
         weeklyLow,
         isBullishMa,
         isVolumeExpanding,
-        isTrustAccumulating: true,
+        isTrustAccumulating: (c.consecutiveTrustDays ?? 0) >= 2,
         isOverheated,
-        isMajorLocked: c.day2TrustLots > 300,
-        consecutiveTrustDays: 2,
-        foreignNetLots: 0,
+        isMajorLocked:
+          c.foreignNetLots !== null &&
+          c.foreignNetLots !== undefined &&
+          c.foreignNetLots > 0 &&
+          c.day2TrustLots > 0,
+        consecutiveTrustDays: c.consecutiveTrustDays ?? 0,
+        foreignNetLots: c.foreignNetLots !== undefined ? c.foreignNetLots : null,
         trustNetLots: c.day2TrustLots,
-        dealerNetLots: 0,
+        dealerNetLots: c.dealerNetLots !== undefined ? c.dealerNetLots : null,
         isMatched,
         isIntradaySignal,
         isVerifiedByTrust: !isIntraday,
@@ -2369,7 +2455,7 @@ async function fetchBrokerTrading(symbol: string, currentPrice: number) {
 
       const majorBuyLots = buyMatch ? parseInt(buyMatch[1].replace(/,/g, ''), 10) : 0;
       const majorSellLots = sellMatch ? parseInt(sellMatch[1].replace(/,/g, ''), 10) : 0;
-      const majorNetLots = majorBuyLots + majorSellLots;
+      const majorNetLots = majorBuyLots - Math.abs(majorSellLots);
       const volumeRate = rateMatch ? parseFloat(rateMatch[1]) : 0;
 
       // Table rows
@@ -2434,20 +2520,34 @@ async function fetchBrokerTrading(symbol: string, currentPrice: number) {
         let sentimentLabel = '多空分歧・換手整理';
         let analysis = '前5大成交主力券商多空買賣互見，買賣超張數均勻分布，籌碼處於換手整理階段。';
 
-        if (majorNetLots > 0 || netTop5Amount > 0) {
+        if (majorNetLots < 0) {
+          sentiment = 'BEARISH';
+          const topSeller = topSellBrokers[0]?.name || '主力券商';
+          sentimentLabel = '⚠️ 主力逢高減碼調節出脫（空方警示）';
+          analysis = `主力分點呈現淨賣超 ${Math.abs(majorNetLots).toLocaleString()} 張，前5大成交分點合計淨賣超 ${formatMoney(
+            Math.abs(netTop5Amount)
+          )}，以「${topSeller}」為首之主力出現逢高調節賣壓，主力買賣超佔比達 ${volumeRate}%，需嚴密關注 20MA 防守點位支撐力道。`;
+        } else if (majorNetLots > 0) {
           sentiment = 'BULLISH';
           const topBuyer = topBuyBrokers[0]?.name || '主力大戶';
           sentimentLabel = '🎯 主力大戶積極佈局買超';
-          analysis = `前5大成交分點合計淨買超 ${formatMoney(
+          analysis = `主力分點淨買超 ${majorNetLots.toLocaleString()} 張，前5大成交分點合計淨買超 ${formatMoney(
             netTop5Amount
           )}，以「${topBuyer}」為首等主力積極吸籌，主力買賣超佔比達 ${volumeRate}%，籌碼具備波段向上推升動能。`;
-        } else if (majorNetLots < 0 || netTop5Amount < 0) {
+        } else if (netTop5Amount < 0) {
           sentiment = 'BEARISH';
           const topSeller = topSellBrokers[0]?.name || '主力券商';
-          sentimentLabel = '⚠️ 主力逢高減碼調節出脫';
+          sentimentLabel = '⚠️ 前5大分點調節出脫（空方警示）';
           analysis = `前5大成交分點合計淨賣超 ${formatMoney(
+            Math.abs(netTop5Amount)
+          )}，以「${topSeller}」為首之主力呈現逢高調節出脫，需留意 20MA 支撐。`;
+        } else if (netTop5Amount > 0) {
+          sentiment = 'BULLISH';
+          const topBuyer = topBuyBrokers[0]?.name || '主力大戶';
+          sentimentLabel = '🎯 前5大分點偏多佈局';
+          analysis = `前5大成交分點合計淨買超 ${formatMoney(
             netTop5Amount
-          )}，以「${topSeller}」為首之主力出現逢高調節賣壓，需嚴密關注 20MA 防守點位支撐力道。`;
+          )}，以「${topBuyer}」為首主力偏多佈局。`;
         }
 
         const data = {

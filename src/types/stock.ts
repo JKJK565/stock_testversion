@@ -72,9 +72,9 @@ export interface ScreenerStockItem {
   isOverheated: boolean; // bias20ma > 10%
   isMajorLocked: boolean; // foreignNet > 0 && trustNet > 0
   consecutiveTrustDays: number; // 投信連續買超天數
-  foreignNetLots: number; // 外資今日買賣超 (張)
+  foreignNetLots: number | null; // 外資今日買賣超 (張，無數據時為 null，嚴禁偽造為 0)
   trustNetLots: number; // 投信今日買賣超 (張)
-  dealerNetLots: number; // 自營商今日買賣超 (張)
+  dealerNetLots: number | null; // 自營商今日買賣超 (張，無數據時為 null，嚴禁偽造為 0)
   // 波段交易策略錨定
   isMatched: boolean; // 完全符合條件
   isIntradaySignal?: boolean; // 🟢 盤中即時進場訊號
