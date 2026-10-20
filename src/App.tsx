@@ -1748,12 +1748,16 @@ export default function App() {
                                 }`}
                               >
                                 <div className="text-[10px] text-slate-500 mb-0.5">投信籌碼</div>
-                                <div className="font-bold">
-                                  {stock.isVerifiedByTrust
-                                    ? '投信正式大買認養'
-                                    : stock.consecutiveTrustDays > 0
-                                    ? `連 ${stock.consecutiveTrustDays} 日買超認養`
-                                    : '投信買超認養'}
+                                <div className="font-bold flex items-center justify-between">
+                                  <span>
+                                    {stock.consecutiveTrustDays > 0
+                                      ? `連 ${stock.consecutiveTrustDays} 日買超`
+                                      : '今日買超'}
+                                  </span>
+                                  <span className="font-mono text-rose-400 font-extrabold ml-1">
+                                    {stock.trustNetLots > 0 ? '+' : ''}
+                                    {stock.trustNetLots.toLocaleString()} 張
+                                  </span>
                                 </div>
                               </div>
 
@@ -1789,14 +1793,40 @@ export default function App() {
                               </div>
                             ) : null}
 
-                            {/* 三大法人當日籌碼買賣超 */}
-                            <div className="mt-3 px-3.5 py-2.5 rounded-2xl bg-slate-950/70 border border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
-                              <span className="text-[11px] font-semibold text-slate-400">三大法人籌碼</span>
-                              <div className="flex flex-wrap items-center gap-3 font-mono">
-                                <span>
-                                  <span className="text-slate-500 mr-1 font-sans">外資</span>
+                            {/* 三大法人當日籌碼買賣超與土洋對策 */}
+                            <div className="mt-3 p-3 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-2 text-xs">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[11px] font-semibold text-slate-400">法人籌碼走向</span>
+                                  {stock.foreignNetLots !== null && stock.foreignNetLots > 0 && stock.trustNetLots > 0 ? (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5 animate-pulse">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                                      土洋同步作多
+                                    </span>
+                                  ) : stock.foreignNetLots !== null && stock.foreignNetLots < 0 && stock.trustNetLots > 0 ? (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1.5">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                                      外資對作調節
+                                    </span>
+                                  ) : stock.trustNetLots > 0 ? (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                                      投信單獨認養
+                                    </span>
+                                  ) : null}
+                                </div>
+
+                                {stock.consecutiveTrustDays > 0 && (
+                                  <span className="text-[10px] text-purple-300 font-mono">
+                                    連 {stock.consecutiveTrustDays} 日買超
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="grid grid-cols-3 gap-2 pt-1 font-mono text-center">
+                                <div className="p-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80">
+                                  <span className="text-[10px] text-slate-500 block font-sans">外資買賣超</span>
                                   <strong
-                                    className={
+                                    className={`text-xs block font-bold ${
                                       stock.foreignNetLots === null
                                         ? 'text-slate-500 font-normal'
                                         : stock.foreignNetLots > 0
@@ -1804,32 +1834,34 @@ export default function App() {
                                         : stock.foreignNetLots < 0
                                         ? 'text-emerald-400'
                                         : 'text-slate-300'
-                                    }
+                                    }`}
                                   >
                                     {stock.foreignNetLots !== null
                                       ? `${stock.foreignNetLots > 0 ? '+' : ''}${stock.foreignNetLots.toLocaleString()} 張`
                                       : '無數據'}
                                   </strong>
-                                </span>
-                                <span>
-                                  <span className="text-slate-500 mr-1 font-sans">投信</span>
+                                </div>
+
+                                <div className="p-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80">
+                                  <span className="text-[10px] text-slate-500 block font-sans">投信買賣超</span>
                                   <strong
-                                    className={
+                                    className={`text-xs block font-bold ${
                                       stock.trustNetLots > 0
                                         ? 'text-rose-400'
                                         : stock.trustNetLots < 0
                                         ? 'text-emerald-400'
                                         : 'text-slate-300'
-                                    }
+                                    }`}
                                   >
                                     {stock.trustNetLots > 0 ? '+' : ''}
                                     {stock.trustNetLots.toLocaleString()} 張
                                   </strong>
-                                </span>
-                                <span>
-                                  <span className="text-slate-500 mr-1 font-sans">自營商</span>
+                                </div>
+
+                                <div className="p-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80">
+                                  <span className="text-[10px] text-slate-500 block font-sans">自營商</span>
                                   <strong
-                                    className={
+                                    className={`text-xs block font-bold ${
                                       stock.dealerNetLots === null
                                         ? 'text-slate-500 font-normal'
                                         : stock.dealerNetLots > 0
@@ -1837,13 +1869,13 @@ export default function App() {
                                         : stock.dealerNetLots < 0
                                         ? 'text-emerald-400'
                                         : 'text-slate-300'
-                                    }
+                                    }`}
                                   >
                                     {stock.dealerNetLots !== null
                                       ? `${stock.dealerNetLots > 0 ? '+' : ''}${stock.dealerNetLots.toLocaleString()} 張`
                                       : '無數據'}
                                   </strong>
-                                </span>
+                                </div>
                               </div>
                             </div>
 

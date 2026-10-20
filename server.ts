@@ -341,13 +341,102 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
   }
 }
 
+const STOCK_INFO_CACHE_FILE = path.join(process.cwd(), '.cached_stock_info.json');
+
+export interface StockInfoItem {
+  name: string;
+  industry: string;
+  type?: string;
+}
+
+const taiwanStockInfoMap = new Map<string, StockInfoItem>();
+
+// Load from local file synchronously on module init
+function loadLocalStockInfoCache() {
+  try {
+    if (fs.existsSync(STOCK_INFO_CACHE_FILE)) {
+      const raw = fs.readFileSync(STOCK_INFO_CACHE_FILE, 'utf-8');
+      const obj = JSON.parse(raw);
+      for (const [code, item] of Object.entries(obj)) {
+        if (item && typeof item === 'object') {
+          taiwanStockInfoMap.set(code, item as StockInfoItem);
+        }
+      }
+      console.log(`[StockInfo] Loaded ${taiwanStockInfoMap.size} stock infos from local cache.`);
+    }
+  } catch (err) {
+    console.warn('[StockInfo] Failed to load local cache file:', err);
+  }
+}
+
+// Initial load immediately
+loadLocalStockInfoCache();
+
+/**
+ * 於伺服器啟動或快取不足時，呼叫 FinMind 的 TaiwanStockInfo 資料集，
+ * 一次性建立全台股（上市 + 上櫃共 1,800+ 檔）的名稱與產業字典映射並存入本地快取。
+ */
+async function initTaiwanStockInfo(forceRefresh = false): Promise<void> {
+  if (!forceRefresh && taiwanStockInfoMap.size >= 1500) {
+    return;
+  }
+  try {
+    const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo&token=${FINMIND_TOKEN}`;
+    console.log('[StockInfo] Fetching TaiwanStockInfo dataset from FinMind...');
+    const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 12000);
+    if (res.ok) {
+      const json = await res.json();
+      if (json.status === 200 && Array.isArray(json.data) && json.data.length > 0) {
+        const cacheObj: Record<string, StockInfoItem> = {};
+        for (const item of json.data) {
+          if (item.stock_id && item.stock_name) {
+            const info: StockInfoItem = {
+              name: item.stock_name,
+              industry: item.industry_category || '其他',
+              type: item.type || '',
+            };
+            taiwanStockInfoMap.set(item.stock_id, info);
+            cacheObj[item.stock_id] = info;
+          }
+        }
+        fs.writeFileSync(STOCK_INFO_CACHE_FILE, JSON.stringify(cacheObj, null, 2), 'utf-8');
+        console.log(`[StockInfo] Successfully mapped and cached ${taiwanStockInfoMap.size} Taiwan stocks.`);
+      }
+    }
+  } catch (err) {
+    console.error('[StockInfo] Failed to fetch TaiwanStockInfo from FinMind:', err);
+  }
+}
+
+/**
+ * 取得個股中文名稱（優先查全台股字典，嚴禁出現「股票xxxx」）
+ */
+function getStockName(code: string, fallback?: string): string {
+  const info = taiwanStockInfoMap.get(code);
+  if (info && info.name) return info.name;
+  if (fallback && !fallback.startsWith('股票') && fallback.trim().length > 0) return fallback.trim();
+  return fallback || code;
+}
+
+/**
+ * 取得個股官方真實產業類別
+ */
+function getStockOfficialIndustry(code: string): string {
+  const info = taiwanStockInfoMap.get(code);
+  if (info && info.industry) return info.industry;
+  return '';
+}
+
 /**
  * 產業黑名單直接排除機制（嚴禁牛皮存股、電信業與金融公用事業）：
  * 1. 🚫 嚴禁出現「電信三雄」（2412 中華電、3045 台灣大、4904 遠傳）及純電信網路服務業。
  * 2. 🚫 嚴禁出現金融保險業（28xx、58xx、金控、銀行、證券、保險、期貨）。
  * 3. 🚫 嚴禁出現公用事業、油電燃氣（如 9908 大台北、8926 台汽電等低波動防守型定存股）。
  */
-function isBlacklistedStock(code: string, name: string): boolean {
+function isBlacklistedStock(code: string, rawName?: string): boolean {
+  const name = getStockName(code, rawName);
+  const officialIndustry = getStockOfficialIndustry(code);
+
   // 1. 🚫 嚴禁出現「電信三雄」（2412 中華電、3045 台灣大、4904 遠傳）及純電信網路服務業
   const telecomCodes = new Set(['2412', '3045', '4904', '3682', '4906', '6145', '8171']);
   if (telecomCodes.has(code)) return true;
@@ -356,6 +445,7 @@ function isBlacklistedStock(code: string, name: string): boolean {
   // 2. 🚫 嚴禁出現金融保險業（28xx、58xx 及相關金控/銀行/證券/人壽/產險/保險/期貨/票券）
   if (code.startsWith('28') || code.startsWith('58')) return true;
   if (/金控|銀行|證券|人壽|產險|保險|期貨|票券|產物|金融/.test(name)) return true;
+  if (/金融保險業/.test(officialIndustry)) return true;
 
   // 3. 🚫 嚴禁出現公用事業、油電燃氣（如 9908 大台北、8926 台汽電等低波動防守型定存股）
   const utilityCodes = new Set([
@@ -363,12 +453,13 @@ function isBlacklistedStock(code: string, name: string): boolean {
   ]);
   if (utilityCodes.has(code)) return true;
   if (/瓦斯|天然氣|電力|汽電|油電|公用事業|自來水|加油站|電廠|水資源|環保處理/.test(name)) return true;
+  if (/油電燃氣業|公用事業/.test(officialIndustry)) return true;
 
   return false;
 }
 
 // 兼容舊函數調用
-function isFinancialStock(code: string, name: string): boolean {
+function isFinancialStock(code: string, name?: string): boolean {
   return isBlacklistedStock(code, name);
 }
 
@@ -379,8 +470,12 @@ function isFinancialStock(code: string, name: string): boolean {
  * 3. CPO 矽光子與高速光通訊
  * 4. 重電電網與儲能綠能
  * 5. 具備低基期轉型爆發之利基型傳產/電子（如 1303 南亞等業績脫離谷底股）
+ * 6. 若非白名單，優先依 TaiwanStockInfo 之真實官方產業分類，絕不捏造或誤判
  */
-function getStockIndustryTheme(code: string, name: string): { industryTheme: string; isPriorityWhiteList: boolean } {
+function getStockIndustryTheme(code: string, rawName?: string): { industryTheme: string; isPriorityWhiteList: boolean } {
+  const name = getStockName(code, rawName);
+  const officialIndustry = getStockOfficialIndustry(code);
+
   // 1. AI 硬體周邊（散熱、機殼、滑軌、電源、AI伺服器）
   const aiHardwareCodes = new Set([
     '3017', '3324', '3653', '2421', '3016', '3483', '6230', // 散熱
@@ -427,59 +522,29 @@ function getStockIndustryTheme(code: string, name: string): { industryTheme: str
   }
 
   // -------------------------------------------------------------------------
-  // 第二層（官方真實產業自動反查）：
-  // 若該股未列於上述 5 大熱門題材，嚴禁回傳空泛的「波段潛力成長」，
-  // 依據台股官方代碼前兩碼區段自動反查其「真實官方產業類別」
+  // 第二層：非白名單股票，直接採用官方真實產業類別（由 TaiwanStockInfo 提供）
   // -------------------------------------------------------------------------
+  if (officialIndustry) {
+    return { industryTheme: officialIndustry, isPriorityWhiteList: false };
+  }
+
+  // 第三層備援：若官方產業暫缺，依代碼前兩碼區段分類
   const prefix2 = code.substring(0, 2);
+  if (prefix2 === '11') return { industryTheme: '水泥工業', isPriorityWhiteList: false };
+  if (prefix2 === '12') return { industryTheme: '食品工業', isPriorityWhiteList: false };
+  if (prefix2 === '13') return { industryTheme: '塑膠工業', isPriorityWhiteList: false };
+  if (prefix2 === '14') return { industryTheme: '紡織纖維業', isPriorityWhiteList: false };
+  if (prefix2 === '15') return { industryTheme: '電機機械業', isPriorityWhiteList: false };
+  if (prefix2 === '16') return { industryTheme: '電器電纜業', isPriorityWhiteList: false };
+  if (prefix2 === '17' || prefix2 === '47') return { industryTheme: '化學生技業', isPriorityWhiteList: false };
+  if (prefix2 === '20') return { industryTheme: '鋼鐵工業', isPriorityWhiteList: false };
+  if (prefix2 === '22') return { industryTheme: '汽車工業', isPriorityWhiteList: false };
+  if (prefix2 === '23' || prefix2 === '24') return { industryTheme: '半導體與電腦週邊', isPriorityWhiteList: false };
+  if (prefix2 === '26') return { industryTheme: '航運物流業', isPriorityWhiteList: false };
+  if (prefix2 === '30' || prefix2 === '34' || prefix2 === '64') return { industryTheme: '光電與零組件業', isPriorityWhiteList: false };
+  if (prefix2 === '31' || prefix2 === '35' || prefix2 === '61' || prefix2 === '62') return { industryTheme: '上櫃電子與半導體', isPriorityWhiteList: false };
+  if (prefix2 === '80' || prefix2 === '82') return { industryTheme: '資訊服務與電子通路', isPriorityWhiteList: false };
 
-  if (prefix2 === '11') {
-    return { industryTheme: '水泥工業', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '12') {
-    return { industryTheme: '食品工業', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '13') {
-    return { industryTheme: '塑膠工業', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '14') {
-    return { industryTheme: '紡織纖維業', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '15') {
-    return { industryTheme: '電機機械業', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '16') {
-    return { industryTheme: '電器電纜業', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '17' || prefix2 === '47') {
-    return { industryTheme: '化學生技業', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '18' || prefix2 === '25' || prefix2 === '55') {
-    return { industryTheme: '建材營造業', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '20') {
-    return { industryTheme: '鋼鐵工業', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '22') {
-    return { industryTheme: '汽車工業', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '23' || prefix2 === '24') {
-    return { industryTheme: '半導體與電腦週邊', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '26') {
-    return { industryTheme: '航運物流業', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '30' || prefix2 === '34' || prefix2 === '64') {
-    return { industryTheme: '光電與零組件業', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '31' || prefix2 === '35' || prefix2 === '61' || prefix2 === '62') {
-    return { industryTheme: '上櫃電子與半導體', isPriorityWhiteList: false };
-  }
-  if (prefix2 === '80' || prefix2 === '82') {
-    return { industryTheme: '資訊服務與電子通路', isPriorityWhiteList: false };
-  }
-
-  // 其餘代碼回傳官方電子或相關類別
   return { industryTheme: '電子零組件業', isPriorityWhiteList: false };
 }
 
@@ -1502,7 +1567,7 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
           if (day2Trust <= 0 && totalTrust <= 0) continue;
 
           const q = marketQuotes.get(code);
-          const name = q?.name || `股票${code}`;
+          const name = getStockName(code, q?.name);
           if (isFinancialStock(code, name)) continue;
 
           // 計算投信連續買超天數 (consecutiveTrustDays)，真實依序往前回推
@@ -1868,7 +1933,7 @@ async function fetchAllMarketLatestRevenue(): Promise<MarketRevenueSnapshot[]> {
         const yoy = Number(r.revenue_yoy || r.YoY || 0);
         map.set(r.stock_id, {
           code: r.stock_id,
-          name: r.name || `股票${r.stock_id}`,
+          name: getStockName(r.stock_id, r.name),
           revenueYoY: yoy,
           revenue: rev,
           revenueMonth: Number(r.revenue_month || d.getMonth() + 1),
@@ -1890,7 +1955,7 @@ async function fetchAllMarketLatestRevenue(): Promise<MarketRevenueSnapshot[]> {
         const list: MarketRevenueSnapshot[] = [];
         for (const item of data) {
           const code = item['公司代號'];
-          const name = item['公司名稱'] || `股票${code}`;
+          const name = getStockName(code, item['公司名稱']);
           if (!/^[1-9][0-9]{3}$/.test(code)) continue;
           const yoy = parseFloat(item['營業收入-去年同月增減(%)'] || '0');
           const rev = parseFloat(item['營業收入-當月營收'] || '0');
@@ -2604,11 +2669,12 @@ app.get('/api/market/quotes', async (req: Request, res: Response) => {
       const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
 
       // 取得產業主題標籤
-      const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(code, q?.name || `股票${code}`);
+      const stockName = getStockName(code, q?.name);
+      const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(code, stockName);
 
       return {
         symbol: code,
-        name: q?.name || `股票${code}`,
+        name: stockName,
         price: curPrice,
         change,
         changePercent,
@@ -2672,7 +2738,7 @@ app.get('/api/stocks/:symbol', async (req: Request, res: Response) => {
     const prevClose = misQuote?.prevClose || (prices.length >= 2 ? Number(prices[prices.length - 2].close) : curPrice);
     const change = Number((curPrice - prevClose).toFixed(2));
     const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
-    const name = misQuote?.name || `股票${symbol}`;
+    const name = getStockName(symbol, misQuote?.name);
 
     // 均線與量化技術指標
     let ma5 = curPrice;
@@ -2748,6 +2814,9 @@ app.get('/api/health', (_req: Request, res: Response) => {
 
 // Start Server and Mount Vite
 async function startServer() {
+  // 啟動時一次性健全全台股字典映射（上市與上櫃股票中文名稱與真實產業類別）
+  initTaiwanStockInfo().catch((e) => console.error('[StockInfo] Init error:', e));
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
