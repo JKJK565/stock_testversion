@@ -586,6 +586,49 @@ function calculateATR20Pct(
   return { atr20, atrPct };
 }
 
+/**
+ * 精確均線計算（正確區分盤中即時現價納入 vs 盤後官方收盤結算）：
+ * - 盤中時（09:00~13:30）：歷史日K基準為昨日，MA = (昨日以前 period-1 日收盤 + 當前即時現價) / period
+ * - 盤後時（15:30 後）：若 FinMind 已入庫當日收盤價，直接取最新 period 日收盤價平均，嚴禁重複加算現價！
+ */
+function calculateMovingAverage(
+  history: number[],
+  period: number,
+  curPrice: number,
+  isIntraday: boolean,
+  lastDataDate?: string,
+  todayDate?: string
+): number {
+  if (!history || history.length === 0) return curPrice;
+
+  // 檢查歷史資料末尾是否已經是今日 (todayDate) 的官方收盤價
+  const hasTodayInHistory = Boolean(lastDataDate && todayDate && lastDataDate === todayDate);
+
+  if (isIntraday) {
+    // 🟢 盤中即時模式（09:00~13:30）：
+    // 若歷史末尾已包含今日，排除末尾取前一日以前；否則直接取歷史最後 (period - 1) 天加上即時現價
+    const baseHistory = hasTodayInHistory ? history.slice(0, -1) : history;
+    const slice = baseHistory.slice(-(period - 1));
+    const sum = slice.reduce((a, b) => a + b, 0) + curPrice;
+    const count = slice.length + 1;
+    return Number((sum / count).toFixed(2));
+  } else {
+    // 🔵 盤後結算模式（15:30 後）：
+    if (hasTodayInHistory) {
+      // 官方收盤已入庫：直接取最新 period 日收盤價平均，絕不重複疊加現價
+      const slice = history.slice(-period);
+      const sum = slice.reduce((a, b) => a + b, 0);
+      return Number((sum / slice.length).toFixed(2));
+    } else {
+      // 若當日收盤尚未入庫：取歷史最新 (period - 1) 天加上當日收盤現價
+      const slice = history.slice(-(period - 1));
+      const sum = slice.reduce((a, b) => a + b, 0) + curPrice;
+      const count = slice.length + 1;
+      return Number((sum / count).toFixed(2));
+    }
+  }
+}
+
 // 1. Fetch Realtime TAIEX & TPEx from Taiwan Stock Exchange Official MIS API
 // https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw|otc_o00.tw
 async function fetchRealtimeTWSEIndices(): Promise<{
@@ -1454,7 +1497,8 @@ const STOCK_KLINE_CACHE_FILE = path.join(process.cwd(), '.cached_stock_klines.js
 
 interface CachedStockKline {
   code: string;
-  date: string;
+  date: string; // 今天日期 (todayTaipeiDate)
+  lastDataDate?: string; // 歷史資料中最後一筆K線交易日 (例如 '2026-10-20')
   closes: number[];
   highs?: number[];
   lows?: number[];
@@ -1481,11 +1525,18 @@ function loadKlineCache() {
 async function getStockHistoricalKlines(
   code: string,
   todayTaipeiDate: string
-): Promise<{ closes: number[]; highs?: number[]; lows?: number[]; volumes: number[] } | null> {
+): Promise<{ closes: number[]; highs?: number[]; lows?: number[]; volumes: number[]; lastDataDate?: string } | null> {
   loadKlineCache();
   const cached = memoryKlineCache.get(code);
-  if (cached && cached.closes && cached.closes.length >= 20) {
-    return { closes: cached.closes, highs: cached.highs, lows: cached.lows, volumes: cached.volumes };
+  // 【核心修復 1】：必須嚴格驗證 cached.date === todayTaipeiDate，絕不使用過期的舊收盤價
+  if (cached && cached.date === todayTaipeiDate && cached.closes && cached.closes.length >= 20) {
+    return {
+      closes: cached.closes,
+      highs: cached.highs,
+      lows: cached.lows,
+      volumes: cached.volumes,
+      lastDataDate: cached.lastDataDate,
+    };
   }
 
   // Fetch 90 days from FinMind
@@ -1498,11 +1549,13 @@ async function getStockHistoricalKlines(
     const kJson = await kRes.json();
     const rows = Array.isArray(kJson?.data) ? kJson.data : [];
     if (rows.length >= 20) {
+      const lastRow = rows[rows.length - 1];
+      const lastDataDate = lastRow?.date || '';
       const closes = rows.map((r: any) => Number(r.close));
       const highs = rows.map((r: any) => Number(r.max || r.close));
       const lows = rows.map((r: any) => Number(r.min || r.close));
       const volumes = rows.map((r: any) => Math.round(Number(r.Trading_Volume || 0) / 1000));
-      const entry: CachedStockKline = { code, date: todayTaipeiDate, closes, highs, lows, volumes };
+      const entry: CachedStockKline = { code, date: todayTaipeiDate, lastDataDate, closes, highs, lows, volumes };
       memoryKlineCache.set(code, entry);
 
       try {
@@ -1511,7 +1564,7 @@ async function getStockHistoricalKlines(
         fs.writeFileSync(STOCK_KLINE_CACHE_FILE, JSON.stringify(obj), 'utf-8');
       } catch (err) {}
 
-      return { closes, highs, lows, volumes };
+      return { closes, highs, lows, volumes, lastDataDate };
     }
   } catch (err) {
     console.error(`Error fetching historical klines for ${code}:`, err);
@@ -1738,16 +1791,10 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
       const curVolumeLots =
         misQuote?.volumeLots !== undefined ? misQuote.volumeLots : histVolumes[histVolumes.length - 1];
 
-      // 計算最新均線（納入即時現價）
-      const calcMAWithCur = (history: number[], period: number) => {
-        const slice = history.slice(-(period - 1));
-        const sum = slice.reduce((a, b) => a + b, 0) + curClose;
-        return Number((sum / period).toFixed(2));
-      };
-
-      const ma5 = calcMAWithCur(histCloses, 5);
-      const ma10 = calcMAWithCur(histCloses, 10);
-      const ma20 = calcMAWithCur(histCloses, 20);
+      // 計算最新均線（精準區分盤中即時 vs 盤後結算，防止重複疊加）
+      const ma5 = calculateMovingAverage(histCloses, 5, curClose, isIntraday, klines.lastDataDate, todayTaipeiDate);
+      const ma10 = calculateMovingAverage(histCloses, 10, curClose, isIntraday, klines.lastDataDate, todayTaipeiDate);
+      const ma20 = calculateMovingAverage(histCloses, 20, curClose, isIntraday, klines.lastDataDate, todayTaipeiDate);
 
       const weeklyLow = Math.min(...histCloses.slice(-5), curClose);
       const bias20ma = ma20 > 0 ? Number((((curClose - ma20) / ma20) * 100).toFixed(2)) : 0;
@@ -1986,6 +2033,7 @@ interface TurnaroundStockHistory {
   code: string;
   name?: string;
   date: string;
+  lastDataDate?: string;
   closes: number[];
   highs: number[];
   lows: number[];
@@ -2095,6 +2143,8 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
           const rows = Array.isArray(pJson?.data) ? pJson.data : [];
 
           if (rows.length >= 50) {
+            const lastRow = rows[rows.length - 1];
+            const lastDataDate = lastRow?.date || '';
             const closes = rows.map((r: any) => Number(r.close));
             const highs = rows.map((r: any) => Number(r.max || r.close));
             const lows = rows.map((r: any) => Number(r.min || r.close));
@@ -2118,6 +2168,7 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
               code: item.code,
               name: item.name,
               date: todayTaipeiDate,
+              lastDataDate,
               closes,
               highs,
               lows,
@@ -2160,17 +2211,20 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
       const range = yearHigh - yearLow;
       const positionPct = range > 0 ? Number((((curPrice - yearLow) / range) * 100).toFixed(1)) : 50;
 
-      // 位階條件：位階 = (現價 - 年最低) / (年最高 - 年最低) < 0.35（確認處於低檔區間）
-      const isLowBase = positionPct < 35.0;
+      // 位階條件：位階 = (現價 - 年最低) / (年最高 - 年最低) <= 35%（確認處於低檔區間）
+      const isLowBase = positionPct <= 35.0;
 
-      // 剛性安全閥：
-      // 1. 計算最新 20MA（納入即時現價）
-      const ma20 = Number(((cached.closes.slice(-19).reduce((a, b) => a + b, 0) + curPrice) / 20).toFixed(2));
-      // 2. 計算前一日 20MA 檢視均線走勢
-      const prevMa20 = Number((cached.closes.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(2));
-      // 3. 現價必須站上 20MA
+      // 剛性安全閥（精確區分盤中即時 vs 盤後結算，防止重複疊加現價）：
+      const isIntraday = marketStatus.isIntradayTrading;
+      const ma20 = calculateMovingAverage(cached.closes, 20, curPrice, isIntraday, cached.lastDataDate, todayTaipeiDate);
+      
+      // 計算前一日 20MA 檢視均線走勢
+      const hasToday = Boolean(cached.lastDataDate && todayTaipeiDate && cached.lastDataDate === todayTaipeiDate);
+      const prevHistory = hasToday ? cached.closes.slice(0, -1) : cached.closes;
+      const prevMa20 = calculateMovingAverage(prevHistory, 20, prevHistory[prevHistory.length - 1] || curPrice, false);
+
+      // 現價必須站上 20MA 且 20MA 走平或微揚（排除向下破底弱勢股）
       const isAboveMa20 = curPrice >= ma20;
-      // 4. 20MA 走平或微揚（排除向下破底的死魚股）
       const isMa20FlatOrRising = ma20 >= prevMa20 * 0.995;
       const isSafeBottom = isAboveMa20 && isMa20FlatOrRising;
 
@@ -2193,16 +2247,31 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
       const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
       const updateTime = item.time || marketStatus.timeString;
 
+      // 【核心修復 2】：動態生成 20MA 均線與打底狀態文案（嚴禁寫死「突破 20MA 打底完成」）
+      const maStatus = !isAboveMa20
+        ? `現價(${curPrice}元)仍在 20MA(${ma20}元)之下弱勢整理，尚未打底轉強`
+        : isMa20FlatOrRising
+        ? `現價(${curPrice}元)站上 20MA(${ma20}元)打底成型且均線走平翻揚`
+        : `現價(${curPrice}元)站上 20MA(${ma20}元)，但 20MA 仍處扣高下彎整理中`;
+
+      const posStatus = isLowBase
+        ? `近一年處於 ${positionPct}% 低檔基期`
+        : `近一年位階達 ${positionPct}% (超過 35% 低基期門檻)`;
+
+      const catalyst = `${industryTheme}，最新單月營收年增達 +${cached.revenueYoY}%，${posStatus}，${maStatus}。`;
+
       let actionNote = '';
       if (isTurnaroundMatched) {
         actionNote = `💎全市場動態轉型精選：位階處於近一年 ${positionPct}% 低檔、單月營收 YoY +${cached.revenueYoY}% 脫離谷底、股價站上20MA(${ma20}元)且均線微揚、5日均量 ${volumeAvg5d} 張 [ATR% ${atrPct}%]`;
-      } else if (isLowBase && isAboveMa20) {
-        actionNote = `位階 ${positionPct}% 低檔且站上20MA(${ma20}元)，待量能突破放大與均線翻揚 [ATR% ${atrPct}%]`;
+      } else if (!isLowBase) {
+        actionNote = `⚠️位階 ${positionPct}% 超過 35% 低檔安全閥值，且${maStatus}，未達價值轉型標準 [ATR% ${atrPct}%]`;
+      } else if (!isAboveMa20) {
+        actionNote = `⚠️現價仍在 20MA(${ma20}元)之下弱勢整理，尚未打底轉強，切勿提早進場摸底 [ATR% ${atrPct}%]`;
+      } else if (!isMa20FlatOrRising) {
+        actionNote = `位階 ${positionPct}% 低檔且站上20MA(${ma20}元)，但20MA尚未走平翻揚，持續觀察打底進度 [ATR% ${atrPct}%]`;
       } else {
         actionNote = `低檔打底整理中，建議以 20MA 防守價 ${ma20} 元為停損標準 [ATR% ${atrPct}%]`;
       }
-
-      const catalyst = `${industryTheme}，最新單月營收年增達 +${cached.revenueYoY}%，近一年處於 ${positionPct}% 低檔基期，突破 20MA 打底完成。`;
 
       const turnaroundItem: TurnaroundStockItem = {
         symbol: item.code,
@@ -2752,15 +2821,15 @@ app.get('/api/stocks/:symbol', async (req: Request, res: Response) => {
       const histHighs = prices.map((p: any) => Number(p.max || p.close));
       const histLows = prices.map((p: any) => Number(p.min || p.close));
 
-      const calcMA = (period: number) => {
-        const slice = histCloses.slice(-(period - 1));
-        const sum = slice.reduce((a: number, b: number) => a + b, 0) + curPrice;
-        return Number((sum / period).toFixed(2));
-      };
+      const lastPriceRow = prices[prices.length - 1];
+      const lastPriceDate = lastPriceRow?.date || '';
+      const marketStatus = getTaipeiMarketStatus();
+      const isIntraday = marketStatus.isIntradayTrading;
+      const todayDate = marketStatus.dateString;
 
-      ma5 = calcMA(5);
-      ma10 = prices.length >= 10 ? calcMA(10) : ma5;
-      ma20 = prices.length >= 20 ? calcMA(20) : ma10;
+      ma5 = calculateMovingAverage(histCloses, 5, curPrice, isIntraday, lastPriceDate, todayDate);
+      ma10 = prices.length >= 10 ? calculateMovingAverage(histCloses, 10, curPrice, isIntraday, lastPriceDate, todayDate) : ma5;
+      ma20 = prices.length >= 20 ? calculateMovingAverage(histCloses, 20, curPrice, isIntraday, lastPriceDate, todayDate) : ma10;
 
       const atrObj = calculateATR20Pct(histCloses, histHighs, histLows, curPrice);
       atr20 = atrObj.atr20;

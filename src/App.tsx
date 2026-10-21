@@ -551,9 +551,7 @@ export default function App() {
     if (!turnaroundData) return [];
     let list =
       screenerTab === 'matched'
-        ? turnaroundData.screenerList.length > 0
-          ? turnaroundData.screenerList
-          : turnaroundData.allStocks
+        ? turnaroundData.screenerList
         : turnaroundData.allStocks;
 
     // 嚴格剔除產業黑名單
@@ -1997,13 +1995,13 @@ export default function App() {
                     ))}
                   </div>
                 ) : displayedTurnaroundStocks.length === 0 ? (
-                  <div className="p-12 text-center rounded-3xl bg-slate-900/50 border border-slate-800 text-slate-400">
-                    <Compass className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-                    <p className="text-base font-medium text-slate-300">
-                      查無符合條件之價值轉型標的。
+                  <div className="p-12 text-center rounded-3xl bg-slate-900/60 border border-slate-800 text-slate-400">
+                    <Compass className="w-12 h-12 text-indigo-400/50 mx-auto mb-3" />
+                    <p className="text-lg font-bold text-slate-200">
+                      今日無符合低基期轉型之安全標的
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">
-                      動態篩選原則：位階 &le; 35%、站上 20MA 且均線走平揚升、單月營收 YoY &gt; 8%、5日均量 &gt; 1,000張。
+                    <p className="text-xs text-slate-400 mt-2 max-w-lg mx-auto leading-relaxed">
+                      系統遵循嚴格量化紀律（近一年位階 &le; 35% 低檔、現價站穩 20MA 且均線走平微揚、單月營收 YoY &ge; 8%、5日均量 &gt; 1,000張、ATR% &ge; 1.8%），絕不濫竽充數推薦未達標標的。
                     </p>
                   </div>
                 ) : (
@@ -2079,8 +2077,8 @@ export default function App() {
                             <div className="mt-3">
                               <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1">
                                 <span>近 1 年股價位階區間</span>
-                                <span className="font-bold text-indigo-300">
-                                  {stock.positionPct}% 低檔區間
+                                <span className={`font-bold ${stock.isLowBase ? 'text-indigo-300' : 'text-amber-400'}`}>
+                                  {stock.positionPct}% {stock.isLowBase ? '低檔安全區間' : '高於35%門檻'}
                                 </span>
                               </div>
                               <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex">
@@ -2132,6 +2130,8 @@ export default function App() {
                                 className={`p-2 rounded-xl border text-xs ${
                                   stock.isSafeBottom
                                     ? 'bg-purple-500/10 border-purple-500/30 text-purple-300'
+                                    : stock.price < stock.stopLossPrice
+                                    ? 'bg-rose-950/25 border-rose-800/40 text-rose-300'
                                     : 'bg-slate-950 border-slate-800 text-slate-400'
                                 }`}
                               >
@@ -2139,7 +2139,11 @@ export default function App() {
                                   20MA 剛性安全閥
                                 </div>
                                 <div className="font-bold">
-                                  {stock.isSafeBottom ? '站上20MA微揚' : '均線打底中'}
+                                  {stock.isSafeBottom
+                                    ? '站上20MA微揚'
+                                    : stock.price < stock.stopLossPrice
+                                    ? '跌破20MA弱勢'
+                                    : '均線整理中'}
                                 </div>
                               </div>
 
