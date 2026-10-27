@@ -145,7 +145,7 @@ export interface TurnaroundStockItem {
   positionLabel: string;
   latestRevenueMonth: number;
   revenueYoY: number;
-  eps4Q: number;
+  eps4Q: number | null;
   isProfitable: boolean;
   isRevGrowing: boolean;
   isLowBase: boolean;
@@ -1528,7 +1528,7 @@ async function fetchDayMargin(dateStr: string): Promise<Map<string, DayMarginDat
           for (const row of rows) {
             const code = String(row[0] || '').trim();
             if (!/^[1-9][0-9]{3}$/.test(code)) continue;
-            const prevBalance = parseInt(String(row[5] || '0').replace(/,/g, ''), 10) || 0;
+            const prevBalance = parseInt(String(row[2] || '0').replace(/,/g, ''), 10) || 0;
             const todayBalance = parseInt(String(row[6] || '0').replace(/,/g, ''), 10) || 0;
             const changeLots = todayBalance - prevBalance;
             map.set(code, { todayBalance, prevBalance, changeLots });
@@ -1856,6 +1856,27 @@ async function fetchBatchTWSEMisQuotes(
   return map;
 }
 
+/**
+ * 早盤 U 型成交量預估分段權重校正：
+ * 台股 09:00~09:30 開盤成交量極大，單純 (v/elapsed)*270 在早盤會高估 2~4 倍。
+ * - elapsed <= 15 (09:00~09:15): Math.round(((curVolumeLots / elapsed) * 270) / 2.2)
+ * - elapsed <= 30 (09:15~09:30): Math.round(((curVolumeLots / elapsed) * 270) / 1.65)
+ * - elapsed <= 60 (09:30~10:00): Math.round(((curVolumeLots / elapsed) * 270) / 1.3)
+ * - elapsed > 60 (10:00 後): Math.round((curVolumeLots / elapsed) * 270)
+ */
+function estimateIntradayVolume(curVolumeLots: number, elapsedMinutes: number): number {
+  const elapsed = Math.max(1, elapsedMinutes);
+  const rawEst = (curVolumeLots / elapsed) * 270;
+  if (elapsed <= 15) {
+    return Math.round(rawEst / 2.2);
+  } else if (elapsed <= 30) {
+    return Math.round(rawEst / 1.65);
+  } else if (elapsed <= 60) {
+    return Math.round(rawEst / 1.3);
+  }
+  return Math.round(rawEst);
+}
+
 interface ScanAllResult {
   allStocks: ScreenerStockItem[];
   matchedList: ScreenerStockItem[];
@@ -1934,10 +1955,9 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
 
       if (isIntraday) {
         // 🟢 盤中即時監控模式：
-        // 開盤經過分鐘數 elapsed = Math.max(1, (當前小時*60 + 當前分鐘) - 540);
-        // 預估全日成交量 estVolume = Math.round((當前累計張數 v / elapsed) * 270);
+        // 早盤 U 型成交量分段權重校正
         const elapsed = marketStatus.elapsed;
-        estVolume = Math.round((curVolumeLots / elapsed) * 270);
+        estVolume = estimateIntradayVolume(curVolumeLots, elapsed);
         estVolumeRatio = volumeAvg5d > 0 ? Number((estVolume / volumeAvg5d).toFixed(2)) : 1.0;
 
         // 盤中即時進場條件：
@@ -2164,7 +2184,7 @@ interface TurnaroundStockHistory {
   volumes?: number[];
   revenueYoY: number;
   latestRevMonth: number;
-  sumEps: number;
+  sumEps: number | null;
 }
 
 const turnaroundHistCache: Map<string, TurnaroundStockHistory> = new Map();
@@ -2275,7 +2295,7 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
             const volumes = rows.map((r: any) => Math.round(Number(r.Trading_Volume || r.volume || 0) / 1000));
 
             // EPS
-            let sumEps = 2.0;
+            let sumEps: number | null = null;
             try {
               const eUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${item.code}&start_date=2025-01-01&token=${FINMIND_TOKEN}`;
               const eRes = await fetchWithTimeout(eUrl, {}, 5000);
@@ -2355,11 +2375,11 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
       // 客觀量化波動度門檻與流動性門檻（維持安全閥 atrPct >= 2.2%，兼顧底部量縮打底特性）
       const isLiquidityPass = volumeAvg5d > 1000;
       const isAtrPass = atrPct >= 2.2;
-      const isProfitable = cached.sumEps > 0;
+      const isProfitable = cached.sumEps !== null && cached.sumEps !== undefined && cached.sumEps > 0;
       const isRevGrowing = cached.revenueYoY >= 8.0;
 
       // 綜合量化驗證符合標準
-      const isTurnaroundMatched = isLowBase && isSafeBottom && isLiquidityPass && isAtrPass;
+      const isTurnaroundMatched = isLowBase && isSafeBottom && isLiquidityPass && isAtrPass && isProfitable && isRevGrowing;
 
       // 建議防守價：20MA 停損價
       const stopLossPrice = ma20;
@@ -2419,7 +2439,7 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
         positionLabel: `處於近一年 ${positionPct}% 低檔區`,
         latestRevenueMonth: cached.latestRevMonth,
         revenueYoY: cached.revenueYoY,
-        eps4Q: Number(cached.sumEps.toFixed(2)),
+        eps4Q: cached.sumEps !== null && cached.sumEps !== undefined ? Number(cached.sumEps.toFixed(2)) : null,
         isProfitable,
         isRevGrowing,
         isLowBase,
@@ -2951,7 +2971,14 @@ async function getWatchlistStockDiagnostics(
 
       const isBrokenMa20 = ma20 > 0 && curPrice < ma20;
       const dropBelowMa20Pct = isBrokenMa20 ? Number((((ma20 - curPrice) / ma20) * 100).toFixed(2)) : 0;
-      const volumeRatio = volumeAvg5d > 0 ? Number((curVolumeLots / volumeAvg5d).toFixed(2)) : 1.0;
+      // 盤中 vs 盤後 成交量比與估算（早盤 U 型校正）
+      let volumeRatio = 1.0;
+      if (isIntraday) {
+        const estVolume = estimateIntradayVolume(curVolumeLots, marketStatus.elapsed);
+        volumeRatio = volumeAvg5d > 0 ? Number((estVolume / volumeAvg5d).toFixed(2)) : 1.0;
+      } else {
+        volumeRatio = volumeAvg5d > 0 ? Number((curVolumeLots / volumeAvg5d).toFixed(2)) : 1.0;
+      }
       const isVolumeShrinking = volumeRatio < 0.85;
       const isVolumeExploding = volumeRatio > 1.25;
 
@@ -2967,53 +2994,78 @@ async function getWatchlistStockDiagnostics(
         const isMarginDecreasing = marginChangeLots < 0;
         const isMarginSurging = marginChangeLots > 50;
 
-        // 【升級一判定 2：確實驗證出貨（CONFIRMED_STOP_LOSS，堅決停損）】
-        // 必須同時符合：
-        // A. 現價跌破 20MA 超過 1.5%
-        // B. 投信或外資呈現顯著賣超
-        // C. 伴隨爆量下殺或融資暴增
-        if (dropBelowMa20Pct >= 1.5 && isInstHeavySelling && (isVolumeExploding || isMarginSurging)) {
-          decisionRating = 'CONFIRMED_STOP_LOSS';
-          diagnosticTitle = '🚨 破線出貨・執行停損';
-          const sellText = `投信 ${trustNetLots > 0 ? '+' : ''}${trustNetLots} 張、外資 ${
-            foreignNetLots > 0 ? '+' : ''
-          }${foreignNetLots} 張`;
-          const alertReason = isVolumeExploding ? '成交量爆量下殺出貨' : `融資單日暴增 ${marginChangeLots} 張浮額沉重`;
-          diagnosticNote = `跌破 20MA 防守點超過 ${dropBelowMa20Pct}%（現價 $${curPrice.toFixed(
-            2
-          )} < 20MA $${ma20.toFixed(1)}），且伴隨法人大額出貨（賣超 ${sellText}），${alertReason}，多頭架構已破壞，請嚴格執行紀律出場。`;
-          severity = 'danger';
-        }
-        // 【升級一判定 1：主力洗盤甩轎（SHAKEOUT_HOLD，建議續抱）】
-        // 觸發條件（符合任一）：
-        // A. 今日投信或外資呈現「淨買超」（法人逆勢護盤）
-        // B. 今日成交量相較 5 日均量顯著萎縮（量縮拉回，主力未倒貨）
-        // C. 融資餘額顯著減少（散戶浮額被清洗）
-        else if (isInstBuying || isVolumeShrinking || isMarginDecreasing) {
-          decisionRating = 'SHAKEOUT_HOLD';
-          diagnosticTitle = '🛡️ 主力洗盤甩轎・建議續抱';
-          const instText =
-            trustNetLots > 0
-              ? `投信逆勢買超 +${trustNetLots} 張`
-              : foreignNetLots > 0
-              ? `外資逆勢買超 +${foreignNetLots} 張`
-              : '法人未大額出脫';
-          const floatText = isMarginDecreasing
-            ? `融資大減 ${Math.abs(marginChangeLots)} 張浮額沉澱`
-            : isVolumeShrinking
-            ? `成交量顯著量縮至 5MA 量之 ${volumeRatio}x (主力未倒貨)`
-            : '散戶籌碼安定';
-          diagnosticNote = `雖跌破 20MA（現價 $${curPrice.toFixed(2)}，20MA $${ma20.toFixed(
-            1
-          )}），但${instText}，${floatText}，判定為主力量縮洗盤，給予 1~2 日防守緩衝，暫不停損。`;
-          severity = 'warning';
+        if (isIntraday) {
+          // 【盤中風控模式】：09:00~13:30 當日三大法人與融資尚未出爐，instMap 為昨日籌碼
+          if (isVolumeExploding && dropBelowMa20Pct >= 1.5) {
+            // 盤中跌破 20MA 且伴隨爆量下殺，不可拿昨日法人買超當作今日護盤，直接給予停損警戒
+            decisionRating = 'CONFIRMED_STOP_LOSS';
+            diagnosticTitle = '🚨 盤中爆量破線・執行停損警戒';
+            diagnosticNote = `盤中跌破 20MA 達 ${dropBelowMa20Pct}%（現價 $${curPrice.toFixed(
+              2
+            )} < 20MA $${ma20.toFixed(1)}），且預估全日量比暴增至 ${volumeRatio}x 爆量下殺，即使昨日法人買超亦不可視為護盤，建議嚴格執行停損紀律！（註：盤中即時風控，嚴防主力倒貨）`;
+            severity = 'danger';
+          } else if (isVolumeShrinking && isInstBuying) {
+            // 唯有盤中明顯「量縮回測 (volumeRatio < 0.85)」且昨日法人為買超時，才可在盤中暫判為洗盤觀察
+            decisionRating = 'SHAKEOUT_HOLD';
+            diagnosticTitle = '🛡️ 主力洗盤甩轎・建議續抱 (盤中觀察)';
+            const instText =
+              trustNetLots > 0
+                ? `昨日投信買超 +${trustNetLots} 張`
+                : `昨日外資買超 +${foreignNetLots} 張`;
+            diagnosticNote = `雖跌破 20MA（現價 $${curPrice.toFixed(2)}，20MA $${ma20.toFixed(
+              1
+            )}），但盤中預估全日量能縮至 ${volumeRatio}x 均量（未見恐慌倒貨），且${instText}，暫判為主力量縮洗盤，給予 1~2 日防守緩衝，暫不停損。（註：盤中暫以昨日法人籌碼與今日量縮狀態評估，待 21:30 結算確認）`;
+            severity = 'warning';
+          } else {
+            decisionRating = 'TRIM';
+            diagnosticTitle = '⚠️ 盤中跌破月線・減碼防守';
+            diagnosticNote = `盤中跌破 20MA ($${ma20.toFixed(
+              1
+            )})，預估量比 ${volumeRatio}x，多空換手整理中，建議先行減碼縮減持股水位至防守配置。（註：盤中即時風控，待 21:30 籌碼結算）`;
+            severity = 'warning';
+          }
         } else {
-          decisionRating = 'TRIM';
-          diagnosticTitle = '⚠️ 跌破月線・減碼防守';
-          diagnosticNote = `現價已跌破 20MA ($${ma20.toFixed(
-            1
-          )})，多空換手整理中，建議先行減碼縮減持股水位至防守配置。`;
-          severity = 'warning';
+          // 【盤後籌碼結算模式】：晚間 21:30 官方結算三大法人與融資籌碼雙重驗證
+          // 【升級一判定 2：確實驗證出貨（CONFIRMED_STOP_LOSS，堅決停損）】
+          if (dropBelowMa20Pct >= 1.5 && isInstHeavySelling && (isVolumeExploding || isMarginSurging)) {
+            decisionRating = 'CONFIRMED_STOP_LOSS';
+            diagnosticTitle = '🚨 破線出貨・執行停損';
+            const sellText = `投信 ${trustNetLots > 0 ? '+' : ''}${trustNetLots} 張、外資 ${
+              foreignNetLots > 0 ? '+' : ''
+            }${foreignNetLots} 張`;
+            const alertReason = isVolumeExploding ? '成交量爆量下殺出貨' : `融資單日暴增 ${marginChangeLots} 張浮額沉重`;
+            diagnosticNote = `跌破 20MA 防守點超過 ${dropBelowMa20Pct}%（現價 $${curPrice.toFixed(
+              2
+            )} < 20MA $${ma20.toFixed(1)}），且伴隨法人大額出貨（賣超 ${sellText}），${alertReason}，多頭架構已破壞，請嚴格執行紀律出場。`;
+            severity = 'danger';
+          }
+          // 【升級一判定 1：主力洗盤甩轎（SHAKEOUT_HOLD，建議續抱）】
+          else if (isInstBuying || isVolumeShrinking || isMarginDecreasing) {
+            decisionRating = 'SHAKEOUT_HOLD';
+            diagnosticTitle = '🛡️ 主力洗盤甩轎・建議續抱';
+            const instText =
+              trustNetLots > 0
+                ? `投信逆勢買超 +${trustNetLots} 張`
+                : foreignNetLots > 0
+                ? `外資逆勢買超 +${foreignNetLots} 張`
+                : '法人未大額出脫';
+            const floatText = isMarginDecreasing
+              ? `融資大減 ${Math.abs(marginChangeLots)} 張浮額沉澱`
+              : isVolumeShrinking
+              ? `成交量顯著量縮至 5MA 量之 ${volumeRatio}x (主力未倒貨)`
+              : '散戶籌碼安定';
+            diagnosticNote = `雖跌破 20MA（現價 $${curPrice.toFixed(2)}，20MA $${ma20.toFixed(
+              1
+            )}），但${instText}，${floatText}，判定為主力量縮洗盤，給予 1~2 日防守緩衝，暫不停損。`;
+            severity = 'warning';
+          } else {
+            decisionRating = 'TRIM';
+            diagnosticTitle = '⚠️ 跌破月線・減碼防守';
+            diagnosticNote = `現價已跌破 20MA ($${ma20.toFixed(
+              1
+            )})，多空換手整理中，建議先行減碼縮減持股水位至防守配置。`;
+            severity = 'warning';
+          }
         }
       } else if (ma5 < ma10 && ma10 < ma20) {
         decisionRating = 'TRIM';
@@ -3274,6 +3326,38 @@ app.get('/api/market/quotes', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Error in /api/market/quotes:', err);
     return res.status(500).json({ error: 'Failed to fetch batch quotes', message: err?.message });
+  }
+});
+
+// -------------------------------------------------------------------------
+// 7. 自選清單跨裝置雲端同步（電腦與手機同步）
+// -------------------------------------------------------------------------
+const PORTFOLIO_DISK_CACHE_FILE = path.join(process.cwd(), '.cached_portfolio.json');
+
+app.get('/api/watchlist/portfolio', (_req: Request, res: Response) => {
+  try {
+    if (fs.existsSync(PORTFOLIO_DISK_CACHE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(PORTFOLIO_DISK_CACHE_FILE, 'utf-8'));
+      if (Array.isArray(data)) {
+        return res.json(data);
+      }
+    }
+    return res.json([]);
+  } catch (err: any) {
+    console.warn('Failed to read portfolio file:', err);
+    return res.json([]);
+  }
+});
+
+app.post('/api/watchlist/portfolio', (req: Request, res: Response) => {
+  try {
+    const data = req.body;
+    const portfolioArray = Array.isArray(data) ? data : Array.isArray(data?.portfolio) ? data.portfolio : [];
+    fs.writeFileSync(PORTFOLIO_DISK_CACHE_FILE, JSON.stringify(portfolioArray, null, 2), 'utf-8');
+    return res.json({ success: true, count: portfolioArray.length });
+  } catch (err: any) {
+    console.error('Failed to save portfolio file:', err);
+    return res.status(500).json({ error: 'Failed to save portfolio' });
   }
 });
 

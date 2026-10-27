@@ -219,6 +219,52 @@ export default function App() {
   });
 
 
+  const syncPortfolioToServer = useCallback(async (currentPortfolio: PortfolioStockItem[]) => {
+    try {
+      await fetch('/api/watchlist/portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(currentPortfolio),
+      });
+    } catch (e) {
+      console.warn('Failed to sync portfolio to server:', e);
+    }
+  }, []);
+
+  // 7. 自選清單跨裝置雲端同步（電腦與手機同步）
+  useEffect(() => {
+    let isMounted = true;
+    const syncCloudPortfolio = async () => {
+      try {
+        const res = await fetch('/api/watchlist/portfolio');
+        if (res.ok) {
+          const serverData = await res.json();
+          if (Array.isArray(serverData) && serverData.length > 0) {
+            if (isMounted) {
+              setPortfolio(serverData);
+              localStorage.setItem('tw_swing_portfolio', JSON.stringify(serverData));
+            }
+            return;
+          }
+        }
+        // 若伺服器端為空但本地 localStorage 有資料，則自動上傳同步至伺服器
+        const saved = localStorage.getItem('tw_swing_portfolio');
+        if (saved) {
+          const localItems = JSON.parse(saved);
+          if (Array.isArray(localItems) && localItems.length > 0) {
+            syncPortfolioToServer(localItems);
+          }
+        }
+      } catch (err) {
+        console.warn('Portfolio initial sync error:', err);
+      }
+    };
+    syncCloudPortfolio();
+    return () => {
+      isMounted = false;
+    };
+  }, [syncPortfolioToServer]);
+
   // Notifications stored in localStorage
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => {
     try {
@@ -230,14 +276,15 @@ export default function App() {
     return [];
   });
 
-  // Save portfolio to localStorage
+  // Save portfolio to localStorage & sync to server
   useEffect(() => {
     try {
       localStorage.setItem('tw_swing_portfolio', JSON.stringify(portfolio));
     } catch (e) {
       console.error('Failed to save portfolio to localStorage:', e);
     }
-  }, [portfolio]);
+    syncPortfolioToServer(portfolio);
+  }, [portfolio, syncPortfolioToServer]);
 
   // Save notifications to localStorage
   useEffect(() => {
@@ -658,18 +705,17 @@ export default function App() {
       const change = liveQuote?.change ?? item.change;
       const changePercent = liveQuote?.changePercent ?? item.changePercent;
       const updateTime = liveQuote?.updateTime ?? item.updateTime;
+      // Retrieve server-level chip diagnostic for this symbol
+      const diag = watchlistDiagnostics[item.symbol];
       const maInfo = stockMaMap.get(item.symbol);
-      const ma5 = maInfo?.ma5 ?? item.ma5;
-      const ma10 = maInfo?.ma10 ?? item.ma10;
-      const ma20 = maInfo?.ma20 ?? item.ma20;
+      const ma5 = diag?.ma5 ?? maInfo?.ma5 ?? item.ma5;
+      const ma10 = diag?.ma10 ?? maInfo?.ma10 ?? item.ma10;
+      const ma20 = diag?.ma20 ?? maInfo?.ma20 ?? item.ma20;
       const trustDays = maInfo?.trustDays ?? item.trustNetBuyDays ?? 2;
 
       const plPerShare = curPrice - item.entryPrice;
       const unrealizedPL = Math.round(plPerShare * (item.sharesLots * 1000));
       const returnPct = Number((((curPrice - item.entryPrice) / item.entryPrice) * 100).toFixed(2));
-
-      // Retrieve server-level chip diagnostic for this symbol
-      const diag = watchlistDiagnostics[item.symbol];
 
       // 4 Health Risk Evaluation Conditions & Anti-Shakeout Dual Verification
       const healthAlerts: WatchlistAlertDetail[] = [];
@@ -2264,7 +2310,11 @@ export default function App() {
                                 <div className="text-[10px] text-slate-500 mb-0.5">
                                   近四季累計 EPS
                                 </div>
-                                <div className="font-bold">${stock.eps4Q.toFixed(2)} 元</div>
+                                <div className="font-bold">
+                                  {stock.eps4Q !== null && stock.eps4Q !== undefined
+                                    ? `$${stock.eps4Q.toFixed(2)} 元`
+                                    : '未揭露'}
+                                </div>
                               </div>
 
                               <div

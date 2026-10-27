@@ -126,7 +126,7 @@ export interface TurnaroundStockItem {
   positionLabel: string; // 例如: "處於近一年 18% 低檔區"
   latestRevenueMonth: number;
   revenueYoY: number; // 最新月營收年增率 %
-  eps4Q: number; // 近四季累計 EPS
+  eps4Q: number | null; // 近四季累計 EPS
   isProfitable: boolean; // eps4Q > 0
   isRevGrowing: boolean; // revenueYoY >= 5%
   isLowBase: boolean; // positionPct <= 35%

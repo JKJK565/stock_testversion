@@ -99,9 +99,12 @@ export function WatchlistView({
     );
   });
 
-  // Calculate stocks with active health alerts
+  // Calculate stocks with active health alerts (排除已判定為主力洗盤甩轎・建議續抱之標的)
   const alertStocks = portfolio.filter(
-    (item) => item.healthAlerts && item.healthAlerts.length > 0
+    (item) =>
+      item.decisionRating !== 'SHAKEOUT_HOLD' &&
+      item.healthAlerts &&
+      item.healthAlerts.some((a) => a.severity === 'danger' || a.severity === 'warning')
   );
 
   // Summary Metrics
@@ -573,7 +576,9 @@ export function WatchlistView({
               <div
                 key={item.id}
                 className={`p-5 sm:p-6 rounded-3xl bg-slate-900 border transition-all ${
-                  isStopBroken || (hasAlert && item.decisionRating === 'SELL')
+                  item.decisionRating === 'SHAKEOUT_HOLD'
+                    ? 'border-blue-500/70 bg-gradient-to-b from-slate-900 to-blue-950/20'
+                    : isStopBroken || (hasAlert && item.decisionRating === 'SELL') || item.decisionRating === 'CONFIRMED_STOP_LOSS'
                     ? 'border-rose-500/80 bg-gradient-to-b from-slate-900 to-rose-950/20'
                     : hasAlert
                     ? 'border-amber-500/70 bg-gradient-to-b from-slate-900 to-amber-950/15'
@@ -745,9 +750,41 @@ export function WatchlistView({
                   </div>
 
                   <div>
-                    <label className="text-[11px] text-rose-400 block mb-1 font-semibold">
-                      停損防守價 (TWD)
-                    </label>
+                    <div className="flex flex-wrap items-center justify-between gap-1 mb-1">
+                      <label className="text-[11px] text-rose-400 font-semibold">
+                        停損防守價 (TWD)
+                      </label>
+                      <div className="flex items-center gap-1">
+                        {item.ma20 !== undefined && item.ma20 > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onUpdateItem(item.id, {
+                                stopLossPrice: Number(item.ma20?.toFixed(1)),
+                              })
+                            }
+                            className="px-1.5 py-0.5 rounded bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/40 text-[10px] font-mono text-blue-300 font-bold transition active:scale-95 cursor-pointer flex items-center gap-0.5"
+                            title={`一鍵對齊最新 20MA 防守價 $${item.ma20.toFixed(1)}`}
+                          >
+                            <span>⚡ 對齊 20MA (${item.ma20.toFixed(1)})</span>
+                          </button>
+                        )}
+                        {(item.returnPct ?? 0) > 10 && item.ma10 !== undefined && item.ma10 > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onUpdateItem(item.id, {
+                                stopLossPrice: Number(item.ma10?.toFixed(1)),
+                              })
+                            }
+                            className="px-1.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-[10px] font-mono text-amber-300 font-bold transition active:scale-95 cursor-pointer flex items-center gap-0.5"
+                            title={`目前報酬率 +${item.returnPct}% 達標！一鍵對齊 10MA 鎖利 $${item.ma10.toFixed(1)}`}
+                          >
+                            <span>🔥 鎖利 10MA (${item.ma10.toFixed(1)})</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
                     <input
                       type="number"
                       step="0.1"
