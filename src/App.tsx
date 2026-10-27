@@ -9,6 +9,8 @@ import {
   PortfolioStockItem,
   WatchlistAlertDetail,
   NotificationItem,
+  WatchlistBriefingResponse,
+  WatchlistStockDiagnostic,
 } from './types/stock';
 import {
   fetchMarketOverview,
@@ -18,6 +20,7 @@ import {
   fetchTurnaroundScreenerData,
   refreshTurnaroundScreenerData,
   fetchBatchQuotes,
+  fetchWatchlistMorningBriefing,
   BatchQuoteItem,
 } from './services/stockApi';
 import { Navbar } from './components/Navbar';
@@ -165,14 +168,18 @@ export default function App() {
   // Data states
   const [marketData, setMarketData] = useState<MarketOverviewResponse | null>(null);
   const [morningBriefing, setMorningBriefing] = useState<MorningBriefingResponse | null>(null);
+  const [watchlistBriefing, setWatchlistBriefing] = useState<WatchlistBriefingResponse | null>(null);
   const [screenerData, setScreenerData] = useState<ScreenerResponse | null>(null);
   const [turnaroundData, setTurnaroundData] = useState<TurnaroundScreenerResponse | null>(null);
+  const [watchlistDiagnostics, setWatchlistDiagnostics] = useState<Record<string, WatchlistStockDiagnostic>>({});
 
   // Loading states
   const [isMarketLoading, setIsMarketLoading] = useState(true);
   const [isMarketRefreshing, setIsMarketRefreshing] = useState(false);
   const [isBriefingLoading, setIsBriefingLoading] = useState(true);
-  const [isBriefingRefreshing, setIsBriefingRefreshing] = useState(false);
+  const [isBriefingGenerating, setIsBriefingGenerating] = useState(false);
+  const [isWatchlistBriefingLoading, setIsWatchlistBriefingLoading] = useState(false);
+  const [isWatchlistBriefingGenerating, setIsWatchlistBriefingGenerating] = useState(false);
   const [isScreenerLoading, setIsScreenerLoading] = useState(true);
   const [isTurnaroundLoading, setIsTurnaroundLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -263,13 +270,13 @@ export default function App() {
     loadMarket(true);
   };
 
-  // Load Gemini Morning Briefing (cached 30m on server)
-  const loadBriefing = useCallback(async (force = false) => {
-    if (force) setIsBriefingRefreshing(true);
+  // Load or Generate Gemini 2.5 Pro Morning Briefing
+  const loadBriefing = useCallback(async (generate = false) => {
+    if (generate) setIsBriefingGenerating(true);
     else setIsBriefingLoading(true);
 
     try {
-      const data = await fetchMorningBriefing(force);
+      const data = await fetchMorningBriefing(generate);
       if (data) {
         setMorningBriefing(data);
       }
@@ -277,7 +284,7 @@ export default function App() {
       console.error('Error loading briefing:', e);
     } finally {
       setIsBriefingLoading(false);
-      setIsBriefingRefreshing(false);
+      setIsBriefingGenerating(false);
     }
   }, []);
 
@@ -309,6 +316,34 @@ export default function App() {
     }
   }, []);
 
+  // 載入自選持股每日量化晨會戰報與深層防洗盤籌碼診斷
+  const loadWatchlistBriefing = useCallback(async (generate = false) => {
+    if (portfolio.length === 0) {
+      setWatchlistBriefing(null);
+      return;
+    }
+    const symbols = Array.from(new Set(portfolio.map((p) => p.symbol)));
+    if (generate) {
+      setIsWatchlistBriefingGenerating(true);
+    } else {
+      setIsWatchlistBriefingLoading(true);
+    }
+    try {
+      const res = await fetchWatchlistMorningBriefing(symbols, generate);
+      if (res) {
+        setWatchlistBriefing(res);
+        if (res.diagnostics) {
+          setWatchlistDiagnostics((prev) => ({ ...prev, ...res.diagnostics }));
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load watchlist morning briefing:', e);
+    } finally {
+      setIsWatchlistBriefingLoading(false);
+      setIsWatchlistBriefingGenerating(false);
+    }
+  }, [portfolio]);
+
   // Initial load once on mount
   useEffect(() => {
     loadMarket();
@@ -316,6 +351,13 @@ export default function App() {
     loadScreener();
     loadTurnaround();
   }, [loadMarket, loadBriefing, loadScreener, loadTurnaround]);
+
+  // 當有自選股時，自動檢查並獲取今日晨會戰報狀態與診斷
+  useEffect(() => {
+    if (portfolio.length > 0) {
+      loadWatchlistBriefing(false);
+    }
+  }, [portfolio.length, loadWatchlistBriefing]);
 
   // Force Refresh Screener Handler
   const handleForceRefresh = async () => {
@@ -626,19 +668,14 @@ export default function App() {
       const unrealizedPL = Math.round(plPerShare * (item.sharesLots * 1000));
       const returnPct = Number((((curPrice - item.entryPrice) / item.entryPrice) * 100).toFixed(2));
 
-      // 4 Health Risk Evaluation Conditions
+      // Retrieve server-level chip diagnostic for this symbol
+      const diag = watchlistDiagnostics[item.symbol];
+
+      // 4 Health Risk Evaluation Conditions & Anti-Shakeout Dual Verification
       const healthAlerts: WatchlistAlertDetail[] = [];
 
-      // 1. 跌破停損價 (現價跌破 stopLossPrice，例如 20MA 或當周低點)
-      const isStopLossTriggered = curPrice < item.stopLossPrice;
-      if (isStopLossTriggered) {
-        healthAlerts.push({
-          type: 'STOP_LOSS',
-          title: '跌破停損防守價',
-          description: `最新現價 $${curPrice.toFixed(2)} 已跌破防守價 $${item.stopLossPrice.toFixed(2)}，波段支撐失效，請嚴守紀律停損。`,
-          severity: 'danger',
-        });
-      }
+      // Check if price breaks 20MA or stop loss price
+      const isBelow20MA = ma20 !== undefined ? curPrice < ma20 : false;
 
       // 2. 均線走空 (5MA、10MA、20MA 轉為空頭排列: 5MA < 10MA < 20MA)
       const isMaBearish =
@@ -657,7 +694,7 @@ export default function App() {
       }
 
       // 3. 法人轉賣 (投信由買超轉為連續賣超)
-      const isTrustSelling = trustDays <= 0;
+      const isTrustSelling = diag?.trustNetLots !== undefined ? diag.trustNetLots < 0 : trustDays <= 0;
       if (isTrustSelling) {
         healthAlerts.push({
           type: 'TRUST_SELLING',
@@ -667,26 +704,74 @@ export default function App() {
         });
       }
 
-      // 4. 評定翻空 (決策評級由 BUY 轉為 TRIM 或 SELL)
-      let decisionRating: 'BUY' | 'HOLD' | 'TRIM' | 'SELL' = 'BUY';
-      if (isStopLossTriggered || (isMaBearish && isTrustSelling)) {
-        decisionRating = 'SELL';
-        healthAlerts.push({
-          type: 'RATING_BEARISH',
-          title: '決策評級翻空 (SELL)',
-          description: `技術面跌破關鍵防守點，綜合決策評級已轉為「SELL (賣出)」，切勿盲目凹單。`,
-          severity: 'danger',
-        });
-      } else if (isMaBearish || isTrustSelling || curPrice < item.entryPrice * 0.96) {
-        decisionRating = 'TRIM';
-        healthAlerts.push({
-          type: 'RATING_BEARISH',
-          title: '決策評級轉為減碼 (TRIM)',
-          description: `波段上攻動能趨緩，決策評級轉為「TRIM (減碼防守)」，建議獲利了結或縮減持股部位。`,
-          severity: 'warning',
-        });
+      // 4. 決策評級與防洗盤機制 (SHAKEOUT_HOLD vs CONFIRMED_STOP_LOSS)
+      let decisionRating: 'BUY' | 'HOLD' | 'TRIM' | 'SELL' | 'SHAKEOUT_HOLD' | 'CONFIRMED_STOP_LOSS' = 'BUY';
+
+      if (diag) {
+        decisionRating = diag.decisionRating;
+        if (diag.decisionRating === 'SHAKEOUT_HOLD') {
+          healthAlerts.push({
+            type: 'SHAKEOUT_HOLD',
+            title: '主力洗盤甩轎・建議續抱',
+            description: diag.diagnosticNote || '雖跌破 20MA，但法人未出貨，融資大減浮額沉澱，判定為主力量縮洗盤，給予 1~2 日防守緩衝，暫不停損。',
+            severity: 'shakeout',
+          });
+        } else if (diag.decisionRating === 'CONFIRMED_STOP_LOSS') {
+          healthAlerts.push({
+            type: 'CONFIRMED_STOP_LOSS',
+            title: '破線出貨・執行停損',
+            description: diag.diagnosticNote || '跌破 20MA 防守點，且伴隨法人大額出貨，多頭架構已破壞，請嚴格執行紀律出場。',
+            severity: 'danger',
+          });
+        } else if (diag.decisionRating === 'SELL') {
+          healthAlerts.push({
+            type: 'RATING_BEARISH',
+            title: '決策評級翻空 (SELL)',
+            description: diag.diagnosticNote || '綜合技術與籌碼結構轉弱，建議紀律出場。',
+            severity: 'danger',
+          });
+        } else if (diag.decisionRating === 'TRIM') {
+          healthAlerts.push({
+            type: 'RATING_BEARISH',
+            title: '決策評級轉為減碼 (TRIM)',
+            description: diag.diagnosticNote || '波段上攻動能趨緩，建議部分獲利了結或減碼防守。',
+            severity: 'warning',
+          });
+        }
+      } else {
+        // Fallback evaluation if server diagnostic is pending:
+        if (isBelow20MA || curPrice < item.stopLossPrice) {
+          // If trust is still buying or net lots positive: identify as SHAKEOUT_HOLD
+          if (trustDays > 0 || (item.trustNetBuyLots && item.trustNetBuyLots > 0)) {
+            decisionRating = 'SHAKEOUT_HOLD';
+            healthAlerts.push({
+              type: 'SHAKEOUT_HOLD',
+              title: '主力洗盤甩轎・建議續抱',
+              description: `雖跌破 20MA 防守價，但法人籌碼未出脫（投信連買 ${trustDays} 日），判定為主力量縮洗盤，給予 1~2 日防守緩衝，暫不停損。`,
+              severity: 'shakeout',
+            });
+          } else {
+            decisionRating = 'CONFIRMED_STOP_LOSS';
+            healthAlerts.push({
+              type: 'CONFIRMED_STOP_LOSS',
+              title: '破線出貨・執行停損',
+              description: `跌破 20MA 防守點，多頭架構已破壞，請嚴格執行紀律出場。`,
+              severity: 'danger',
+            });
+          }
+        } else if (isMaBearish || isTrustSelling || curPrice < item.entryPrice * 0.96) {
+          decisionRating = 'TRIM';
+          healthAlerts.push({
+            type: 'RATING_BEARISH',
+            title: '決策評級轉為減碼 (TRIM)',
+            description: `波段上攻動能趨緩，決策評級轉為「TRIM (減碼防守)」，建議獲利了結或縮減持股部位。`,
+            severity: 'warning',
+          });
+        }
       }
 
+      // If stock is SHAKEOUT_HOLD, isStopLossTriggered is overridden to false to prevent premature panic stop loss
+      const finalStopLossTriggered = decisionRating === 'SHAKEOUT_HOLD' ? false : (curPrice < item.stopLossPrice || decisionRating === 'CONFIRMED_STOP_LOSS');
       const isTargetTriggered = curPrice >= item.targetPrice;
 
       return {
@@ -697,17 +782,22 @@ export default function App() {
         updateTime,
         unrealizedPL,
         returnPct,
-        isStopLossTriggered,
+        isStopLossTriggered: finalStopLossTriggered,
         isTargetTriggered,
         ma5,
         ma10,
         ma20,
         trustNetBuyDays: trustDays,
         decisionRating,
+        diagnosticNote: diag?.diagnosticNote,
+        volumeLots: diag?.volumeLots,
+        volumeAvg5d: diag?.volumeAvg5d,
+        foreignNetLots: diag?.foreignNetLots,
+        marginChangeLots: diag?.marginChangeLots,
         healthAlerts,
       };
     });
-  }, [portfolio, screenerData, turnaroundData, watchlistQuotes]);
+  }, [portfolio, screenerData, turnaroundData, watchlistQuotes, watchlistDiagnostics]);
 
 
   // Synchronize detected health alerts into NotificationCenter
@@ -1147,7 +1237,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* 3. 升級版每日深度操盤早報 (Gemini 2.5 Flash + 真實籌碼數據) */}
+            {/* 3. 升級版每日深度操盤早報 (Gemini 2.5 Pro 旗艦推理 + 手動觸發機制 + 當日持久快取) */}
             <div className="rounded-3xl bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 border border-slate-800 shadow-2xl p-5 sm:p-7 relative overflow-hidden">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
                 <div className="flex items-center gap-3">
@@ -1159,32 +1249,37 @@ export default function App() {
                       <h3 className="text-lg font-bold text-white">每日深度操盤早報</h3>
                       <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-mono flex items-center gap-1">
                         <Sparkles className="w-3 h-3 text-indigo-400" />
-                        Gemini 2.5 Flash 量化生成
+                        {morningBriefing?.model && morningBriefing.isGenerated !== false
+                          ? `${morningBriefing.model} 旗艦推理`
+                          : 'Gemini 2.5 Pro 旗艦推理'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-400 mt-0.5">
-                      美股四大指標 + 台指期夜盤 + TWSE 三大法人即時籌碼深層解讀
+                      美股四大指標 + 台指期夜盤 + 外資期貨淨留倉與三大法人籌碼深層因果推演
                     </p>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => loadBriefing(true)}
-                    disabled={isBriefingRefreshing}
-                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium flex items-center gap-1.5 transition disabled:opacity-50"
-                  >
-                    <RefreshCw
-                      className={`w-3.5 h-3.5 ${
-                        isBriefingRefreshing ? 'animate-spin text-amber-400' : ''
-                      }`}
-                    />
-                    <span>{isBriefingRefreshing ? '分析中...' : '重新生成早報'}</span>
-                  </button>
+                  {morningBriefing && morningBriefing.isGenerated !== false && morningBriefing.markdown && (
+                    <button
+                      onClick={() => loadBriefing(true)}
+                      disabled={isBriefingGenerating}
+                      className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
+                      title="手動重新調用 Gemini 2.5 Pro 重整最新戰報"
+                    >
+                      <RefreshCw
+                        className={`w-3.5 h-3.5 ${
+                          isBriefingGenerating ? 'animate-spin text-amber-400' : ''
+                        }`}
+                      />
+                      <span>{isBriefingGenerating ? '深度推演中...' : '🔄 重新產出'}</span>
+                    </button>
+                  )}
 
                   <button
                     onClick={() => setIsBriefingExpanded((prev) => !prev)}
-                    className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white transition"
+                    className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
                     title={isBriefingExpanded ? '收合早報' : '展開早報'}
                   >
                     {isBriefingExpanded ? (
@@ -1203,24 +1298,70 @@ export default function App() {
                   <div className="h-4 w-5/6 bg-slate-800/60 rounded animate-pulse" />
                   <div className="h-24 w-full bg-slate-800/40 rounded-xl animate-pulse mt-4" />
                 </div>
+              ) : isBriefingGenerating ? (
+                <div className="mt-5 p-8 rounded-2xl bg-slate-950/90 border border-indigo-500/30 flex flex-col items-center justify-center text-center space-y-4 shadow-2xl">
+                  <div className="relative">
+                    <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-600 via-rose-500 to-amber-500 animate-spin flex items-center justify-center p-1">
+                      <div className="w-full h-full bg-slate-950 rounded-xl flex items-center justify-center">
+                        <Sparkles className="w-7 h-7 text-amber-400 animate-pulse" />
+                      </div>
+                    </div>
+                    <span className="absolute -top-1 -right-1 flex h-4 w-4">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-4 w-4 bg-rose-500"></span>
+                    </span>
+                  </div>
+                  <div>
+                    <h4 className="text-base sm:text-lg font-bold text-white flex items-center justify-center gap-2">
+                      <Sparkles className="w-5 h-5 text-amber-400" />
+                      Gemini 2.5 Pro 深度推演中...
+                    </h4>
+                    <p className="text-xs sm:text-sm text-slate-400 mt-1 max-w-md">
+                      正在全維度推演昨夜費半、台積電 ADR、台指期夜盤及外資期貨淨留倉對今日開盤之衝擊影響...
+                    </p>
+                  </div>
+                  <div className="w-48 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div className="h-full bg-gradient-to-r from-amber-500 via-rose-500 to-indigo-500 w-full animate-pulse" />
+                  </div>
+                </div>
+              ) : (!morningBriefing || morningBriefing.isGenerated === false || !morningBriefing.markdown) ? (
+                <div className="mt-5 p-6 sm:p-8 rounded-2xl bg-gradient-to-br from-amber-950/20 via-slate-950 to-slate-900 border border-amber-500/30 text-center flex flex-col items-center justify-center shadow-inner">
+                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-500/20 to-rose-500/20 border border-amber-500/30 flex items-center justify-center text-2xl mb-3 shadow-md">
+                    ☕
+                  </div>
+                  <h4 className="text-lg sm:text-xl font-bold text-white tracking-wide">
+                    今日盤前操盤戰報尚未產出
+                  </h4>
+                  <p className="text-xs sm:text-sm text-slate-400 mt-2 max-w-md leading-relaxed">
+                    建議於早上 08:00 ~ 08:50，外圍美股與台指期夜盤正式收盤後點擊產出。
+                  </p>
+                  <button
+                    onClick={() => loadBriefing(true)}
+                    disabled={isBriefingGenerating}
+                    className="mt-5 px-6 py-3 rounded-2xl bg-gradient-to-r from-amber-500 via-rose-500 to-indigo-600 hover:from-amber-400 hover:via-rose-400 hover:to-indigo-500 text-white font-bold text-sm sm:text-base shadow-lg shadow-rose-950/60 hover:shadow-rose-900/80 transition-all flex items-center gap-2.5 transform active:scale-95 cursor-pointer disabled:opacity-50"
+                  >
+                    <Sparkles className="w-5 h-5 text-amber-200" />
+                    <span>⚡ 立即產出今日操盤戰報 (Gemini 2.5 Pro)</span>
+                  </button>
+                </div>
               ) : morningBriefing && isBriefingExpanded ? (
                 <div className="mt-5 p-5 rounded-2xl bg-slate-950/80 border border-slate-800/90 shadow-inner">
                   <MarkdownRenderer content={morningBriefing.markdown} />
                   <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-[11px] text-slate-500">
                     <span className="flex items-center gap-1.5 text-indigo-400/90 font-medium">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                      當日持久快取生效中（每日開盤前生成一次・0秒秒開）
+                      當日持久快取生效中（Gemini 2.5 Pro 旗艦深度推演・0秒秒開）
                     </span>
                     <button
                       onClick={() => loadBriefing(true)}
-                      disabled={isBriefingRefreshing}
-                      className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-indigo-300 hover:text-white border border-indigo-500/30 text-[11px] font-medium flex items-center gap-1.5 transition disabled:opacity-50"
-                      title="強制重新整理並呼叫 Gemini 2.5 Flash 產出最新即時早報"
+                      disabled={isBriefingGenerating}
+                      className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-indigo-300 hover:text-white border border-indigo-500/30 text-[11px] font-medium flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
+                      title="重新呼叫 Gemini 2.5 Pro 進行全維度即時深度推演"
                     >
                       <RefreshCw
-                        className={`w-3 h-3 ${isBriefingRefreshing ? 'animate-spin text-amber-400' : ''}`}
+                        className={`w-3 h-3 ${isBriefingGenerating ? 'animate-spin text-amber-400' : ''}`}
                       />
-                      <span>{isBriefingRefreshing ? '重新生成中...' : '重新整理抓取最新早報'}</span>
+                      <span>{isBriefingGenerating ? '深度推演中...' : '🔄 重新產出最新戰報'}</span>
                     </button>
                   </div>
                 </div>
@@ -1366,7 +1507,7 @@ export default function App() {
               <div className="text-xs text-slate-400 px-3 py-1 flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-emerald-400" />
                 <span>
-                  雙重過濾機制：全面排除電信三雄、金融保險、油電燃氣牛皮股，鎖定 ATR% ≥ 1.8% 與五大爆發白名單
+                  雙重過濾機制：全面排除電信三雄、金融保險、油電燃氣牛皮股，鎖定動能突破 ≥ 2.5%、價值轉型 ≥ 2.2%與五大爆發白名單
                 </span>
               </div>
             </div>
@@ -1374,108 +1515,108 @@ export default function App() {
             {/* ========================================================================= */}
             {/* 【四、 產業屬性與客觀量化波動度雙重過濾機制（嚴禁牛皮存股與電信業）】PANEL */}
             {/* ========================================================================= */}
-            <div className="p-5 sm:p-6 rounded-3xl bg-slate-900/90 border border-slate-800 shadow-xl space-y-4">
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-400 flex items-center justify-center flex-shrink-0">
+            <div className="p-4 sm:p-5 rounded-3xl bg-slate-900/90 border border-slate-800 shadow-md space-y-3.5">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 flex items-center justify-center flex-shrink-0">
                     <ShieldCheck className="w-4 h-4 text-rose-400" />
                   </div>
                   <div>
-                    <h4 className="text-sm sm:text-base font-extrabold text-white flex flex-wrap items-center gap-2">
-                      <span>產業屬性與客觀量化波動度雙重過濾機制</span>
-                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 font-bold">
-                        🚫 嚴禁牛皮存股與電信業
+                    <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                      <span>選股過濾與聚焦機制</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono">
+                        量化雙濾網 & 產業聚焦
                       </span>
                     </h4>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      為確保波段操作資金效率，執行產業黑名單直接排除、量化波動度 (ATR% ≥ 1.8%) 與流動性雙濾網，優先聚焦五大高爆發力產業白名單。
-                    </p>
                   </div>
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  排除牛皮存股，鎖定具備充足價差空間之高動能與轉型潛力股
                 </div>
               </div>
 
               {/* 三大機制架構卡片 */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
                 {/* 1. 產業黑名單直接排除 */}
-                <div className="p-3.5 rounded-2xl bg-rose-950/20 border border-rose-900/50 space-y-2">
+                <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800/90 space-y-1.5">
                   <div className="flex items-center gap-1.5 font-bold text-rose-300">
-                    <Ban className="w-4 h-4 text-rose-400 flex-shrink-0" />
-                    <span>1. 產業黑名單直接排除 (🚫 嚴禁)</span>
+                    <Ban className="w-3.5 h-3.5 text-rose-400 flex-shrink-0" />
+                    <span>1. 產業黑名單排除</span>
                   </div>
-                  <ul className="text-slate-300 space-y-1.5 text-[11px] leading-relaxed">
+                  <ul className="text-slate-300 space-y-1 text-xs">
                     <li className="flex items-start gap-1.5">
-                      <span className="text-rose-400 font-bold">•</span>
-                      <span><strong>電信三雄及純網路服務：</strong>2412 中華電、3045 台灣大、4904 遠傳等。</span>
+                      <span className="text-rose-400">•</span>
+                      <span><strong>金融保險業</strong></span>
                     </li>
                     <li className="flex items-start gap-1.5">
-                      <span className="text-rose-400 font-bold">•</span>
-                      <span><strong>金融保險業：</strong>28xx、58xx（金控/銀行/證券/保險等）。</span>
+                      <span className="text-rose-400">•</span>
+                      <span><strong>電信服務業</strong></span>
                     </li>
                     <li className="flex items-start gap-1.5">
-                      <span className="text-rose-400 font-bold">•</span>
-                      <span><strong>公用事業與油電燃氣：</strong>9908 大台北、8926 台汽電等低波動定存股。</span>
+                      <span className="text-rose-400">•</span>
+                      <span><strong>公用事業與油電燃氣</strong></span>
                     </li>
                   </ul>
                   <div className="text-[10px] text-rose-400/80 font-mono pt-0.5">
-                    ✓ 系統端 100% 嚴格剔除，防守型死水絕不入選
+                    ✓ 系統自動剔除牛皮防守型死水
                   </div>
                 </div>
 
-                {/* 2. 客觀量化波動度濾網 */}
-                <div className="p-3.5 rounded-2xl bg-amber-950/20 border border-amber-900/50 space-y-2">
+                {/* 2. 客觀量化雙濾網 */}
+                <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800/90 space-y-1.5">
                   <div className="flex items-center gap-1.5 font-bold text-amber-300">
-                    <Zap className="w-4 h-4 text-amber-400 flex-shrink-0" />
-                    <span>2. 客觀量化雙濾網 (剃除死水牛皮)</span>
+                    <Zap className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                    <span>2. 客觀量化雙濾網</span>
                   </div>
-                  <ul className="text-slate-300 space-y-1.5 text-[11px] leading-relaxed">
+                  <ul className="text-slate-300 space-y-1 text-xs">
                     <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400 font-bold">•</span>
-                      <span><strong>20日 ATR% 波動度 ≥ 1.8%：</strong>若 ATR% &lt; 1.8% 代表每日震幅過小、缺乏波段價差空間，直接剔除。</span>
+                      <span className="text-amber-400">•</span>
+                      <span><strong>20日 ATR% 波動度</strong>：動能突破 ≥ 2.5%、價值轉型 ≥ 2.2%</span>
                     </li>
                     <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400 font-bold">•</span>
-                      <span><strong>5日均量 &gt; 1,000 張：</strong>流動性安全門檻，排除無量難以進出之冷門股。</span>
+                      <span className="text-amber-400">•</span>
+                      <span><strong>5日均量</strong>：&gt; 1,000 張</span>
                     </li>
                     <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400 font-bold">•</span>
-                      <span><strong>股價 15 ~ 500 元：</strong>避開高價投機股與低流動性仙股。</span>
+                      <span className="text-amber-400">•</span>
+                      <span><strong>股價區間</strong>：15 ~ 500 元</span>
                     </li>
                   </ul>
                   <div className="text-[10px] text-amber-400/80 font-mono pt-0.5">
-                    ✓ ATR% 與成交量實時把關，確保資金週轉效率
+                    ✓ 實時過濾，確保波段空間與資金效率
                   </div>
                 </div>
 
-                {/* 3. 優先聚焦產業白名單 */}
-                <div className="p-3.5 rounded-2xl bg-emerald-950/20 border border-emerald-900/50 space-y-2">
+                {/* 3. 優先聚焦五大產業白名單 */}
+                <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800/90 space-y-1.5">
                   <div className="flex items-center gap-1.5 font-bold text-emerald-300">
-                    <Sparkles className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-                    <span>3. 優先聚焦五大產業白名單</span>
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                    <span>3. 優先聚焦產業白名單</span>
                   </div>
-                  <ul className="text-slate-300 space-y-1 text-[11px] leading-relaxed">
+                  <ul className="text-slate-300 space-y-0.5 text-xs">
                     <li className="flex items-center gap-1.5">
-                      <span className="text-emerald-400 font-bold">1.</span>
-                      <span><strong>AI 硬體周邊：</strong>散熱、機殼、滑軌、高功率電源</span>
+                      <span className="text-emerald-400">•</span>
+                      <span><strong>AI 硬體周邊</strong>：散熱、機殼、滑軌、高功率電源</span>
                     </li>
                     <li className="flex items-center gap-1.5">
-                      <span className="text-emerald-400 font-bold">2.</span>
-                      <span><strong>半導體設備與 CoWoS：</strong>先進封裝、載板、測試</span>
+                      <span className="text-emerald-400">•</span>
+                      <span><strong>半導體設備與 CoWoS</strong>：先進封裝、載板、測試</span>
                     </li>
                     <li className="flex items-center gap-1.5">
-                      <span className="text-emerald-400 font-bold">3.</span>
-                      <span><strong>CPO 矽光子：</strong>高速光通訊、光電整合模組</span>
+                      <span className="text-emerald-400">•</span>
+                      <span><strong>CPO 矽光子</strong>：高速光通訊、光電整合模組</span>
                     </li>
                     <li className="flex items-center gap-1.5">
-                      <span className="text-emerald-400 font-bold">4.</span>
-                      <span><strong>重電電網與儲能：</strong>變壓器升級、離岸綠能海纜</span>
+                      <span className="text-emerald-400">•</span>
+                      <span><strong>重電電網與儲能</strong>：變壓器升級、綠能海纜</span>
                     </li>
                     <li className="flex items-center gap-1.5">
-                      <span className="text-emerald-400 font-bold">5.</span>
-                      <span><strong>低基期轉型爆發：</strong>利基傳產/電子 (如 1303 南亞)</span>
+                      <span className="text-emerald-400">•</span>
+                      <span><strong>低基期轉型爆發</strong>：利基傳產 / 電子高值化</span>
                     </li>
                   </ul>
                   <div className="text-[10px] text-emerald-400/80 font-mono pt-0.5">
-                    ✓ 具備動能與轉型爆發力，法人認養優先
+                    ✓ 主流題材與法人波段認養優先
                   </div>
                 </div>
               </div>
@@ -1763,8 +1904,8 @@ export default function App() {
                               <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
                                 <div className="text-[10px] text-slate-500 mb-0.5">20日 ATR% 波動度</div>
                                 <div className="font-bold text-emerald-400">
-                                  {stock.atrPct ? `${stock.atrPct}%` : '≥1.8%'}
-                                  <span className="text-[10px] text-emerald-500 font-normal ml-1">≥1.8% 達標</span>
+                                  {stock.atrPct ? `${stock.atrPct}%` : '≥2.5%'}
+                                  <span className="text-[10px] text-emerald-500 font-normal ml-1">≥2.5% 達標 (高動能波段股)</span>
                                 </div>
                               </div>
 
@@ -1820,11 +1961,11 @@ export default function App() {
                                 )}
                               </div>
 
-                              <div className="grid grid-cols-3 gap-2 pt-1 font-mono text-center">
+                              <div className="grid grid-cols-3 gap-1.5 sm:gap-2 pt-1 font-mono text-center">
                                 <div className="p-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80">
                                   <span className="text-[10px] text-slate-500 block font-sans">外資買賣超</span>
                                   <strong
-                                    className={`text-xs block font-bold ${
+                                    className={`text-[11px] sm:text-xs block font-bold whitespace-nowrap ${
                                       stock.foreignNetLots === null
                                         ? 'text-slate-500 font-normal'
                                         : stock.foreignNetLots > 0
@@ -1843,7 +1984,7 @@ export default function App() {
                                 <div className="p-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80">
                                   <span className="text-[10px] text-slate-500 block font-sans">投信買賣超</span>
                                   <strong
-                                    className={`text-xs block font-bold ${
+                                    className={`text-[11px] sm:text-xs block font-bold whitespace-nowrap ${
                                       stock.trustNetLots > 0
                                         ? 'text-rose-400'
                                         : stock.trustNetLots < 0
@@ -1859,7 +2000,7 @@ export default function App() {
                                 <div className="p-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80">
                                   <span className="text-[10px] text-slate-500 block font-sans">自營商</span>
                                   <strong
-                                    className={`text-xs block font-bold ${
+                                    className={`text-[11px] sm:text-xs block font-bold whitespace-nowrap ${
                                       stock.dealerNetLots === null
                                         ? 'text-slate-500 font-normal'
                                         : stock.dealerNetLots > 0
@@ -2001,7 +2142,7 @@ export default function App() {
                       今日無符合低基期轉型之安全標的
                     </p>
                     <p className="text-xs text-slate-400 mt-2 max-w-lg mx-auto leading-relaxed">
-                      系統遵循嚴格量化紀律（近一年位階 &le; 35% 低檔、現價站穩 20MA 且均線走平微揚、單月營收 YoY &ge; 8%、5日均量 &gt; 1,000張、ATR% &ge; 1.8%），絕不濫竽充數推薦未達標標的。
+                      系統遵循嚴格量化紀律（近一年位階 &le; 35% 低檔、現價站穩 20MA 且均線走平微揚、單月營收 YoY &ge; 8%、5日均量 &gt; 1,000張、ATR% &ge; 2.2%），絕不濫竽充數推薦未達標標的。
                     </p>
                   </div>
                 ) : (
@@ -2151,8 +2292,8 @@ export default function App() {
                               <div className="p-2 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
                                 <div className="text-[10px] text-slate-500 mb-0.5">20日 ATR% 波動度</div>
                                 <div className="font-bold text-emerald-400">
-                                  {stock.atrPct ? `${stock.atrPct}%` : '≥1.8%'}
-                                  <span className="text-[10px] text-emerald-500 font-normal ml-1">≥1.8% 達標</span>
+                                  {stock.atrPct ? `${stock.atrPct}%` : '≥2.2%'}
+                                  <span className="text-[10px] text-emerald-500 font-normal ml-1">≥2.2% 達標</span>
                                 </div>
                               </div>
 
@@ -2268,6 +2409,10 @@ export default function App() {
             lastQuotesUpdatedAt={lastWatchlistQuotesUpdatedAt}
             onOpenStockDetail={handleOpenStockDetail}
             onAddStockBySymbol={handleAddStockBySymbol}
+            watchlistBriefing={watchlistBriefing}
+            isBriefingLoading={isWatchlistBriefingLoading}
+            isBriefingGenerating={isWatchlistBriefingGenerating}
+            onGenerateBriefing={loadWatchlistBriefing}
           />
         )}
       </main>

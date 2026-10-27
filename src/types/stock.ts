@@ -158,11 +158,13 @@ export interface TurnaroundScreenerResponse {
 }
 
 export interface MorningBriefingResponse {
-  markdown: string;
-  generatedAt: string;
-  model: string;
-  cachedAt: string;
-  expiresInSeconds: number;
+  isGenerated?: boolean;
+  date?: string;
+  markdown?: string;
+  generatedAt?: string;
+  model?: string;
+  cachedAt?: string;
+  expiresInSeconds?: number;
   dailyDate?: string;
   isDailyCached?: boolean;
 }
@@ -193,15 +195,53 @@ export interface PortfolioStockItem {
   ma20?: number;
   trustNetBuyDays?: number;
   trustNetBuyLots?: number;
-  decisionRating?: 'BUY' | 'HOLD' | 'TRIM' | 'SELL';
+  decisionRating?: 'BUY' | 'HOLD' | 'TRIM' | 'SELL' | 'SHAKEOUT_HOLD' | 'CONFIRMED_STOP_LOSS';
   healthAlerts?: WatchlistAlertDetail[];
+  diagnosticNote?: string;
+  volumeLots?: number;
+  volumeAvg5d?: number;
+  foreignNetLots?: number;
+  marginChangeLots?: number;
 }
 
 export interface WatchlistAlertDetail {
-  type: 'STOP_LOSS' | 'RATING_BEARISH' | 'MA_BEARISH' | 'TRUST_SELLING';
+  type: 'STOP_LOSS' | 'RATING_BEARISH' | 'MA_BEARISH' | 'TRUST_SELLING' | 'SHAKEOUT_HOLD' | 'CONFIRMED_STOP_LOSS';
   title: string;
   description: string;
-  severity: 'danger' | 'warning';
+  severity: 'danger' | 'warning' | 'info' | 'success' | 'shakeout';
+}
+
+export interface WatchlistStockDiagnostic {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  ma5: number;
+  ma10: number;
+  ma20: number;
+  volumeLots: number;
+  volumeAvg5d: number;
+  volumeRatio: number;
+  trustNetLots: number;
+  foreignNetLots: number;
+  marginChangeLots: number;
+  isBrokenMa20: boolean;
+  dropBelowMa20Pct: number;
+  decisionRating: 'BUY' | 'HOLD' | 'TRIM' | 'SELL' | 'SHAKEOUT_HOLD' | 'CONFIRMED_STOP_LOSS';
+  diagnosticTitle: string;
+  diagnosticNote: string;
+  severity: 'danger' | 'warning' | 'info' | 'success';
+}
+
+export interface WatchlistBriefingResponse {
+  isGenerated: boolean;
+  date: string;
+  markdown?: string;
+  model?: string;
+  generatedAt?: string;
+  cachedAt?: string;
+  diagnostics?: Record<string, WatchlistStockDiagnostic>;
 }
 
 export interface BrokerTradeItem {
@@ -265,10 +305,10 @@ export interface NotificationItem {
   id: string;
   stockSymbol: string;
   stockName: string;
-  type: 'danger' | 'warning' | 'info' | 'success';
+  type: 'danger' | 'warning' | 'info' | 'success' | 'shakeout';
   title: string;
   message: string;
-  alertType: 'STOP_LOSS' | 'RATING_BEARISH' | 'MA_BEARISH' | 'TRUST_SELLING' | 'GENERAL';
+  alertType: 'STOP_LOSS' | 'RATING_BEARISH' | 'MA_BEARISH' | 'TRUST_SELLING' | 'SHAKEOUT_HOLD' | 'CONFIRMED_STOP_LOSS' | 'GENERAL';
   timestamp: string;
   isRead: boolean;
 }

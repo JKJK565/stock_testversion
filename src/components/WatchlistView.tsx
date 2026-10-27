@@ -18,8 +18,13 @@ import {
   Clock,
   Building2,
   Plus,
+  ChevronDown,
+  ChevronUp,
+  SunMedium,
+  ShieldCheck,
 } from 'lucide-react';
-import { PortfolioStockItem, WatchlistAlertDetail } from '../types/stock';
+import { PortfolioStockItem, WatchlistAlertDetail, WatchlistBriefingResponse } from '../types/stock';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface WatchlistViewProps {
   portfolio: PortfolioStockItem[];
@@ -32,6 +37,10 @@ interface WatchlistViewProps {
   lastQuotesUpdatedAt?: string;
   onOpenStockDetail?: (symbol: string) => void;
   onAddStockBySymbol?: (symbol: string) => Promise<boolean>;
+  watchlistBriefing?: WatchlistBriefingResponse | null;
+  isBriefingLoading?: boolean;
+  isBriefingGenerating?: boolean;
+  onGenerateBriefing?: (force?: boolean) => void;
 }
 
 export function WatchlistView({
@@ -45,7 +54,12 @@ export function WatchlistView({
   lastQuotesUpdatedAt = '',
   onOpenStockDetail,
   onAddStockBySymbol,
+  watchlistBriefing,
+  isBriefingLoading = false,
+  isBriefingGenerating = false,
+  onGenerateBriefing,
 }: WatchlistViewProps) {
+  const [isBriefingExpanded, setIsBriefingExpanded] = useState(true);
   const [quickSymbol, setQuickSymbol] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
@@ -120,6 +134,133 @@ export function WatchlistView({
   return (
     <div className="space-y-6 animate-fadeIn">
       {/* ========================================================================= */}
+      {/* 0. 📊 TOP SECTION: 自選持股每日量化晨會戰報 (Gemini 2.5 Pro 旗艦體檢)        */}
+      {/* ========================================================================= */}
+      <section className="rounded-3xl bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 border border-slate-800 shadow-2xl p-5 sm:p-7 relative overflow-hidden">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-500/20 to-indigo-500/20 border border-indigo-500/30 flex items-center justify-center">
+              <SunMedium className="w-6 h-6 text-amber-400" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-bold text-white">自選持股每日量化晨會戰報</h2>
+                <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-mono flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-indigo-400" />
+                  {watchlistBriefing?.model ? `${watchlistBriefing.model} 旗艦推理` : 'Gemini 2.5 Pro 旗艦推理'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                專屬體檢當前 {portfolio.length} 檔自選持股：防主力甩轎、昨日法人融資籌碼消長與 20MA 防守點
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {watchlistBriefing && watchlistBriefing.isGenerated && watchlistBriefing.markdown && (
+              <button
+                onClick={() => onGenerateBriefing?.(true)}
+                disabled={isBriefingGenerating}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
+                title="重新啟動 Gemini 2.5 Pro 進行專屬體檢"
+              >
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${
+                    isBriefingGenerating ? 'animate-spin text-amber-400' : ''
+                  }`}
+                />
+                <span>{isBriefingGenerating ? '體檢中...' : '🔄 重新分析'}</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => setIsBriefingExpanded((prev) => !prev)}
+              className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
+              title={isBriefingExpanded ? '收合戰報' : '展開戰報'}
+            >
+              {isBriefingExpanded ? (
+                <ChevronUp className="w-4 h-4" />
+              ) : (
+                <ChevronDown className="w-4 h-4" />
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* State 1: Generating animation */}
+        {isBriefingGenerating ? (
+          <div className="mt-5 p-8 rounded-2xl bg-slate-950/90 border border-indigo-500/30 flex flex-col items-center justify-center text-center space-y-4 shadow-2xl">
+            <div className="relative">
+              <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-600 via-rose-500 to-amber-500 animate-spin flex items-center justify-center p-1">
+                <div className="w-full h-full bg-slate-950 rounded-xl flex items-center justify-center">
+                  <Sparkles className="w-7 h-7 text-amber-400 animate-pulse" />
+                </div>
+              </div>
+              <span className="absolute -top-1 -right-1 flex h-4 w-4">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-4 w-4 bg-rose-500"></span>
+              </span>
+            </div>
+            <div>
+              <h4 className="text-base sm:text-lg font-bold text-white flex items-center justify-center gap-2">
+                <Sparkles className="w-5 h-5 text-amber-400" />
+                Gemini 2.5 Pro 自選持股量化體檢中...
+              </h4>
+              <p className="text-xs sm:text-sm text-slate-400 mt-1 max-w-md">
+                正在全維度對帳昨日法人籌碼、融資浮額消長與每檔股票 20MA 防守點位...
+              </p>
+            </div>
+            <div className="w-48 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-amber-500 via-rose-500 to-indigo-500 w-full animate-pulse" />
+            </div>
+          </div>
+        ) : (!watchlistBriefing || !watchlistBriefing.isGenerated || !watchlistBriefing.markdown) ? (
+          /* State 2: Un-generated Prompt Guidance Card */
+          <div className="mt-5 p-6 sm:p-8 rounded-2xl bg-gradient-to-br from-indigo-950/20 via-slate-950 to-slate-900 border border-indigo-500/30 text-center flex flex-col items-center justify-center shadow-inner">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-500/20 to-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-2xl mb-3 shadow-md">
+              📊
+            </div>
+            <h4 className="text-lg sm:text-xl font-bold text-white tracking-wide">
+              今日自選持股量化戰報尚未產出
+            </h4>
+            <p className="text-xs sm:text-sm text-slate-400 mt-2 max-w-md leading-relaxed">
+              建議於早上 08:00 ~ 08:50 或開盤前點擊產出，由 Gemini 2.5 Pro 針對您當前關注的 {portfolio.length} 檔持股進行深度量化體檢。
+            </p>
+            <button
+              onClick={() => onGenerateBriefing?.(true)}
+              disabled={isBriefingGenerating || portfolio.length === 0}
+              className="mt-5 px-6 py-3 rounded-2xl bg-gradient-to-r from-amber-500 via-rose-500 to-indigo-600 hover:from-amber-400 hover:via-rose-400 hover:to-indigo-500 text-white font-bold text-sm sm:text-base shadow-lg shadow-indigo-950/60 hover:shadow-indigo-900/80 transition-all flex items-center gap-2.5 transform active:scale-95 cursor-pointer disabled:opacity-50"
+            >
+              <Sparkles className="w-5 h-5 text-amber-200" />
+              <span>⚡ 產出今日自選持股戰報 (Gemini 2.5 Pro)</span>
+            </button>
+          </div>
+        ) : isBriefingExpanded ? (
+          /* State 3: Display Generated Briefing */
+          <div className="mt-5 p-5 rounded-2xl bg-slate-950/80 border border-slate-800/90 shadow-inner">
+            <MarkdownRenderer content={watchlistBriefing.markdown} />
+            <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-[11px] text-slate-500">
+              <span className="flex items-center gap-1.5 text-indigo-400/90 font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                當日持久快取生效中（Gemini 2.5 Pro 自選股專屬量化體檢・0秒秒開）
+              </span>
+              <button
+                onClick={() => onGenerateBriefing?.(true)}
+                disabled={isBriefingGenerating}
+                className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-indigo-300 hover:text-white border border-indigo-500/30 text-[11px] font-medium flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
+                title="重新啟動 Gemini 2.5 Pro 深度體檢"
+              >
+                <RefreshCw
+                  className={`w-3 h-3 ${isBriefingGenerating ? 'animate-spin text-amber-400' : ''}`}
+                />
+                <span>{isBriefingGenerating ? '體檢中...' : '🔄 重新分析最新持股'}</span>
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      {/* ========================================================================= */}
       {/* 1. 🚨 TOP SECTION: 自選股破線/減碼警訊清單 (Red Alert Card)                 */}
       {/* ========================================================================= */}
       {alertStocks.length > 0 && (
@@ -139,7 +280,7 @@ export function WatchlistView({
                     🚨 自選股破線/減碼警訊清單
                   </h2>
                   <span className="px-2.5 py-0.5 rounded-full bg-rose-500 text-white text-xs font-black animate-bounce">
-                    {alertStocks.length} 檔破線
+                    {alertStocks.length} 檔警戒
                   </span>
                 </div>
                 <p className="text-xs text-rose-200/80 mt-0.5">
@@ -150,7 +291,7 @@ export function WatchlistView({
 
             <div className="text-xs text-rose-300/80 font-mono flex items-center gap-1.5 self-start sm:self-auto bg-rose-950/80 px-3 py-1.5 rounded-xl border border-rose-800/60">
               <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
-              <span>自動即時健康監控中</span>
+              <span>晚間 21:30 籌碼深層防洗盤雙重驗證</span>
             </div>
           </div>
 
@@ -158,7 +299,6 @@ export function WatchlistView({
           <div className="mt-4 space-y-3">
             {alertStocks.map((stock) => {
               const curPrice = stock.currentPrice ?? stock.entryPrice;
-              const isBroken = curPrice < stock.stopLossPrice;
 
               return (
                 <div
@@ -172,13 +312,27 @@ export function WatchlistView({
                       <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-bold">
                         {stock.symbol}
                       </span>
-                      <span className="text-xs px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold border border-rose-500/40">
-                        {stock.decisionRating === 'SELL'
-                          ? '🔴 評定翻空 (SELL)'
-                          : stock.decisionRating === 'TRIM'
-                          ? '🟠 建議減碼 (TRIM)'
-                          : '🚨 破線警戒'}
-                      </span>
+                      {stock.decisionRating === 'CONFIRMED_STOP_LOSS' ? (
+                        <span className="text-xs px-2.5 py-0.5 rounded bg-rose-600 text-white font-extrabold border border-rose-400 shadow-md animate-pulse">
+                          🚨 破線出貨・執行停損
+                        </span>
+                      ) : stock.decisionRating === 'SHAKEOUT_HOLD' ? (
+                        <span className="text-xs px-2.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40">
+                          🛡️ 主力洗盤甩轎・建議續抱
+                        </span>
+                      ) : stock.decisionRating === 'SELL' ? (
+                        <span className="text-xs px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold border border-rose-500/40">
+                          🔴 評定翻空 (SELL)
+                        </span>
+                      ) : stock.decisionRating === 'TRIM' ? (
+                        <span className="text-xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40">
+                          🟠 建議減碼 (TRIM)
+                        </span>
+                      ) : (
+                        <span className="text-xs px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold border border-rose-500/40">
+                          🚨 破線警戒
+                        </span>
+                      )}
                       <span className="text-xs text-slate-400">
                         現價 <strong className="text-white text-sm">${curPrice.toFixed(2)}</strong> / 停損錨定價 <strong className="text-rose-400 text-sm">${stock.stopLossPrice.toFixed(2)}</strong>
                       </span>
@@ -451,10 +605,15 @@ export function WatchlistView({
                       </span>
 
                       {/* Health Status Badge */}
-                      {isStopBroken ? (
+                      {item.decisionRating === 'SHAKEOUT_HOLD' ? (
+                        <span className="text-xs px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40 font-bold flex items-center gap-1">
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          🛡️ 主力洗盤甩轎・建議續抱
+                        </span>
+                      ) : (item.decisionRating === 'CONFIRMED_STOP_LOSS' || isStopBroken) ? (
                         <span className="text-xs px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40 font-bold flex items-center gap-1">
                           <ShieldAlert className="w-3.5 h-3.5" />
-                          🚨 跌破停損價
+                          🚨 破線出貨・執行停損
                         </span>
                       ) : hasAlert ? (
                         <span className="text-xs px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold flex items-center gap-1">
@@ -471,15 +630,36 @@ export function WatchlistView({
                       <span className="text-xs text-slate-500">加入日 {item.entryDate}</span>
                     </div>
 
-                    {/* Alert Reasons List if any */}
+                    {/* Diagnostic Note or Alert Reasons List */}
+                    {item.diagnosticNote && (
+                      <div className="mt-2 text-xs text-blue-200/90 bg-blue-950/40 border border-blue-800/40 rounded-lg px-2.5 py-1.5 flex items-start gap-1.5">
+                        <span className="flex-shrink-0 font-bold">💡 籌碼深層診斷：</span>
+                        <span>{item.diagnosticNote}</span>
+                      </div>
+                    )}
+
                     {item.healthAlerts && item.healthAlerts.length > 0 && (
                       <div className="mt-2 space-y-1">
                         {item.healthAlerts.map((alert, idx) => (
                           <div
                             key={idx}
-                            className="text-xs text-rose-300 flex items-center gap-1.5"
+                            className={`text-xs flex items-center gap-1.5 ${
+                              alert.severity === 'shakeout'
+                                ? 'text-blue-300'
+                                : alert.severity === 'danger'
+                                ? 'text-rose-300'
+                                : 'text-amber-300'
+                            }`}
                           >
-                            <span className="w-1.5 h-1.5 rounded-full bg-rose-400 flex-shrink-0" />
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                                alert.severity === 'shakeout'
+                                  ? 'bg-blue-400'
+                                  : alert.severity === 'danger'
+                                  ? 'bg-rose-400'
+                                  : 'bg-amber-400'
+                              }`}
+                            />
                             <span>
                               <strong>{alert.title}：</strong>
                               {alert.description}

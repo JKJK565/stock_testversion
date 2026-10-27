@@ -177,13 +177,48 @@ export interface TurnaroundScreenerResponse {
 }
 
 export interface MorningBriefingResponse {
-  markdown: string;
-  generatedAt: string;
-  model: string;
-  cachedAt: string;
-  expiresInSeconds: number;
+  isGenerated?: boolean;
+  date?: string;
+  markdown?: string;
+  generatedAt?: string;
+  model?: string;
+  cachedAt?: string;
+  expiresInSeconds?: number;
   dailyDate?: string;
   isDailyCached?: boolean;
+}
+
+export interface WatchlistStockDiagnostic {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  ma5: number;
+  ma10: number;
+  ma20: number;
+  volumeLots: number;
+  volumeAvg5d: number;
+  volumeRatio: number;
+  trustNetLots: number;
+  foreignNetLots: number;
+  marginChangeLots: number;
+  isBrokenMa20: boolean;
+  dropBelowMa20Pct: number;
+  decisionRating: 'BUY' | 'HOLD' | 'TRIM' | 'SELL' | 'SHAKEOUT_HOLD' | 'CONFIRMED_STOP_LOSS';
+  diagnosticTitle: string;
+  diagnosticNote: string;
+  severity: 'danger' | 'warning' | 'info' | 'success';
+}
+
+export interface WatchlistBriefingResponse {
+  isGenerated: boolean;
+  date: string;
+  markdown?: string;
+  model?: string;
+  generatedAt?: string;
+  cachedAt?: string;
+  diagnostics?: Record<string, WatchlistStockDiagnostic>;
 }
 
 // In-Memory Caches
@@ -1066,15 +1101,16 @@ async function getMarketOverview(force = false): Promise<MarketOverviewResponse>
 }
 
 // 7. Gemini AI-Powered Deep Morning Briefing Generator with Daily Persistent Cache
-async function generateGeminiDeepMorningBriefing(force: boolean = false): Promise<MorningBriefingResponse> {
-  const todayTaipeiDate = getTaipeiDateString();
-  const todayWeekday = getTaipeiWeekday();
-  const txSettlement = getUpcomingTxSettlementDate(todayTaipeiDate);
-
+function getCachedMorningBriefing(todayTaipeiDate: string): MorningBriefingResponse | null {
   // 1. Check in-memory daily cache (0s load, no token cost)
-  if (!force && dailyMorningBriefingCache && dailyMorningBriefingCache.date === todayTaipeiDate) {
+  if (
+    dailyMorningBriefingCache &&
+    dailyMorningBriefingCache.date === todayTaipeiDate &&
+    dailyMorningBriefingCache.data?.markdown
+  ) {
     return {
       ...dailyMorningBriefingCache.data,
+      isGenerated: true,
       expiresInSeconds: getSecondsUntilMidnightTaipei(),
       isDailyCached: true,
       dailyDate: todayTaipeiDate,
@@ -1082,23 +1118,38 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
   }
 
   // 2. Check disk file cache
-  if (!force) {
-    try {
-      if (fs.existsSync(BRIEFING_CACHE_FILE)) {
-        const raw = fs.readFileSync(BRIEFING_CACHE_FILE, 'utf-8');
-        const parsed = JSON.parse(raw);
-        if (parsed && parsed.date === todayTaipeiDate && parsed.data && parsed.data.markdown) {
-          dailyMorningBriefingCache = parsed;
-          return {
-            ...parsed.data,
-            expiresInSeconds: getSecondsUntilMidnightTaipei(),
-            isDailyCached: true,
-            dailyDate: todayTaipeiDate,
-          };
-        }
+  try {
+    if (fs.existsSync(BRIEFING_CACHE_FILE)) {
+      const raw = fs.readFileSync(BRIEFING_CACHE_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.date === todayTaipeiDate && parsed.data && parsed.data.markdown) {
+        dailyMorningBriefingCache = parsed;
+        return {
+          ...parsed.data,
+          isGenerated: true,
+          expiresInSeconds: getSecondsUntilMidnightTaipei(),
+          isDailyCached: true,
+          dailyDate: todayTaipeiDate,
+        };
       }
-    } catch (e) {
-      console.warn('Error reading daily briefing disk cache:', e);
+    }
+  } catch (e) {
+    console.warn('Error reading daily briefing disk cache:', e);
+  }
+
+  return null;
+}
+
+async function generateGeminiDeepMorningBriefing(force: boolean = false): Promise<MorningBriefingResponse> {
+  const todayTaipeiDate = getTaipeiDateString();
+  const todayWeekday = getTaipeiWeekday();
+  const txSettlement = getUpcomingTxSettlementDate(todayTaipeiDate);
+
+  // Check cache first if not forced
+  if (!force) {
+    const cached = getCachedMorningBriefing(todayTaipeiDate);
+    if (cached) {
+      return cached;
     }
   }
 
@@ -1155,7 +1206,7 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
     txSettlementLabel: txSettlement.label,
   };
 
-  const prompt = `你是一位頂尖的資深台股量化操盤手與總經首席分析師。請根據以下【100% 真實即時市場數據】撰寫今日（${realData.date} ${realData.weekday}）開盤前的【每日深度操盤早報】。嚴禁捏造任何虛構行情或憑空造假數據！
+  const prompt = `你是一位頂尖的資深台股量化操盤手與總經首席分析師。請發揮頂尖的金融因果推演能力，根據以下【100% 真實即時市場數據】進行深度推演，撰寫今日（${realData.date} ${realData.weekday}）開盤前的【每日深度操盤早報】。嚴禁捏造任何虛構行情或憑空造假數據！
 
 【真實即時行情與三大法人籌碼數據】
 - 盤勢分析日期：${realData.date} (${realData.weekday})
@@ -1174,21 +1225,22 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
 
 【關鍵財經日程錨定（今日日期：${realData.date} (${realData.weekday})）】
 - 近期台指期合約月結算日：${realData.txSettlementLabel}
-- 近期美股重要財報週與科技巨頭法說會（微軟、Meta、蘋果、Google、輝達）
-- 近期美國總經重大數據（美國 CPI/PPI 通膨數據、FOMC 聯準會利率會議決策）
+- 近期美股重要財報週與科技巨頭法說會（輝達、微軟、Meta、蘋果、Google、台積電）
+- 近期美國總經重大數據（美國 CPI/PPI 通膨數據、FOMC 聯準會利率會議決策、非農就業報告）
 
-請嚴格依照以下 5 大核心板塊輸出專業且排版優雅的繁體中文 Markdown 戰報：
+請嚴格依照以下 5 大核心板塊輸出具備深刻金融因果推演、專業量化操盤手口吻且排版優雅的繁體中文 Markdown 戰報：
 
 # 🎯 台股量化早報：今日開盤作戰策略與大盤全解析
 
 ---
 
 ### A. 昨夜美股費半、台積電 ADR 與台指期夜盤走勢定調
-- 深入剖析昨夜費半（${realData.us.sox.changePercent}%）與台積電 ADR（${realData.us.tsm.changePercent}%）的互動邏輯。
-- 結合台指期全時盤（${realData.wtx.price}，${realData.wtx.change > 0 ? '+' : ''}${realData.wtx.change}點）走勢，明確給予今日開盤定調（例如：平高震盪、跳空防守或回測支撐）。
+- 發揮強大金融因果推演：深入剖析昨夜費半（${realData.us.sox.changePercent}%）與台積電 ADR（${realData.us.tsm.changePercent}%）的互動邏輯對台股半導體與電子權值股的傳導效應。
+- 結合台指期全時盤（${realData.wtx.price}，${realData.wtx.change > 0 ? '+' : ''}${realData.wtx.change}點）走勢與價差折溢價，明確給予今日開盤定調（例如：平高震盪、跳空防守或回測支撐）。
 
-### B. 昨日三大法人籌碼深層解讀
+### B. 昨日三大法人籌碼與外資期貨淨留倉深層解讀
 - 深入解讀外資（${realData.institutional.foreignNetTwdBillion} 億元）與投信（${realData.institutional.trustNetTwdBillion >= 0 ? '+' : ''}${realData.institutional.trustNetTwdBillion} 億元）之「土洋對作」或法人鎖碼動向。
+- 剖析外資期貨多空淨留倉變動對台股現貨開盤壓抑或推升之實質影響。
 - 說明投信買盤在櫃買或主流中小型成長股的認養保護傘效應。
 
 ### C. 今日開盤策略與持股水位建議
@@ -1208,16 +1260,16 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
 
 請使用專業量化操盤手口吻，字句鏗鏘有力，提供實用指引。`;
 
-  // Fallback candidate models
+  // Candidate models: Primary flagship reasoning model gemini-2.5-pro, fallback to gemini-2.5-flash
   const candidateModels = [
+    'gemini-2.5-pro',
     'gemini-2.5-flash',
-    'gemini-3.1-flash-lite',
     'gemini-flash-latest',
-    'gemini-3.8-flash',
+    'gemini-3.1-flash-lite',
   ];
 
   let generatedMarkdown = '';
-  let usedModel = 'gemini-2.5-flash';
+  let usedModel = 'gemini-2.5-pro';
 
   for (const modelName of candidateModels) {
     try {
@@ -1240,8 +1292,8 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
     generatedMarkdown = `### A. 昨夜美股費半、台積電 ADR 與台指期夜盤走勢定調
 昨夜費半微幅整理 (${realData.us.sox.changePercent > 0 ? '+' : ''}${realData.us.sox.changePercent}%)，台積電 ADR 逆勢抗跌 (${realData.us.tsm.changePercent > 0 ? '+' : ''}${realData.us.tsm.changePercent}%)，台指期全時盤報 ${realData.wtx.price} (${realData.wtx.change > 0 ? '+' : ''}${realData.wtx.change}點)。大盤開盤預計呈現溫和震盪盤堅走勢。
 
-### B. 昨日三大法人籌碼深層解讀
-昨日官方統計外資調節 ${realData.institutional.foreignNetTwdBillion} 億元，投信則大舉買超 ${realData.institutional.trustNetTwdBillion >= 0 ? '+' : ''}${realData.institutional.trustNetTwdBillion} 億元，呈現顯著之「土洋對作、內資認養」格局，投信重押之績優標的具備強烈籌碼保護傘。
+### B. 昨日三大法人籌碼與外資期貨淨留倉深層解讀
+昨日官方統計外資調節 ${realData.institutional.foreignNetTwdBillion} 億元，投信則大舉買超 ${realData.institutional.trustNetTwdBillion >= 0 ? '+' : ''}${realData.institutional.trustNetTwdBillion} 億元，呈現顯著之「土洋對作、內資認養」格局，投信重押之績優標的具備強烈籌碼保護傘。外資期貨部位維持高水位避險警戒，早盤需防範權值股高檔壓抑震盪。
 
 ### C. 今日開盤策略與持股水位建議
 - **建議持股水位**：**55% ~ 65%**（中性偏多）。
@@ -1259,6 +1311,8 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
   }
 
   const result: MorningBriefingResponse = {
+    isGenerated: true,
+    date: todayTaipeiDate,
     markdown: generatedMarkdown,
     generatedAt: new Date().toISOString(),
     model: usedModel,
@@ -1418,6 +1472,76 @@ async function fetchDayTrustBuys(dateStr: string): Promise<Map<string, number>> 
     if (data.trustNetLots > 0) {
       map.set(code, data.trustNetLots);
     }
+  }
+  return map;
+}
+
+interface DayMarginData {
+  todayBalance: number;
+  prevBalance: number;
+  changeLots: number;
+}
+
+const dayMarginCache = new Map<string, Map<string, DayMarginData>>();
+
+async function fetchDayMargin(dateStr: string): Promise<Map<string, DayMarginData>> {
+  if (dayMarginCache.has(dateStr)) {
+    return dayMarginCache.get(dateStr)!;
+  }
+  const map = new Map<string, DayMarginData>();
+
+  // 1. TWSE MI_MARGN (上市全市場融資融券官方結算數據)
+  try {
+    const dTwse = dateStr.replace(/-/g, '');
+    const url = `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${dTwse}&selectType=ALL&response=json`;
+    const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 7000);
+    if (res.ok) {
+      const json = await res.json();
+      const tables = Array.isArray(json?.tables) ? json.tables : [];
+      const marginTable = tables.find((t: any) => String(t.title || '').includes('融資融券彙總')) || tables[1];
+      if (marginTable && Array.isArray(marginTable.data)) {
+        for (const row of marginTable.data) {
+          const code = String(row[0] || '').trim();
+          if (!/^[1-9][0-9]{3}$/.test(code)) continue;
+          const prevBalance = parseInt(String(row[5] || '0').replace(/,/g, ''), 10) || 0;
+          const todayBalance = parseInt(String(row[6] || '0').replace(/,/g, ''), 10) || 0;
+          const changeLots = todayBalance - prevBalance;
+          map.set(code, { todayBalance, prevBalance, changeLots });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`TWSE MI_MARGN fetch failed for date ${dateStr}:`, err);
+  }
+
+  // 2. TPEx Margin (上櫃全市場融資融券官方結算數據)
+  try {
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+      const rocDate = `${parseInt(parts[0], 10) - 1911}/${parts[1]}/${parts[2]}`;
+      const tpexUrl = `https://www.tpex.org.tw/web/stock/margin_trading/margin_bal/margin_bal_result.php?l=zh-tw&o=json&d=${rocDate}`;
+      const res = await fetchWithTimeout(tpexUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 7000);
+      if (res.ok) {
+        const json = await res.json();
+        const rows = json.tables?.[0]?.data || json.data;
+        if (Array.isArray(rows)) {
+          for (const row of rows) {
+            const code = String(row[0] || '').trim();
+            if (!/^[1-9][0-9]{3}$/.test(code)) continue;
+            const prevBalance = parseInt(String(row[5] || '0').replace(/,/g, ''), 10) || 0;
+            const todayBalance = parseInt(String(row[6] || '0').replace(/,/g, ''), 10) || 0;
+            const changeLots = todayBalance - prevBalance;
+            map.set(code, { todayBalance, prevBalance, changeLots });
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`TPEx margin fetch failed for date ${dateStr}:`, err);
+  }
+
+  if (map.size > 0) {
+    dayMarginCache.set(dateStr, map);
   }
   return map;
 }
@@ -1779,9 +1903,9 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
       if (volumeAvg5d <= 1000) continue;
 
       // 【核心過濾 4：客觀量化波動度濾網】：計算過去 20 日之「平均真實波動度百分比 (ATR%)」
-      // 若 ATR% < 1.8%，代表該股每日震幅過小、缺乏波段價差空間，直接剔除（自動剃除死水牛皮股）
+      // 升級門檻至 >= 2.5%：只鎖定日均震幅充足的攻擊型飆股，徹底剔除日震幅不足 2.5% 的溫吞平庸股
       const { atr20, atrPct } = calculateATR20Pct(histCloses, klines.highs, klines.lows, curClose);
-      if (atrPct < 1.8) continue;
+      if (atrPct < 2.5) continue;
 
       // 產業主題與白名單判定（AI硬體周邊、CoWoS先進封裝、CPO矽光子、重電電網與儲能、轉型爆發）
       const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(c.code, c.name);
@@ -2228,9 +2352,9 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
       const isMa20FlatOrRising = ma20 >= prevMa20 * 0.995;
       const isSafeBottom = isAboveMa20 && isMa20FlatOrRising;
 
-      // 客觀量化波動度門檻與流動性門檻
+      // 客觀量化波動度門檻與流動性門檻（維持安全閥 atrPct >= 2.2%，兼顧底部量縮打底特性）
       const isLiquidityPass = volumeAvg5d > 1000;
-      const isAtrPass = atrPct >= 1.8;
+      const isAtrPass = atrPct >= 2.2;
       const isProfitable = cached.sumEps > 0;
       const isRevGrowing = cached.revenueYoY >= 8.0;
 
@@ -2462,11 +2586,27 @@ const handleMarketOverview = async (req: Request, res: Response) => {
 app.get('/api/market', handleMarketOverview);
 app.get('/api/market/overview', handleMarketOverview);
 
-// 2. 升級版每日深度操盤早報 (Gemini 2.5 Flash + 當日持久快取 0 秒開盤)
+// 2. 旗艦版每日深度操盤早報 (Gemini 2.5 Pro + 手動觸發機制 + 當日持久快取)
 app.get('/api/market/morning-briefing', async (req: Request, res: Response) => {
   try {
-    const force = req.query.force === 'true';
-    const briefing = await generateGeminiDeepMorningBriefing(force);
+    const todayTaipeiDate = getTaipeiDateString();
+    const shouldGenerate = req.query.generate === 'true' || req.query.force === 'true';
+
+    // 若今日快取檔案已存在，且未指定強制生成，直接回傳快取戰報
+    if (!shouldGenerate) {
+      const cached = getCachedMorningBriefing(todayTaipeiDate);
+      if (cached) {
+        return res.json(cached);
+      }
+      // 今日尚未生成：回傳 isGenerated: false，嚴禁自動在背景呼叫 Gemini！
+      return res.json({
+        isGenerated: false,
+        date: todayTaipeiDate,
+      });
+    }
+
+    // 當收到 ?generate=true (或 ?force=true) 時，正式啟動 Gemini 2.5 Pro 進行深度推演並寫入快取
+    const briefing = await generateGeminiDeepMorningBriefing(true);
     return res.json(briefing);
   } catch (e: any) {
     console.error('Morning briefing error:', e);
@@ -2708,9 +2848,384 @@ async function fetchBrokerTrading(symbol: string, currentPrice: number) {
   } catch (err) {
     console.warn(`[BrokerTrading] Error fetching broker data for ${symbol}:`, err);
   }
-
   return null;
 }
+
+// =========================================================================
+// 自選股防洗盤機制 ── 晚間 21:30 籌碼深層診斷與專屬量化晨會戰報
+// =========================================================================
+
+const WATCHLIST_BRIEFING_CACHE_FILE = path.join(process.cwd(), '.daily_watchlist_briefing_cache.json');
+let watchlistBriefingDiskCache: Record<
+  string,
+  { markdown: string; date: string; model: string; generatedAt: string }
+> = {};
+
+function loadWatchlistBriefingDiskCache() {
+  try {
+    if (fs.existsSync(WATCHLIST_BRIEFING_CACHE_FILE)) {
+      const raw = fs.readFileSync(WATCHLIST_BRIEFING_CACHE_FILE, 'utf-8');
+      watchlistBriefingDiskCache = JSON.parse(raw);
+    }
+  } catch (e) {
+    console.warn('Error reading watchlist briefing disk cache:', e);
+  }
+}
+loadWatchlistBriefingDiskCache();
+
+function saveWatchlistBriefingDiskCache() {
+  try {
+    fs.writeFileSync(WATCHLIST_BRIEFING_CACHE_FILE, JSON.stringify(watchlistBriefingDiskCache, null, 2), 'utf-8');
+  } catch (e) {
+    console.warn('Error saving watchlist briefing disk cache:', e);
+  }
+}
+
+/**
+ * 晚間 21:30 籌碼深層診斷：
+ * 針對自選股票，結合三大法人籌碼（投信/外資淨買賣超）與證交所融資消長，
+ * 當股價跌破 20MA 時嚴格區分「真出貨 vs 假洗盤」：
+ * 1. 🛡️ 主力洗盤甩轎 (SHAKEOUT_HOLD，建議續抱)
+ * 2. 🚨 確實驗證出貨 (CONFIRMED_STOP_LOSS，堅決停損)
+ */
+async function getWatchlistStockDiagnostics(
+  symbols: string[]
+): Promise<Record<string, WatchlistStockDiagnostic>> {
+  const result: Record<string, WatchlistStockDiagnostic> = {};
+  if (!symbols || symbols.length === 0) return result;
+
+  const marketStatus = getTaipeiMarketStatus();
+  const todayTaipeiDate = marketStatus.dateString;
+  const isIntraday = marketStatus.isIntradayTrading;
+
+  const [quoteMap, dates] = await Promise.all([
+    fetchBatchTWSEMisQuotes(symbols),
+    fetchRecentTradingDates(),
+  ]);
+
+  const latestDate = dates[dates.length - 1] || todayTaipeiDate;
+  const [instMap, marginMap] = await Promise.all([
+    fetchDayInstitutional(latestDate),
+    fetchDayMargin(latestDate),
+  ]);
+
+  for (const sym of symbols) {
+    try {
+      const q = quoteMap.get(sym);
+      const name = getStockName(sym, q?.name);
+      let curPrice = q?.price || 0;
+
+      // 取得 K 線歷史計算 5MA, 10MA, 20MA, 5日均量
+      const klines = await getStockHistoricalKlines(sym, todayTaipeiDate);
+      const histCloses = klines?.closes && klines.closes.length >= 5 ? klines.closes : [];
+      if (curPrice <= 0 && histCloses.length > 0) {
+        curPrice = histCloses[histCloses.length - 1];
+      }
+      const prevClose =
+        q?.prevClose || (histCloses.length >= 2 ? histCloses[histCloses.length - 2] : curPrice);
+      const change = Number((curPrice - prevClose).toFixed(2));
+      const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
+      const curVolumeLots =
+        q?.volumeLots !== undefined
+          ? q.volumeLots
+          : klines?.volumes && klines.volumes.length > 0
+          ? klines.volumes[klines.volumes.length - 1]
+          : 0;
+
+      const histVolumes = klines?.volumes && klines.volumes.length >= 5 ? klines.volumes : [];
+      const volumeAvg5d =
+        histVolumes.length >= 5
+          ? Math.round(histVolumes.slice(-5).reduce((a, b) => a + b, 0) / 5)
+          : curVolumeLots || 1000;
+
+      const ma5 = calculateMovingAverage(histCloses, 5, curPrice, isIntraday, klines?.lastDataDate, todayTaipeiDate);
+      const ma10 = calculateMovingAverage(histCloses, 10, curPrice, isIntraday, klines?.lastDataDate, todayTaipeiDate);
+      const ma20 = calculateMovingAverage(histCloses, 20, curPrice, isIntraday, klines?.lastDataDate, todayTaipeiDate);
+
+      const inst = instMap.get(sym);
+      const trustNetLots = inst?.trustNetLots ?? 0;
+      const foreignNetLots = inst?.foreignNetLots ?? 0;
+
+      const margin = marginMap.get(sym);
+      const marginChangeLots = margin?.changeLots ?? 0;
+
+      const isBrokenMa20 = ma20 > 0 && curPrice < ma20;
+      const dropBelowMa20Pct = isBrokenMa20 ? Number((((ma20 - curPrice) / ma20) * 100).toFixed(2)) : 0;
+      const volumeRatio = volumeAvg5d > 0 ? Number((curVolumeLots / volumeAvg5d).toFixed(2)) : 1.0;
+      const isVolumeShrinking = volumeRatio < 0.85;
+      const isVolumeExploding = volumeRatio > 1.25;
+
+      let decisionRating: 'BUY' | 'HOLD' | 'TRIM' | 'SELL' | 'SHAKEOUT_HOLD' | 'CONFIRMED_STOP_LOSS' = 'BUY';
+      let diagnosticTitle = '🎯 均線多頭發散・強勢續攻';
+      let diagnosticNote = `現價守穩 20MA ($${ma20.toFixed(1)}) 之上，波段攻擊多頭架構良好。`;
+      let severity: 'danger' | 'warning' | 'info' | 'success' = 'success';
+
+      if (isBrokenMa20) {
+        const isInstBuying = trustNetLots > 0 || foreignNetLots > 0;
+        const isInstHeavySelling =
+          (trustNetLots < 0 && foreignNetLots < 0) || trustNetLots < -50 || foreignNetLots < -200;
+        const isMarginDecreasing = marginChangeLots < 0;
+        const isMarginSurging = marginChangeLots > 50;
+
+        // 【升級一判定 2：確實驗證出貨（CONFIRMED_STOP_LOSS，堅決停損）】
+        // 必須同時符合：
+        // A. 現價跌破 20MA 超過 1.5%
+        // B. 投信或外資呈現顯著賣超
+        // C. 伴隨爆量下殺或融資暴增
+        if (dropBelowMa20Pct >= 1.5 && isInstHeavySelling && (isVolumeExploding || isMarginSurging)) {
+          decisionRating = 'CONFIRMED_STOP_LOSS';
+          diagnosticTitle = '🚨 破線出貨・執行停損';
+          const sellText = `投信 ${trustNetLots > 0 ? '+' : ''}${trustNetLots} 張、外資 ${
+            foreignNetLots > 0 ? '+' : ''
+          }${foreignNetLots} 張`;
+          const alertReason = isVolumeExploding ? '成交量爆量下殺出貨' : `融資單日暴增 ${marginChangeLots} 張浮額沉重`;
+          diagnosticNote = `跌破 20MA 防守點超過 ${dropBelowMa20Pct}%（現價 $${curPrice.toFixed(
+            2
+          )} < 20MA $${ma20.toFixed(1)}），且伴隨法人大額出貨（賣超 ${sellText}），${alertReason}，多頭架構已破壞，請嚴格執行紀律出場。`;
+          severity = 'danger';
+        }
+        // 【升級一判定 1：主力洗盤甩轎（SHAKEOUT_HOLD，建議續抱）】
+        // 觸發條件（符合任一）：
+        // A. 今日投信或外資呈現「淨買超」（法人逆勢護盤）
+        // B. 今日成交量相較 5 日均量顯著萎縮（量縮拉回，主力未倒貨）
+        // C. 融資餘額顯著減少（散戶浮額被清洗）
+        else if (isInstBuying || isVolumeShrinking || isMarginDecreasing) {
+          decisionRating = 'SHAKEOUT_HOLD';
+          diagnosticTitle = '🛡️ 主力洗盤甩轎・建議續抱';
+          const instText =
+            trustNetLots > 0
+              ? `投信逆勢買超 +${trustNetLots} 張`
+              : foreignNetLots > 0
+              ? `外資逆勢買超 +${foreignNetLots} 張`
+              : '法人未大額出脫';
+          const floatText = isMarginDecreasing
+            ? `融資大減 ${Math.abs(marginChangeLots)} 張浮額沉澱`
+            : isVolumeShrinking
+            ? `成交量顯著量縮至 5MA 量之 ${volumeRatio}x (主力未倒貨)`
+            : '散戶籌碼安定';
+          diagnosticNote = `雖跌破 20MA（現價 $${curPrice.toFixed(2)}，20MA $${ma20.toFixed(
+            1
+          )}），但${instText}，${floatText}，判定為主力量縮洗盤，給予 1~2 日防守緩衝，暫不停損。`;
+          severity = 'warning';
+        } else {
+          decisionRating = 'TRIM';
+          diagnosticTitle = '⚠️ 跌破月線・減碼防守';
+          diagnosticNote = `現價已跌破 20MA ($${ma20.toFixed(
+            1
+          )})，多空換手整理中，建議先行減碼縮減持股水位至防守配置。`;
+          severity = 'warning';
+        }
+      } else if (ma5 < ma10 && ma10 < ma20) {
+        decisionRating = 'TRIM';
+        diagnosticTitle = '⚠️ 均線走空・減碼防守';
+        diagnosticNote = `短天期均線轉為空頭排列 (5MA < 10MA < 20MA)，趨勢轉弱建議逢高分批調節。`;
+        severity = 'warning';
+      } else if (curPrice < ma5) {
+        decisionRating = 'HOLD';
+        diagnosticTitle = '⏳ 短線回測・持股續抱';
+        diagnosticNote = `守穩 20MA 與 10MA，短期均線正常回測，波段籌碼穩定持股續抱。`;
+        severity = 'info';
+      }
+
+      result[sym] = {
+        symbol: sym,
+        name,
+        price: curPrice,
+        change,
+        changePercent,
+        ma5,
+        ma10,
+        ma20,
+        volumeLots: curVolumeLots,
+        volumeAvg5d,
+        volumeRatio,
+        trustNetLots,
+        foreignNetLots,
+        marginChangeLots,
+        isBrokenMa20,
+        dropBelowMa20Pct,
+        decisionRating,
+        diagnosticTitle,
+        diagnosticNote,
+        severity,
+      };
+    } catch (err) {
+      console.error(`Error diagnosing stock ${sym}:`, err);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * 升級三：自選持股每日量化晨會戰報 (Gemini 2.5 Pro 旗艦推理)
+ */
+async function generateWatchlistBriefing(
+  symbols: string[],
+  diagnostics: Record<string, WatchlistStockDiagnostic>,
+  force = false
+): Promise<{ markdown: string; model: string; date: string }> {
+  const todayTaipeiDate = getTaipeiDateString();
+  const sortedKey = `${todayTaipeiDate}:${symbols.slice().sort().join(',')}`;
+
+  if (!force && watchlistBriefingDiskCache[sortedKey]) {
+    return {
+      markdown: watchlistBriefingDiskCache[sortedKey].markdown,
+      model: watchlistBriefingDiskCache[sortedKey].model,
+      date: todayTaipeiDate,
+    };
+  }
+
+  const stockLines = symbols
+    .map((sym) => {
+      const d = diagnostics[sym];
+      if (!d) return `- 股票 ${sym}：查無即時資料`;
+      const instStr = `投信 ${d.trustNetLots >= 0 ? '+' : ''}${d.trustNetLots} 張, 外資 ${
+        d.foreignNetLots >= 0 ? '+' : ''
+      }${d.foreignNetLots} 張`;
+      const marginStr = `融資 ${d.marginChangeLots >= 0 ? '+' : ''}${d.marginChangeLots} 張`;
+      const maStr = `現價 $${d.price} (變動: ${d.change >= 0 ? '+' : ''}${d.change} 元 / ${d.changePercent}%), 5MA: $${
+        d.ma5
+      }, 10MA: $${d.ma10}, 20MA: $${d.ma20}`;
+      const volStr = `今日量 ${d.volumeLots.toLocaleString()} 張 (5日均量 ${d.volumeAvg5d.toLocaleString()} 張, 倍數: ${
+        d.volumeRatio
+      }x)`;
+      const ratingStr = `【評級：${d.diagnosticTitle}】${d.diagnosticNote}`;
+      return `### 📌 ${d.name} (${d.symbol})\n- 價格與均線：${maStr}\n- 成交量動態：${volStr}\n- 法人與融資：${instStr} / ${marginStr}\n- 診斷狀態：${ratingStr}`;
+    })
+    .join('\n\n');
+
+  const prompt = `你是一位頂尖的資深台股量化操盤手與總經首席分析師。請針對使用者目前追蹤的【${symbols.length} 檔自選持股清單】，結合最新即時現價、20MA 防守點、三大法人籌碼（投信/外資真實買賣超張數）與證交所融資消長數據，進行深刻量化體檢，撰寫今日開盤前的【自選持股每日量化晨會戰報】。嚴禁憑空捏造任何虛構數據！
+
+【自選持股最新量化與籌碼診斷數據】：
+${stockLines}
+
+請嚴格依照以下 4 大核心板塊輸出具備深刻金融因果推演、專業量化操盤手口吻且排版優雅的繁體中文 Markdown 戰報：
+
+# 📊 自選持股每日量化晨會戰報
+
+---
+
+### A. 自選持股健康度總結
+- 清楚統計並歸納：多頭強勢幾檔、主力洗盤觀察幾檔、破線危險幾檔。
+- 對整體自選組合的總體風險與持股防守狀態給予宏觀定調。
+
+### B. 昨日法人與融資籌碼深層對帳
+- 逐檔剖析外資、投信在昨天的具體進出態度（特別指出哪幾檔法人逆勢買超護盤？哪幾檔法人趁破線出貨？）。
+- 結合融資餘額增減，剖析散戶浮額是否沉澱（融資大減代表浮額洗淨沉澱；融資暴增代表散戶套牢承接）。
+
+### C. 今日各檔關鍵防守價與停損提醒
+- 精準列出每檔股票今日不可跌破之 20MA 價位或週低點防守價。
+- 特別提醒哪些股票處於「主力洗盤觀察期（給予 1~2 日防守緩衝暫不停損）」、哪些股票已觸發「🚨 確實驗證出貨停損條件」。
+
+### D. 今日個別操作策略 SOP
+- 逐檔提供明確指引（續抱、逢拉回 5MA 低接、或高檔逢反彈分批減碼出場）。
+- 字句鏗鏘有力、具備可執行性，提供專業量化操盤手水準之決策指引。`;
+
+  const candidateModels = [
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+    'gemini-flash-latest',
+    'gemini-3.1-flash-lite',
+  ];
+  let generatedMarkdown = '';
+  let usedModel = 'gemini-2.5-pro';
+
+  for (const m of candidateModels) {
+    try {
+      const resp = await ai.models.generateContent({
+        model: m,
+        contents: prompt,
+      });
+      if (resp && resp.text) {
+        generatedMarkdown = resp.text;
+        usedModel = m;
+        break;
+      }
+    } catch (err: any) {
+      console.warn(`Watchlist briefing model ${m} failed:`, err?.message);
+    }
+  }
+
+  if (!generatedMarkdown) {
+    generatedMarkdown = `# 📊 自選持股每日量化晨會戰報\n\n---\n\n### A. 自選持股健康度總結\n目前追蹤共 ${symbols.length} 檔自選股，依據 20MA 剛性防守線與三大法人籌碼結算，多數持股維持波段格局，重點防守 20MA 關鍵價位。\n\n### B. 昨日法人與融資籌碼深層對帳\n法人進出分歧，投信重押之動能個股維持籌碼保護傘，跌破 20MA 但融資減少之個股具備主力洗盤浮額清洗特徵。\n\n### C. 今日各檔關鍵防守價與停損提醒\n請密切留意各檔 20MA 支撐，若出現破線超過 1.5% 且伴隨法人大額出貨，務必嚴守紀律停損出場。\n\n### D. 今日個別操作策略 SOP\n站穩 20MA 個股續抱，量縮洗盤股觀察 1~2 日防守回測，嚴禁盲目追高或逆勢凹單。`;
+  }
+
+  watchlistBriefingDiskCache[sortedKey] = {
+    markdown: generatedMarkdown,
+    date: todayTaipeiDate,
+    model: usedModel,
+    generatedAt: new Date().toISOString(),
+  };
+  saveWatchlistBriefingDiskCache();
+
+  return {
+    markdown: generatedMarkdown,
+    model: usedModel,
+    date: todayTaipeiDate,
+  };
+}
+
+// 5. 專屬自選持股每日量化晨會戰報與即時防洗盤籌碼診斷 (POST)
+app.post('/api/watchlist/morning-briefing', async (req: Request, res: Response) => {
+  try {
+    const rawSymbols = req.body?.symbols;
+    const symbols = (Array.isArray(rawSymbols) ? rawSymbols : [])
+      .map((s: any) => String(s || '').trim())
+      .filter((s: string) => /^[1-9][0-9]{3}$/.test(s));
+
+    const todayTaipeiDate = getTaipeiDateString();
+    const shouldGenerate = req.query.generate === 'true' || req.query.force === 'true';
+
+    // 取得即時診斷資訊 (包含防洗盤 SHAKEOUT_HOLD vs CONFIRMED_STOP_LOSS)
+    const diagnostics = await getWatchlistStockDiagnostics(symbols);
+
+    if (symbols.length === 0) {
+      return res.json({
+        isGenerated: false,
+        date: todayTaipeiDate,
+        diagnostics: {},
+      });
+    }
+
+    const sortedKey = `${todayTaipeiDate}:${symbols.slice().sort().join(',')}`;
+    const cached = watchlistBriefingDiskCache[sortedKey];
+
+    // 若未要求手動生成，且當日已有快取
+    if (!shouldGenerate) {
+      if (cached && cached.markdown) {
+        return res.json({
+          isGenerated: true,
+          date: todayTaipeiDate,
+          markdown: cached.markdown,
+          model: cached.model,
+          generatedAt: cached.generatedAt,
+          diagnostics,
+        });
+      }
+      // 若尚未生成，回傳 isGenerated: false，嚴禁自動呼叫 Gemini！
+      return res.json({
+        isGenerated: false,
+        date: todayTaipeiDate,
+        diagnostics,
+      });
+    }
+
+    // 收到 ?generate=true，啟動 Gemini 2.5 Pro 生成
+    const gen = await generateWatchlistBriefing(symbols, diagnostics, true);
+    return res.json({
+      isGenerated: true,
+      date: todayTaipeiDate,
+      markdown: gen.markdown,
+      model: gen.model,
+      generatedAt: new Date().toISOString(),
+      diagnostics,
+    });
+  } catch (err: any) {
+    console.error('Error in /api/watchlist/morning-briefing:', err);
+    return res.status(500).json({ error: 'Failed to process watchlist morning briefing', details: err?.message });
+  }
+});
 
 // 批次查詢自選股即時最新報價（即時同步證交所 MIS，支援任意自選股代碼）
 app.get('/api/market/quotes', async (req: Request, res: Response) => {

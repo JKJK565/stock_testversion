@@ -10,6 +10,7 @@ import {
   Trash2,
   ExternalLink,
   Info,
+  ShieldCheck,
 } from 'lucide-react';
 import { NotificationItem } from '../types/stock';
 
@@ -38,7 +39,7 @@ export function NotificationCenter({
 
   const filteredNotifications = notifications.filter((n) => {
     if (filter === 'alert') {
-      return n.type === 'danger' || n.type === 'warning';
+      return n.type === 'danger' || n.type === 'warning' || n.type === 'shakeout';
     }
     return true;
   });
@@ -47,6 +48,9 @@ export function NotificationCenter({
 
   const renderAlertIcon = (type: NotificationItem['alertType']) => {
     switch (type) {
+      case 'SHAKEOUT_HOLD':
+        return <ShieldCheck className="w-4 h-4 text-blue-400 flex-shrink-0" />;
+      case 'CONFIRMED_STOP_LOSS':
       case 'STOP_LOSS':
         return <ShieldAlert className="w-4 h-4 text-rose-400 flex-shrink-0" />;
       case 'RATING_BEARISH':
@@ -167,7 +171,9 @@ export function NotificationCenter({
                     </span>
                     <span
                       className={`text-[10px] px-1.5 py-0.2 rounded font-semibold ${
-                        notif.type === 'danger'
+                        notif.type === 'shakeout'
+                          ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                          : notif.type === 'danger'
                           ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
                           : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
                       }`}

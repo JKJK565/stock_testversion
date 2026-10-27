@@ -4,6 +4,7 @@ import {
   TurnaroundScreenerResponse,
   MorningBriefingResponse,
   StockDetailResponse,
+  WatchlistBriefingResponse,
 } from '../types/stock';
 
 /**
@@ -28,11 +29,12 @@ export async function fetchMarketOverview(force = false): Promise<MarketOverview
 }
 
 /**
- * Fetch Gemini AI-powered Deep Morning Briefing
+ * Fetch or Generate Gemini AI-powered Deep Morning Briefing
+ * @param generate If true, triggers Gemini 2.5 Pro generation. If false, only queries today's cached briefing.
  */
-export async function fetchMorningBriefing(force = false): Promise<MorningBriefingResponse | null> {
+export async function fetchMorningBriefing(generate = false): Promise<MorningBriefingResponse | null> {
   try {
-    const res = await fetch(`/api/market/morning-briefing${force ? '?force=true' : ''}`, {
+    const res = await fetch(`/api/market/morning-briefing${generate ? '?generate=true' : ''}`, {
       headers: { Accept: 'application/json' },
     });
     if (!res.ok) {
@@ -188,4 +190,34 @@ export async function fetchStockDetail(symbol: string): Promise<StockDetailRespo
     return null;
   }
 }
+
+/**
+ * Fetch or Generate Watchlist-specific Daily Quantitative Morning Briefing
+ */
+export async function fetchWatchlistMorningBriefing(
+  symbols: string[],
+  generate = false
+): Promise<WatchlistBriefingResponse | null> {
+  if (!symbols || symbols.length === 0) return null;
+  try {
+    const res = await fetch(`/api/watchlist/morning-briefing${generate ? '?generate=true' : ''}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ symbols }),
+    });
+    if (!res.ok) {
+      console.warn(`Watchlist morning briefing responded with status ${res.status}`);
+      return null;
+    }
+    const data: WatchlistBriefingResponse = await res.json();
+    return data;
+  } catch (err) {
+    console.error('Failed to fetch watchlist morning briefing:', err);
+    return null;
+  }
+}
+
 
