@@ -376,6 +376,34 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
   }
 }
 
+/**
+ * 安全解析外部 API (TWSE / TPEx / FinMind 等) 回傳之 JSON：
+ * 若遭遇海外機房 (如 Render) 被 WAF 攔截回傳 HTML (<!DOCTYPE...) 或空字串，
+ * 記錄簡短提示並安全回傳 null，嚴禁噴出 SyntaxError: Unexpected token '<'
+ */
+async function safeParseJsonResponse<T = any>(
+  res: globalThis.Response,
+  endpointLabel = 'API'
+): Promise<T | null> {
+  try {
+    const text = await res.text();
+    if (!text) return null;
+    const trimmed = text.trim();
+    if (trimmed.startsWith('<')) {
+      console.warn(`[${endpointLabel}] WAF/HTML response received (${res.status}), skipping JSON parse.`);
+      return null;
+    }
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+      console.warn(`[${endpointLabel}] Non-JSON response received, skipping.`);
+      return null;
+    }
+    return JSON.parse(trimmed) as T;
+  } catch (err: any) {
+    console.warn(`[${endpointLabel}] JSON parse failed:`, err?.message || err);
+    return null;
+  }
+}
+
 const STOCK_INFO_CACHE_FILE = path.join(process.cwd(), '.cached_stock_info.json');
 
 export interface StockInfoItem {
@@ -420,8 +448,8 @@ async function initTaiwanStockInfo(forceRefresh = false): Promise<void> {
     console.log('[StockInfo] Fetching TaiwanStockInfo dataset from FinMind...');
     const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 12000);
     if (res.ok) {
-      const json = await res.json();
-      if (json.status === 200 && Array.isArray(json.data) && json.data.length > 0) {
+      const json = await safeParseJsonResponse(res, 'FinMind-StockInfo');
+      if (json && json.status === 200 && Array.isArray(json.data) && json.data.length > 0) {
         const cacheObj: Record<string, StockInfoItem> = {};
         for (const item of json.data) {
           if (item.stock_id && item.stock_name) {
@@ -687,7 +715,7 @@ async function fetchYahooTaiwanIndex(
       6000
     );
     if (res.ok) {
-      const data = await res.json();
+      const data = await safeParseJsonResponse(res, 'Yahoo-TaiwanIndex');
       const meta = data?.chart?.result?.[0]?.meta;
       if (meta) {
         const price = typeof meta.regularMarketPrice === 'number' ? meta.regularMarketPrice : null;
@@ -798,7 +826,7 @@ async function fetchRealtimeTWSEIndices(): Promise<{
     );
 
     if (res.ok) {
-      const data = await res.json();
+      const data = await safeParseJsonResponse(res, 'TWSE-MIS-Index');
       const msgArray: any[] = Array.isArray(data?.msgArray) ? data.msgArray : [];
 
       for (const item of msgArray) {
@@ -973,7 +1001,7 @@ async function fetchUSMarketData(): Promise<{
 
         if (!res.ok) return;
 
-        const data = await res.json();
+        const data = await safeParseJsonResponse(res, 'Yahoo-USMarket');
         const res0 = data?.chart?.result?.[0];
         const meta = res0?.meta;
         if (!meta) return;
@@ -1044,7 +1072,7 @@ async function fetchTWSEInstitutionalSummary(): Promise<InstitutionalSummary> {
     );
 
     if (res.ok) {
-      const json = await res.json();
+      const json = await safeParseJsonResponse(res, 'TWSE-BFI82U');
       if (Array.isArray(json?.data)) {
         let trustNet = 0;
         let foreignNet = 0;
@@ -1457,7 +1485,7 @@ async function fetchRecentTradingDates(): Promise<string[]> {
     const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=TAIEX&start_date=${startDate}&token=${FINMIND_TOKEN}`;
     const res = await fetchWithTimeout(url, {}, 6000);
     if (res.ok) {
-      const json = await res.json();
+      const json = await safeParseJsonResponse(res, 'FinMind-TradingDates');
       if (Array.isArray(json?.data) && json.data.length > 0) {
         return json.data.map((item: any) => String(item.date)).filter(Boolean);
       }
@@ -1514,8 +1542,8 @@ async function fetchDayInstitutional(dateStr: string): Promise<Map<string, DayIn
     );
 
     if (res.ok) {
-      const json = await res.json();
-      if (Array.isArray(json.data)) {
+      const json = await safeParseJsonResponse(res, 'TWSE-T86');
+      if (json && Array.isArray(json.data)) {
         for (const row of json.data) {
           const code = String(row[0] || '').trim();
           if (!/^[1-9][0-9]{3}$/.test(code)) continue;
@@ -1534,8 +1562,8 @@ async function fetchDayInstitutional(dateStr: string): Promise<Map<string, DayIn
         }
       }
     }
-  } catch (err) {
-    console.error(`TWSE T86 fetch failed for date ${dateStr}:`, err);
+  } catch (err: any) {
+    console.warn(`TWSE T86 fetch failed for date ${dateStr}:`, err?.message || err);
   }
 
   // 2. TPEx Official (全台股上櫃三大法人當日買賣超真實數據)
@@ -1557,8 +1585,8 @@ async function fetchDayInstitutional(dateStr: string): Promise<Map<string, DayIn
       );
 
       if (res.ok) {
-        const json = await res.json();
-        const rows = json.tables?.[0]?.data;
+        const json = await safeParseJsonResponse(res, 'TPEx-3itrade');
+        const rows = json?.tables?.[0]?.data;
         if (Array.isArray(rows)) {
           for (const row of rows) {
             const code = String(row[0] || '').trim();
@@ -1577,8 +1605,8 @@ async function fetchDayInstitutional(dateStr: string): Promise<Map<string, DayIn
         }
       }
     }
-  } catch (err) {
-    console.error(`TPEx fetch failed for date ${dateStr}:`, err);
+  } catch (err: any) {
+    console.warn(`TPEx 3itrade fetch failed for date ${dateStr}:`, err?.message || err);
   }
 
   if (map.size > 0) {
@@ -1619,7 +1647,7 @@ async function fetchDayMargin(dateStr: string): Promise<Map<string, DayMarginDat
     const url = `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${dTwse}&selectType=ALL&response=json`;
     const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 7000);
     if (res.ok) {
-      const json = await res.json();
+      const json = await safeParseJsonResponse(res, 'TWSE-MI_MARGN');
       const tables = Array.isArray(json?.tables) ? json.tables : [];
       const marginTable = tables.find((t: any) => String(t.title || '').includes('融資融券彙總')) || tables[1];
       if (marginTable && Array.isArray(marginTable.data)) {
@@ -1633,8 +1661,8 @@ async function fetchDayMargin(dateStr: string): Promise<Map<string, DayMarginDat
         }
       }
     }
-  } catch (err) {
-    console.warn(`TWSE MI_MARGN fetch failed for date ${dateStr}:`, err);
+  } catch (err: any) {
+    console.warn(`TWSE MI_MARGN fetch failed for date ${dateStr}:`, err?.message || err);
   }
 
   // 2. TPEx Margin (上櫃全市場融資融券官方結算數據)
@@ -1645,8 +1673,8 @@ async function fetchDayMargin(dateStr: string): Promise<Map<string, DayMarginDat
       const tpexUrl = `https://www.tpex.org.tw/web/stock/margin_trading/margin_bal/margin_bal_result.php?l=zh-tw&o=json&d=${rocDate}`;
       const res = await fetchWithTimeout(tpexUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 7000);
       if (res.ok) {
-        const json = await res.json();
-        const rows = json.tables?.[0]?.data || json.data;
+        const json = await safeParseJsonResponse(res, 'TPEx-Margin');
+        const rows = json?.tables?.[0]?.data || json?.data;
         if (Array.isArray(rows)) {
           for (const row of rows) {
             const code = String(row[0] || '').trim();
@@ -1659,8 +1687,8 @@ async function fetchDayMargin(dateStr: string): Promise<Map<string, DayMarginDat
         }
       }
     }
-  } catch (err) {
-    console.warn(`TPEx margin fetch failed for date ${dateStr}:`, err);
+  } catch (err: any) {
+    console.warn(`TPEx margin fetch failed for date ${dateStr}:`, err?.message || err);
   }
 
   if (map.size > 0) {
@@ -1688,6 +1716,10 @@ async function fetchMarketQuotes(): Promise<
 
     if (res.ok) {
       const text = await res.text();
+      if (!text || text.trim().startsWith('<')) {
+        console.warn('[TWSE-STOCK_DAY_ALL] WAF/HTML response received, skipping.');
+        return map;
+      }
       const lines = text.trim().split('\n');
       for (let i = 1; i < lines.length; i++) {
         const cols = lines[i].replace(/"/g, '').split(',');
@@ -1769,6 +1801,57 @@ function loadKlineCache() {
   }
 }
 
+/**
+ * 極速自 Yahoo Finance 抓取個股最近 3 個月日K歷史數據（0.2 秒極速響應，支援上市 .TW 與上櫃 .TWO）
+ */
+async function fetchYahooStockKlines(code: string): Promise<{
+  closes: number[];
+  highs?: number[];
+  lows?: number[];
+  volumes: number[];
+  lastDataDate?: string;
+} | null> {
+  const suffixes = ['.TW', '.TWO'];
+  for (const suf of suffixes) {
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}${suf}?range=3mo&interval=1d`;
+      const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 3500);
+      if (res.ok) {
+        const d = await safeParseJsonResponse(res, `Yahoo-Klines-${code}${suf}`);
+        const result = d?.chart?.result?.[0];
+        const timestamps: number[] = result?.timestamp || [];
+        const quote = result?.indicators?.quote?.[0];
+        if (quote && Array.isArray(quote.close) && quote.close.length >= 20) {
+          const closes: number[] = [];
+          const highs: number[] = [];
+          const lows: number[] = [];
+          const volumes: number[] = [];
+          let lastDataDate = '';
+
+          for (let i = 0; i < quote.close.length; i++) {
+            const c = quote.close[i];
+            if (typeof c === 'number' && !isNaN(c) && c > 0) {
+              closes.push(c);
+              highs.push(typeof quote.high?.[i] === 'number' ? quote.high[i] : c);
+              lows.push(typeof quote.low?.[i] === 'number' ? quote.low[i] : c);
+              volumes.push(
+                typeof quote.volume?.[i] === 'number' ? Math.round(quote.volume[i] / 1000) : 0
+              );
+              if (timestamps[i]) {
+                lastDataDate = new Date(timestamps[i] * 1000).toISOString().split('T')[0];
+              }
+            }
+          }
+          if (closes.length >= 20) {
+            return { closes, highs, lows, volumes, lastDataDate };
+          }
+        }
+      }
+    } catch {}
+  }
+  return null;
+}
+
 async function getStockHistoricalKlines(
   code: string,
   todayTaipeiDate: string
@@ -1786,35 +1869,57 @@ async function getStockHistoricalKlines(
     };
   }
 
-  // Fetch 90 days from FinMind
+  // 1. 先嘗試 FinMind 歷史日K
   try {
     const d90 = new Date();
     d90.setDate(d90.getDate() - 90);
     const start90 = d90.toISOString().split('T')[0];
     const kUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${code}&start_date=${start90}&token=${FINMIND_TOKEN}`;
-    const kRes = await fetchWithTimeout(kUrl, {}, 6000);
-    const kJson = await kRes.json();
-    const rows = Array.isArray(kJson?.data) ? kJson.data : [];
-    if (rows.length >= 20) {
-      const lastRow = rows[rows.length - 1];
-      const lastDataDate = lastRow?.date || '';
-      const closes = rows.map((r: any) => Number(r.close));
-      const highs = rows.map((r: any) => Number(r.max || r.close));
-      const lows = rows.map((r: any) => Number(r.min || r.close));
-      const volumes = rows.map((r: any) => Math.round(Number(r.Trading_Volume || 0) / 1000));
-      const entry: CachedStockKline = { code, date: todayTaipeiDate, lastDataDate, closes, highs, lows, volumes };
-      memoryKlineCache.set(code, entry);
+    const kRes = await fetchWithTimeout(kUrl, {}, 4000);
+    if (kRes.ok) {
+      const kJson = await safeParseJsonResponse(kRes, `FinMind-Klines-${code}`);
+      const rows = Array.isArray(kJson?.data) ? kJson.data : [];
+      if (rows.length >= 20) {
+        const lastRow = rows[rows.length - 1];
+        const lastDataDate = lastRow?.date || '';
+        const closes = rows.map((r: any) => Number(r.close));
+        const highs = rows.map((r: any) => Number(r.max || r.close));
+        const lows = rows.map((r: any) => Number(r.min || r.close));
+        const volumes = rows.map((r: any) => Math.round(Number(r.Trading_Volume || 0) / 1000));
+        const entry: CachedStockKline = { code, date: todayTaipeiDate, lastDataDate, closes, highs, lows, volumes };
+        memoryKlineCache.set(code, entry);
 
-      try {
-        const obj: Record<string, any> = {};
-        for (const [k, v] of memoryKlineCache.entries()) obj[k] = v;
-        fs.writeFileSync(STOCK_KLINE_CACHE_FILE, JSON.stringify(obj), 'utf-8');
-      } catch (err) {}
+        try {
+          const obj: Record<string, any> = {};
+          for (const [k, v] of memoryKlineCache.entries()) obj[k] = v;
+          fs.writeFileSync(STOCK_KLINE_CACHE_FILE, JSON.stringify(obj), 'utf-8');
+        } catch (err) {}
 
-      return { closes, highs, lows, volumes, lastDataDate };
+        return { closes, highs, lows, volumes, lastDataDate };
+      }
     }
-  } catch (err) {
-    console.error(`Error fetching historical klines for ${code}:`, err);
+  } catch (err: any) {
+    console.warn(`FinMind historical klines failed for ${code}, falling back to Yahoo:`, err?.message || err);
+  }
+
+  // 2. 備援極速查詢 Yahoo Finance K 線 (0.2s 響應)
+  try {
+    const yk = await fetchYahooStockKlines(code);
+    if (yk && yk.closes.length >= 20) {
+      const entry: CachedStockKline = {
+        code,
+        date: todayTaipeiDate,
+        lastDataDate: yk.lastDataDate,
+        closes: yk.closes,
+        highs: yk.highs,
+        lows: yk.lows,
+        volumes: yk.volumes,
+      };
+      memoryKlineCache.set(code, entry);
+      return yk;
+    }
+  } catch (yErr: any) {
+    console.warn(`Yahoo K-line query failed for ${code}:`, yErr?.message || yErr);
   }
 
   return null;
@@ -1945,8 +2050,8 @@ async function fetchBatchTWSEMisQuotes(
     try {
       const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 6000);
       if (res.ok) {
-        const data = await res.json();
-        for (const m of (data.msgArray || [])) {
+        const data = await safeParseJsonResponse(res, 'TWSE-MIS-Batch');
+        for (const m of (data?.msgArray || [])) {
           if (!m || !m.c || !/^[1-9][0-9]{3}$/.test(m.c)) continue;
           let p = 0;
           if (m.z && m.z !== '-' && !isNaN(parseFloat(m.z))) p = parseFloat(m.z);
@@ -1971,8 +2076,8 @@ async function fetchBatchTWSEMisQuotes(
           }
         }
       }
-    } catch (e) {
-      console.error('Error fetching TWSE MIS batch quotes chunk:', e);
+    } catch (e: any) {
+      console.warn('TWSE MIS batch quotes chunk failed:', e?.message || e);
     }
   }
 
@@ -2246,8 +2351,8 @@ async function fetchAllMarketLatestRevenue(): Promise<MarketRevenueSnapshot[]> {
     const startMonthStr = d.toISOString().split('T')[0];
     const finmindUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&start_date=${startMonthStr}&end_date=${startMonthStr}&token=${FINMIND_TOKEN}`;
     const fmRes = await fetchWithTimeout(finmindUrl, {}, 7000);
-    const fmJson = await fmRes.json();
-    if (fmJson.status === 200 && Array.isArray(fmJson.data) && fmJson.data.length > 0) {
+    const fmJson = await safeParseJsonResponse(fmRes, 'FinMind-MonthRevenue');
+    if (fmJson && fmJson.status === 200 && Array.isArray(fmJson.data) && fmJson.data.length > 0) {
       console.log(`[Turnaround Scanner] FinMind 全市場營收快照成功取得 ${fmJson.data.length} 筆`);
       const map = new Map<string, MarketRevenueSnapshot>();
       for (const r of fmJson.data) {
@@ -2273,7 +2378,7 @@ async function fetchAllMarketLatestRevenue(): Promise<MarketRevenueSnapshot[]> {
   try {
     const res = await fetchWithTimeout('https://openapi.twse.com.tw/v1/opendata/t187ap05_L', {}, 8000);
     if (res.ok) {
-      const data = await res.json();
+      const data = await safeParseJsonResponse(res, 'TWSE-OpenAPI-t187ap05_L');
       if (Array.isArray(data) && data.length > 0) {
         const list: MarketRevenueSnapshot[] = [];
         for (const item of data) {
@@ -2445,7 +2550,7 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
       try {
         const revUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id=${item.code}&start_date=${start14m}&token=${FINMIND_TOKEN}`;
         const revRes = await fetchWithTimeout(revUrl, {}, 6000);
-        const revJson = await revRes.json();
+        const revJson = await safeParseJsonResponse(revRes, `FinMind-Rev-${item.code}`);
         const revRows = Array.isArray(revJson?.data) ? revJson.data : [];
         if (revRows.length > 0) {
           const lastRev = revRows[revRows.length - 1];
@@ -2460,7 +2565,7 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
       try {
         const eUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${item.code}&start_date=2025-01-01&token=${FINMIND_TOKEN}`;
         const eRes = await fetchWithTimeout(eUrl, {}, 5000);
-        const eJson = await eRes.json();
+        const eJson = await safeParseJsonResponse(eRes, `FinMind-EPS-${item.code}`);
         const epsRows = (eJson?.data || []).filter((r: any) => r.type === 'EPS');
         if (epsRows.length > 0) {
           sumEps = epsRows.slice(-4).reduce((acc: number, r: any) => acc + Number(r.value || 0), 0);
@@ -2586,7 +2691,7 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
         try {
           const pUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${item.code}&start_date=${start365}&token=${FINMIND_TOKEN}`;
           const pRes = await fetchWithTimeout(pUrl, {}, 7000);
-          const pJson = await pRes.json();
+          const pJson = await safeParseJsonResponse(pRes, `FinMind-Price365-${item.code}`);
           const rows = Array.isArray(pJson?.data) ? pJson.data : [];
 
           if (rows.length >= 50) {
@@ -2602,7 +2707,7 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
             try {
               const eUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${item.code}&start_date=2025-01-01&token=${FINMIND_TOKEN}`;
               const eRes = await fetchWithTimeout(eUrl, {}, 5000);
-              const eJson = await eRes.json();
+              const eJson = await safeParseJsonResponse(eRes, `FinMind-EPS365-${item.code}`);
               const epsRows = (eJson?.data || []).filter((r: any) => r.type === 'EPS');
               if (epsRows.length > 0) {
                 sumEps = epsRows.slice(-4).reduce((acc: number, r: any) => acc + Number(r.value || 0), 0);
@@ -3204,6 +3309,97 @@ function saveWatchlistBriefingDiskCache() {
   }
 }
 
+interface WatchlistStockChipData {
+  timestamp: number;
+  trustNetLots: number;
+  foreignNetLots: number;
+  marginChangeLots: number;
+}
+
+const watchlistStockChipCache = new Map<string, WatchlistStockChipData>();
+const WATCHLIST_CHIP_CACHE_TTL = 30 * 60 * 1000; // 30 分鐘記憶體快取
+
+/**
+ * 單檔股票極速籌碼查詢（FinMind 法人買賣超 + 融資消長，支援 30 分鐘快取與 3500ms 超時保護）
+ */
+async function fetchSingleStockChips(symbol: string): Promise<{
+  trustNetLots: number;
+  foreignNetLots: number;
+  marginChangeLots: number;
+}> {
+  const now = Date.now();
+  const cached = watchlistStockChipCache.get(symbol);
+  if (cached && now - cached.timestamp < WATCHLIST_CHIP_CACHE_TTL) {
+    return {
+      trustNetLots: cached.trustNetLots,
+      foreignNetLots: cached.foreignNetLots,
+      marginChangeLots: cached.marginChangeLots,
+    };
+  }
+
+  let trustNetLots = 0;
+  let foreignNetLots = 0;
+  let marginChangeLots = 0;
+
+  try {
+    const d7 = new Date();
+    d7.setDate(d7.getDate() - 7);
+    const startDate = d7.toISOString().split('T')[0];
+
+    const instUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id=${symbol}&start_date=${startDate}&token=${FINMIND_TOKEN}`;
+    const marginUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMarginPurchaseShortSale&data_id=${symbol}&start_date=${startDate}&token=${FINMIND_TOKEN}`;
+
+    const [instRes, marginRes] = await Promise.all([
+      fetchWithTimeout(instUrl, {}, 3500)
+        .then(async (r) => (r.ok ? safeParseJsonResponse(r, `FinMind-Inst-${symbol}`) : null))
+        .catch(() => null),
+      fetchWithTimeout(marginUrl, {}, 3500)
+        .then(async (r) => (r.ok ? safeParseJsonResponse(r, `FinMind-Margin-${symbol}`) : null))
+        .catch(() => null),
+    ]);
+
+    // Parse Institutional Buy/Sell (FinMind returns shares; divide by 1000 to get lots)
+    if (instRes && Array.isArray(instRes.data) && instRes.data.length > 0) {
+      const rows = instRes.data;
+      const latestDate = rows[rows.length - 1]?.date;
+      const latestRows = rows.filter((r: any) => r.date === latestDate);
+
+      for (const r of latestRows) {
+        const buy = Number(r.buy || 0);
+        const sell = Number(r.sell || 0);
+        const netLots = Math.round((buy - sell) / 1000);
+
+        if (r.name === 'Investment_Trust') {
+          trustNetLots += netLots;
+        } else if (r.name === 'Foreign_Investor' || r.name === 'Foreign_Dealer_Self') {
+          foreignNetLots += netLots;
+        }
+      }
+    }
+
+    // Parse Margin Purchase / Short Sale (FinMind returns lots)
+    if (marginRes && Array.isArray(marginRes.data) && marginRes.data.length > 0) {
+      const latestMargin = marginRes.data[marginRes.data.length - 1];
+      if (latestMargin) {
+        const todayBal = Number(latestMargin.MarginPurchaseTodayBalance ?? 0);
+        const yestBal = Number(latestMargin.MarginPurchaseYesterdayBalance ?? 0);
+        marginChangeLots = todayBal - yestBal;
+      }
+    }
+
+    watchlistStockChipCache.set(symbol, {
+      timestamp: now,
+      trustNetLots,
+      foreignNetLots,
+      marginChangeLots,
+    });
+  } catch (err: any) {
+    console.warn(`[WatchlistChips] Error fetching chips for ${symbol}:`, err?.message || err);
+  }
+
+  return { trustNetLots, foreignNetLots, marginChangeLots };
+}
+
 /**
  * 晚間 21:30 籌碼深層診斷：
  * 針對自選股票，結合三大法人籌碼（投信/外資淨買賣超）與證交所融資消長，
@@ -3221,193 +3417,190 @@ async function getWatchlistStockDiagnostics(
   const todayTaipeiDate = marketStatus.dateString;
   const isIntraday = marketStatus.isIntradayTrading;
 
-  const [quoteMap, dates] = await Promise.all([
-    fetchBatchTWSEMisQuotes(symbols),
-    fetchRecentTradingDates(),
-  ]);
+  // 1. 即時報價：極速抓取批次 TWSE MIS 行情
+  const quoteMap = await fetchBatchTWSEMisQuotes(symbols);
 
-  const latestDate = dates[dates.length - 1] || todayTaipeiDate;
-  const [instMap, marginMap] = await Promise.all([
-    fetchDayInstitutional(latestDate),
-    fetchDayMargin(latestDate),
-  ]);
+  // 2. 單股極速併發查詢 (Parallel Single-Stock Query)：不再下載全市場 1800 檔大表，解決 Render 8s timeout 瓶頸
+  await Promise.all(
+    symbols.map(async (sym) => {
+      try {
+        const q = quoteMap.get(sym);
+        const name = getStockName(sym, q?.name);
+        let curPrice = q?.price || 0;
 
-  for (const sym of symbols) {
-    try {
-      const q = quoteMap.get(sym);
-      const name = getStockName(sym, q?.name);
-      let curPrice = q?.price || 0;
+        // 併發查詢 K 線歷史 (Yahoo/FinMind 0.2s) 與單股籌碼 (FinMind 0.3s)
+        const [klines, chips] = await Promise.all([
+          getStockHistoricalKlines(sym, todayTaipeiDate),
+          fetchSingleStockChips(sym),
+        ]);
 
-      // 取得 K 線歷史計算 5MA, 10MA, 20MA, 5日均量
-      const klines = await getStockHistoricalKlines(sym, todayTaipeiDate);
-      const histCloses = klines?.closes && klines.closes.length >= 5 ? klines.closes : [];
-      if (curPrice <= 0 && histCloses.length > 0) {
-        curPrice = histCloses[histCloses.length - 1];
-      }
-      const prevClose =
-        q?.prevClose || (histCloses.length >= 2 ? histCloses[histCloses.length - 2] : curPrice);
-      const change = Number((curPrice - prevClose).toFixed(2));
-      const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
-      const curVolumeLots =
-        q?.volumeLots !== undefined
-          ? q.volumeLots
-          : klines?.volumes && klines.volumes.length > 0
-          ? klines.volumes[klines.volumes.length - 1]
-          : 0;
-
-      const histVolumes = klines?.volumes && klines.volumes.length >= 5 ? klines.volumes : [];
-      const volumeAvg5d =
-        histVolumes.length >= 5
-          ? Math.round(histVolumes.slice(-5).reduce((a, b) => a + b, 0) / 5)
-          : curVolumeLots || 1000;
-
-      const ma5 = calculateMovingAverage(histCloses, 5, curPrice, isIntraday, klines?.lastDataDate, todayTaipeiDate);
-      const ma10 = calculateMovingAverage(histCloses, 10, curPrice, isIntraday, klines?.lastDataDate, todayTaipeiDate);
-      const ma20 = calculateMovingAverage(histCloses, 20, curPrice, isIntraday, klines?.lastDataDate, todayTaipeiDate);
-
-      const inst = instMap.get(sym);
-      const trustNetLots = inst?.trustNetLots ?? 0;
-      const foreignNetLots = inst?.foreignNetLots ?? 0;
-
-      const margin = marginMap.get(sym);
-      const marginChangeLots = margin?.changeLots ?? 0;
-
-      const isBrokenMa20 = ma20 > 0 && curPrice < ma20;
-      const dropBelowMa20Pct = isBrokenMa20 ? Number((((ma20 - curPrice) / ma20) * 100).toFixed(2)) : 0;
-      // 盤中 vs 盤後 成交量比與估算（早盤 U 型校正）
-      let volumeRatio = 1.0;
-      if (isIntraday) {
-        const estVolume = estimateIntradayVolume(curVolumeLots, marketStatus.elapsed);
-        volumeRatio = volumeAvg5d > 0 ? Number((estVolume / volumeAvg5d).toFixed(2)) : 1.0;
-      } else {
-        volumeRatio = volumeAvg5d > 0 ? Number((curVolumeLots / volumeAvg5d).toFixed(2)) : 1.0;
-      }
-      const isVolumeShrinking = volumeRatio < 0.85;
-      const isVolumeExploding = volumeRatio > 1.25;
-
-      let decisionRating: 'BUY' | 'HOLD' | 'TRIM' | 'SELL' | 'SHAKEOUT_HOLD' | 'CONFIRMED_STOP_LOSS' = 'BUY';
-      let diagnosticTitle = '🎯 均線多頭發散・強勢續攻';
-      let diagnosticNote = `現價守穩 20MA ($${ma20.toFixed(1)}) 之上，波段攻擊多頭架構良好。`;
-      let severity: 'danger' | 'warning' | 'info' | 'success' = 'success';
-
-      if (isBrokenMa20) {
-        const isInstBuying = trustNetLots > 0 || foreignNetLots > 0;
-        const isInstHeavySelling =
-          (trustNetLots < 0 && foreignNetLots < 0) || trustNetLots < -50 || foreignNetLots < -200;
-        const isMarginDecreasing = marginChangeLots < 0;
-        const isMarginSurging = marginChangeLots > 50;
-
-        if (isIntraday) {
-          // 【盤中風控模式】：09:00~13:30 當日三大法人與融資尚未出爐，instMap 為昨日籌碼
-          if (isVolumeExploding && dropBelowMa20Pct >= 1.5) {
-            // 盤中跌破 20MA 且伴隨爆量下殺，不可拿昨日法人買超當作今日護盤，直接給予停損警戒
-            decisionRating = 'CONFIRMED_STOP_LOSS';
-            diagnosticTitle = '🚨 盤中爆量破線・執行停損警戒';
-            diagnosticNote = `盤中跌破 20MA 達 ${dropBelowMa20Pct}%（現價 $${curPrice.toFixed(
-              2
-            )} < 20MA $${ma20.toFixed(1)}），且預估全日量比暴增至 ${volumeRatio}x 爆量下殺，即使昨日法人買超亦不可視為護盤，建議嚴格執行停損紀律！（註：盤中即時風控，嚴防主力倒貨）`;
-            severity = 'danger';
-          } else if (isVolumeShrinking && isInstBuying) {
-            // 唯有盤中明顯「量縮回測 (volumeRatio < 0.85)」且昨日法人為買超時，才可在盤中暫判為洗盤觀察
-            decisionRating = 'SHAKEOUT_HOLD';
-            diagnosticTitle = '🛡️ 主力洗盤甩轎・建議續抱 (盤中觀察)';
-            const instText =
-              trustNetLots > 0
-                ? `昨日投信買超 +${trustNetLots} 張`
-                : `昨日外資買超 +${foreignNetLots} 張`;
-            diagnosticNote = `雖跌破 20MA（現價 $${curPrice.toFixed(2)}，20MA $${ma20.toFixed(
-              1
-            )}），但盤中預估全日量能縮至 ${volumeRatio}x 均量（未見恐慌倒貨），且${instText}，暫判為主力量縮洗盤，給予 1~2 日防守緩衝，暫不停損。（註：盤中暫以昨日法人籌碼與今日量縮狀態評估，待 21:30 結算確認）`;
-            severity = 'warning';
-          } else {
-            decisionRating = 'TRIM';
-            diagnosticTitle = '⚠️ 盤中跌破月線・減碼防守';
-            diagnosticNote = `盤中跌破 20MA ($${ma20.toFixed(
-              1
-            )})，預估量比 ${volumeRatio}x，多空換手整理中，建議先行減碼縮減持股水位至防守配置。（註：盤中即時風控，待 21:30 籌碼結算）`;
-            severity = 'warning';
-          }
-        } else {
-          // 【盤後籌碼結算模式】：晚間 21:30 官方結算三大法人與融資籌碼雙重驗證
-          // 【升級一判定 2：確實驗證出貨（CONFIRMED_STOP_LOSS，堅決停損）】
-          if (dropBelowMa20Pct >= 1.5 && isInstHeavySelling && (isVolumeExploding || isMarginSurging)) {
-            decisionRating = 'CONFIRMED_STOP_LOSS';
-            diagnosticTitle = '🚨 破線出貨・執行停損';
-            const sellText = `投信 ${trustNetLots > 0 ? '+' : ''}${trustNetLots} 張、外資 ${
-              foreignNetLots > 0 ? '+' : ''
-            }${foreignNetLots} 張`;
-            const alertReason = isVolumeExploding ? '成交量爆量下殺出貨' : `融資單日暴增 ${marginChangeLots} 張浮額沉重`;
-            diagnosticNote = `跌破 20MA 防守點超過 ${dropBelowMa20Pct}%（現價 $${curPrice.toFixed(
-              2
-            )} < 20MA $${ma20.toFixed(1)}），且伴隨法人大額出貨（賣超 ${sellText}），${alertReason}，多頭架構已破壞，請嚴格執行紀律出場。`;
-            severity = 'danger';
-          }
-          // 【升級一判定 1：主力洗盤甩轎（SHAKEOUT_HOLD，建議續抱）】
-          else if (isInstBuying || isVolumeShrinking || isMarginDecreasing) {
-            decisionRating = 'SHAKEOUT_HOLD';
-            diagnosticTitle = '🛡️ 主力洗盤甩轎・建議續抱';
-            const instText =
-              trustNetLots > 0
-                ? `投信逆勢買超 +${trustNetLots} 張`
-                : foreignNetLots > 0
-                ? `外資逆勢買超 +${foreignNetLots} 張`
-                : '法人未大額出脫';
-            const floatText = isMarginDecreasing
-              ? `融資大減 ${Math.abs(marginChangeLots)} 張浮額沉澱`
-              : isVolumeShrinking
-              ? `成交量顯著量縮至 5MA 量之 ${volumeRatio}x (主力未倒貨)`
-              : '散戶籌碼安定';
-            diagnosticNote = `雖跌破 20MA（現價 $${curPrice.toFixed(2)}，20MA $${ma20.toFixed(
-              1
-            )}），但${instText}，${floatText}，判定為主力量縮洗盤，給予 1~2 日防守緩衝，暫不停損。`;
-            severity = 'warning';
-          } else {
-            decisionRating = 'TRIM';
-            diagnosticTitle = '⚠️ 跌破月線・減碼防守';
-            diagnosticNote = `現價已跌破 20MA ($${ma20.toFixed(
-              1
-            )})，多空換手整理中，建議先行減碼縮減持股水位至防守配置。`;
-            severity = 'warning';
-          }
+        const histCloses = klines?.closes && klines.closes.length >= 5 ? klines.closes : [];
+        if (curPrice <= 0 && histCloses.length > 0) {
+          curPrice = histCloses[histCloses.length - 1];
         }
-      } else if (ma5 < ma10 && ma10 < ma20) {
-        decisionRating = 'TRIM';
-        diagnosticTitle = '⚠️ 均線走空・減碼防守';
-        diagnosticNote = `短天期均線轉為空頭排列 (5MA < 10MA < 20MA)，趨勢轉弱建議逢高分批調節。`;
-        severity = 'warning';
-      } else if (curPrice < ma5) {
-        decisionRating = 'HOLD';
-        diagnosticTitle = '⏳ 短線回測・持股續抱';
-        diagnosticNote = `守穩 20MA 與 10MA，短期均線正常回測，波段籌碼穩定持股續抱。`;
-        severity = 'info';
-      }
+        const prevClose =
+          q?.prevClose || (histCloses.length >= 2 ? histCloses[histCloses.length - 2] : curPrice);
+        const change = Number((curPrice - prevClose).toFixed(2));
+        const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
+        const curVolumeLots =
+          q?.volumeLots !== undefined
+            ? q.volumeLots
+            : klines?.volumes && klines.volumes.length > 0
+            ? klines.volumes[klines.volumes.length - 1]
+            : 0;
 
-      result[sym] = {
-        symbol: sym,
-        name,
-        price: curPrice,
-        change,
-        changePercent,
-        ma5,
-        ma10,
-        ma20,
-        volumeLots: curVolumeLots,
-        volumeAvg5d,
-        volumeRatio,
-        trustNetLots,
-        foreignNetLots,
-        marginChangeLots,
-        isBrokenMa20,
-        dropBelowMa20Pct,
-        decisionRating,
-        diagnosticTitle,
-        diagnosticNote,
-        severity,
-      };
-    } catch (err) {
-      console.error(`Error diagnosing stock ${sym}:`, err);
-    }
-  }
+        const histVolumes = klines?.volumes && klines.volumes.length >= 5 ? klines.volumes : [];
+        const volumeAvg5d =
+          histVolumes.length >= 5
+            ? Math.round(histVolumes.slice(-5).reduce((a, b) => a + b, 0) / 5)
+            : curVolumeLots || 1000;
+
+        const ma5 = calculateMovingAverage(histCloses, 5, curPrice, isIntraday, klines?.lastDataDate, todayTaipeiDate);
+        const ma10 = calculateMovingAverage(histCloses, 10, curPrice, isIntraday, klines?.lastDataDate, todayTaipeiDate);
+        const ma20 = calculateMovingAverage(histCloses, 20, curPrice, isIntraday, klines?.lastDataDate, todayTaipeiDate);
+
+        const trustNetLots = chips.trustNetLots;
+        const foreignNetLots = chips.foreignNetLots;
+        const marginChangeLots = chips.marginChangeLots;
+
+        const isBrokenMa20 = ma20 > 0 && curPrice < ma20;
+        const dropBelowMa20Pct = isBrokenMa20 ? Number((((ma20 - curPrice) / ma20) * 100).toFixed(2)) : 0;
+
+        // 盤中 vs 盤後 成交量比與估算（早盤 U 型校正）
+        let volumeRatio = 1.0;
+        if (isIntraday) {
+          const estVolume = estimateIntradayVolume(curVolumeLots, marketStatus.elapsed);
+          volumeRatio = volumeAvg5d > 0 ? Number((estVolume / volumeAvg5d).toFixed(2)) : 1.0;
+        } else {
+          volumeRatio = volumeAvg5d > 0 ? Number((curVolumeLots / volumeAvg5d).toFixed(2)) : 1.0;
+        }
+        const isVolumeShrinking = volumeRatio < 0.85;
+        const isVolumeExploding = volumeRatio > 1.25;
+
+        let decisionRating: 'BUY' | 'HOLD' | 'TRIM' | 'SELL' | 'SHAKEOUT_HOLD' | 'CONFIRMED_STOP_LOSS' = 'BUY';
+        let diagnosticTitle = '🎯 均線多頭發散・強勢續攻';
+        let diagnosticNote = `現價守穩 20MA ($${ma20.toFixed(1)}) 之上，波段攻擊多頭架構良好。`;
+        let severity: 'danger' | 'warning' | 'info' | 'success' = 'success';
+
+        if (isBrokenMa20) {
+          const isInstBuying = trustNetLots > 0 || foreignNetLots > 0;
+          const isInstHeavySelling =
+            (trustNetLots < 0 && foreignNetLots < 0) || trustNetLots < -50 || foreignNetLots < -200;
+          const isMarginDecreasing = marginChangeLots < 0;
+          const isMarginSurging = marginChangeLots > 50;
+
+          if (isIntraday) {
+            // 【盤中風控模式】：09:00~13:30 當日三大法人與融資尚未出爐，instMap 為昨日籌碼
+            if (isVolumeExploding && dropBelowMa20Pct >= 1.5) {
+              // 盤中跌破 20MA 且伴隨爆量下殺，不可拿昨日法人買超當作今日護盤，直接給予停損警戒
+              decisionRating = 'CONFIRMED_STOP_LOSS';
+              diagnosticTitle = '🚨 盤中爆量破線・執行停損警戒';
+              diagnosticNote = `盤中跌破 20MA 達 ${dropBelowMa20Pct}%（現價 $${curPrice.toFixed(
+                2
+              )} < 20MA $${ma20.toFixed(1)}），且預估全日量比暴增至 ${volumeRatio}x 爆量下殺，即使昨日法人買超亦不可視為護盤，建議嚴格執行停損紀律！（註：盤中即時風控，嚴防主力倒貨）`;
+              severity = 'danger';
+            } else if (isVolumeShrinking && isInstBuying) {
+              // 唯有盤中明顯「量縮回測 (volumeRatio < 0.85)」且昨日法人為買超時，才可在盤中暫判為洗盤觀察
+              decisionRating = 'SHAKEOUT_HOLD';
+              diagnosticTitle = '🛡️ 主力洗盤甩轎・建議續抱 (盤中觀察)';
+              const instText =
+                trustNetLots > 0
+                  ? `昨日投信買超 +${trustNetLots} 張`
+                  : `昨日外資買超 +${foreignNetLots} 張`;
+              diagnosticNote = `雖跌破 20MA（現價 $${curPrice.toFixed(2)}，20MA $${ma20.toFixed(
+                1
+              )}），但盤中預估全日量能縮至 ${volumeRatio}x 均量（未見恐慌倒貨），且${instText}，暫判為主力量縮洗盤，給予 1~2 日防守緩衝，暫不停損。（註：盤中暫以昨日法人籌碼與今日量縮狀態評估，待 21:30 結算確認）`;
+              severity = 'warning';
+            } else {
+              decisionRating = 'TRIM';
+              diagnosticTitle = '⚠️ 盤中跌破月線・減碼防守';
+              diagnosticNote = `盤中跌破 20MA ($${ma20.toFixed(
+                1
+              )})，預估量比 ${volumeRatio}x，多空換手整理中，建議先行減碼縮減持股水位至防守配置。（註：盤中即時風控，待 21:30 籌碼結算）`;
+              severity = 'warning';
+            }
+          } else {
+            // 【盤後籌碼結算模式】：晚間 21:30 官方結算三大法人與融資籌碼雙重驗證
+            // 【升級一判定 2：確實驗證出貨（CONFIRMED_STOP_LOSS，堅決停損）】
+            if (dropBelowMa20Pct >= 1.5 && isInstHeavySelling && (isVolumeExploding || isMarginSurging)) {
+              decisionRating = 'CONFIRMED_STOP_LOSS';
+              diagnosticTitle = '🚨 破線出貨・執行停損';
+              const sellText = `投信 ${trustNetLots > 0 ? '+' : ''}${trustNetLots} 張、外資 ${
+                foreignNetLots > 0 ? '+' : ''
+              }${foreignNetLots} 張`;
+              const alertReason = isVolumeExploding ? '成交量爆量下殺出貨' : `融資單日暴增 ${marginChangeLots} 張浮額沉重`;
+              diagnosticNote = `跌破 20MA 防守點超過 ${dropBelowMa20Pct}%（現價 $${curPrice.toFixed(
+                2
+              )} < 20MA $${ma20.toFixed(1)}），且伴隨法人大額出貨（賣超 ${sellText}），${alertReason}，多頭架構已破壞，請嚴格執行紀律出場。`;
+              severity = 'danger';
+            }
+            // 【升級一判定 1：主力洗盤甩轎（SHAKEOUT_HOLD，建議續抱）】
+            else if (isInstBuying || isVolumeShrinking || isMarginDecreasing) {
+              decisionRating = 'SHAKEOUT_HOLD';
+              diagnosticTitle = '🛡️ 主力洗盤甩轎・建議續抱';
+              const instText =
+                trustNetLots > 0
+                  ? `投信逆勢買超 +${trustNetLots} 張`
+                  : foreignNetLots > 0
+                  ? `外資逆勢買超 +${foreignNetLots} 張`
+                  : '法人未大額出脫';
+              const floatText = isMarginDecreasing
+                ? `融資大減 ${Math.abs(marginChangeLots)} 張浮額沉澱`
+                : isVolumeShrinking
+                ? `成交量顯著量縮至 5MA 量之 ${volumeRatio}x (主力未倒貨)`
+                : '散戶籌碼安定';
+              diagnosticNote = `雖跌破 20MA（現價 $${curPrice.toFixed(2)}，20MA $${ma20.toFixed(
+                1
+              )}），但${instText}，${floatText}，判定為主力量縮洗盤，給予 1~2 日防守緩衝，暫不停損。`;
+              severity = 'warning';
+            } else {
+              decisionRating = 'TRIM';
+              diagnosticTitle = '⚠️ 跌破月線・減碼防守';
+              diagnosticNote = `現價已跌破 20MA ($${ma20.toFixed(
+                1
+              )})，多空換手整理中，建議先行減碼縮減持股水位至防守配置。`;
+              severity = 'warning';
+            }
+          }
+        } else if (ma5 < ma10 && ma10 < ma20) {
+          decisionRating = 'TRIM';
+          diagnosticTitle = '⚠️ 均線走空・減碼防守';
+          diagnosticNote = `短天期均線轉為空頭排列 (5MA < 10MA < 20MA)，趨勢轉弱建議逢高分批調節。`;
+          severity = 'warning';
+        } else if (curPrice < ma5) {
+          decisionRating = 'HOLD';
+          diagnosticTitle = '⏳ 短線回測・持股續抱';
+          diagnosticNote = `守穩 20MA 與 10MA，短期均線正常回測，波段籌碼穩定持股續抱。`;
+          severity = 'info';
+        }
+
+        result[sym] = {
+          symbol: sym,
+          name,
+          price: curPrice,
+          change,
+          changePercent,
+          ma5,
+          ma10,
+          ma20,
+          volumeLots: curVolumeLots,
+          volumeAvg5d,
+          volumeRatio,
+          trustNetLots,
+          foreignNetLots,
+          marginChangeLots,
+          isBrokenMa20,
+          dropBelowMa20Pct,
+          decisionRating,
+          diagnosticTitle,
+          diagnosticNote,
+          severity,
+        };
+      } catch (err: any) {
+        console.warn(`Error diagnosing stock ${sym}:`, err?.message || err);
+      }
+    })
+  );
 
   return result;
 }
@@ -3698,14 +3891,14 @@ app.get('/api/stocks/:symbol', async (req: Request, res: Response) => {
         {},
         8000
       )
-        .then((r) => r.json())
+        .then((r) => (r.ok ? safeParseJsonResponse(r, `FinMind-Price-${symbol}`) : null))
         .catch(() => null),
       fetchWithTimeout(
         `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id=${symbol}&start_date=${start30}&token=${FINMIND_TOKEN}`,
         {},
         8000
       )
-        .then((r) => r.json())
+        .then((r) => (r.ok ? safeParseJsonResponse(r, `FinMind-Chips-${symbol}`) : null))
         .catch(() => null),
       fetchBatchTWSEMisQuotes([symbol]),
     ]);
