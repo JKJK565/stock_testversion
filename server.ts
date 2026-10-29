@@ -4,6 +4,7 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -12,6 +13,23 @@ app.use(express.json());
 
 // Initialize Google GenAI
 const ai = new GoogleGenAI();
+
+// Supabase Configuration: read from environment variables
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
+let supabase: SupabaseClient | null = null;
+if (SUPABASE_URL && SUPABASE_KEY) {
+  try {
+    supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      auth: { persistSession: false },
+    });
+    console.log('[Supabase] Initialized Supabase client for cloud portfolio persistence');
+  } catch (e) {
+    console.warn('[Supabase] Failed to initialize Supabase client:', e);
+  }
+} else {
+  console.log('[Supabase] SUPABASE_URL / SUPABASE_KEY not set. Using local disk & localStorage high-availability fallback.');
+}
 
 // FinMind API Configuration: prioritized from environment variable
 const FINMIND_TOKEN = process.env.FINMIND_TOKEN || '';
@@ -357,6 +375,36 @@ function getTaipeiMarketStatus() {
     timeString,
     dateString,
   };
+}
+
+/**
+ * 取得最新已結算之台股法人籌碼交易日 (Asia/Taipei):
+ * 台灣三大法人通常於 15:00~15:30 結算，融資融券於 21:00~21:30 結算。
+ * - 若非週一至週五，或台北時間在 15:30 以前 (hour < 15 || (hour === 15 && minute < 30))：
+ *   當日盤後資料尚未結算出爐，最新已結算交易日必須嚴格取「前一個交易日 (T-1)」，絕不可使用今天！
+ * - 只有在週一至週五且台北時間 >= 15:30 時，才切換為今天 (T)。
+ */
+function getLatestSettledTradingDate(marketStatus?: ReturnType<typeof getTaipeiMarketStatus>): string {
+  const status = marketStatus || getTaipeiMarketStatus();
+  const isSettledToday = status.isWeekday && (status.hour > 15 || (status.hour === 15 && status.minute >= 30));
+
+  if (isSettledToday) {
+    return status.dateString;
+  }
+
+  // 計算前一個交易日 (跳過週六與週日)
+  const [y, m, d] = status.dateString.split('-').map(Number);
+  const target = new Date(Date.UTC(y, m - 1, d));
+  target.setUTCDate(target.getUTCDate() - 1);
+
+  while (target.getUTCDay() === 0 || target.getUTCDay() === 6) {
+    target.setUTCDate(target.getUTCDate() - 1);
+  }
+
+  const prevY = target.getUTCFullYear();
+  const prevM = String(target.getUTCMonth() + 1).padStart(2, '0');
+  const prevD = String(target.getUTCDate()).padStart(2, '0');
+  return `${prevY}-${prevM}-${prevD}`;
 }
 
 // Helper: safe fetch with timeout
@@ -1478,16 +1526,19 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
 
 // 8. Dynamic Scanner for Screener 1: Full-Market Consecutive Trust Buys
 async function fetchRecentTradingDates(): Promise<string[]> {
+  const settledDate = getLatestSettledTradingDate();
   try {
     const d = new Date();
-    d.setDate(d.getDate() - 20);
+    d.setDate(d.getDate() - 25);
     const startDate = d.toISOString().split('T')[0];
     const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=TAIEX&start_date=${startDate}&token=${FINMIND_TOKEN}`;
     const res = await fetchWithTimeout(url, {}, 6000);
     if (res.ok) {
       const json = await safeParseJsonResponse(res, 'FinMind-TradingDates');
       if (Array.isArray(json?.data) && json.data.length > 0) {
-        return json.data.map((item: any) => String(item.date)).filter(Boolean);
+        const rawDates = json.data.map((item: any) => String(item.date)).filter(Boolean);
+        const filtered = rawDates.filter((dateStr: string) => dateStr <= settledDate);
+        if (filtered.length > 0) return filtered;
       }
     }
   } catch (e) {
@@ -1495,16 +1546,15 @@ async function fetchRecentTradingDates(): Promise<string[]> {
   }
 
   const dates: string[] = [];
-  const now = new Date();
-  for (let i = 0; i < 10; i++) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    const day = d.getDay();
-    if (day !== 0 && day !== 6) {
-      dates.unshift(d.toISOString().split('T')[0]);
+  const [y, m, d] = settledDate.split('-').map(Number);
+  const cur = new Date(Date.UTC(y, m - 1, d));
+  while (dates.length < 5) {
+    if (cur.getUTCDay() !== 0 && cur.getUTCDay() !== 6) {
+      dates.unshift(cur.toISOString().split('T')[0]);
     }
+    cur.setUTCDate(cur.getUTCDate() - 1);
   }
-  return dates.slice(-5);
+  return dates;
 }
 
 interface DayInstData {
@@ -2452,139 +2502,191 @@ function saveTurnaroundHistCache() {
   }
 }
 
-// 核心主流流動性觀察池（當 TWSE OpenAPI 或 FinMind 全市場快照受海外 IP 限制時之智慧備援清單）
+// 核心主流流動性觀察池（涵蓋台股主流電子、重電、半導體與轉機題材的非黑名單代表股清單）
 const TURNAROUND_FALLBACK_CANDIDATE_CODES = [
-  '2317', '2308', '2382', '3231', '2376', '2356', '3037', '2344', '2409', '3481',
-  '2603', '2609', '2615', '1301', '1303', '2002', '1605', '1519', '1513', '1504',
-  '3017', '3324', '6274', '3035', '3443', '6442', '3131', '3583', '6187', '8069',
-  '5483', '6278', '6176', '2454', '2379', '3034', '4966', '6531', '3661', '3529',
-  '6805', '8299', '2327', '2455', '3008', '2368', '2449', '3711', '6269', '3044'
+  // AI 伺服器與周邊
+  '2317', '2382', '3231', '2356', '2308', '3037', '8046', '3017', '3324', '4938',
+  '2376', '2377', '6669', '2353', '2324',
+  // 重電、電線電纜、儲能綠能
+  '1513', '1519', '1504', '1514', '1605', '1609', '1503',
+  // 半導體與關鍵零組件、封裝、IC 設計
+  '2344', '2337', '2408', '5347', '6488', '5483', '6770', '8069', '6176', '3533',
+  '3711', '2449', '6274', '3035', '3443', '6442', '3131', '3583', '6187', '6805',
+  '8299', '2327', '2455', '3008', '2368', '6269', '3044', '6278', '1815', '2454',
+  '3034', '2379', '3596', '3529', '4966', '6531', '3661',
+  // 光電面板、低基期傳產/轉機/航運
+  '2409', '3481', '6116', '1303', '1301', '1326', '6505', '2002', '1101', '1102',
+  '1402', '9904', '9914', '9921', '2201', '2204', '2603', '2609', '2615', '2605',
+  '2606', '1476', '1477', '9910', '9938', '2355', '3014', '2363', '4919', '6239'
 ];
 
 async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boolean): Promise<TurnaroundStockItem[]> {
-  console.log('[Turnaround Scanner] 啟動海外機房備援快篩 (Yahoo K線技術過濾 + FinMind 個股真實營收/財報)...');
-  const results: TurnaroundStockItem[] = [];
-  const shortlisted: Array<{
-    code: string;
-    name: string;
-    curPrice: number;
-    prevClose: number;
-    klines: { closes: number[]; highs: number[]; lows: number[]; volumes: number[]; lastDataDate?: string };
-    atrPct: number;
-    atr20: number;
-    volumeAvg5d: number;
-    positionPct: number;
-    ma20: number;
-    isSafeBottom: boolean;
-  }> = [];
+  console.log('[Turnaround Scanner] 啟動海外機房備援快篩 (Yahoo 1Y K線並行過濾 + FinMind 個股真實營收/財報)...');
 
-  for (const code of TURNAROUND_FALLBACK_CANDIDATE_CODES) {
-    try {
-      const klines = await getStockHistoricalKlines(code, todayTaipeiDate);
-      if (!klines || klines.closes.length < 20) continue;
-      const curPrice = klines.closes[klines.closes.length - 1];
-      const prevClose = klines.closes[klines.closes.length - 2] || curPrice;
+  // 1. 直接使用在 Render 暢行無阻的 Yahoo Finance Chart API (range=1y&interval=1d) 並行取得日 K 線與最新現價
+  const parsedCandidates = await Promise.all(
+    TURNAROUND_FALLBACK_CANDIDATE_CODES.map(async (code) => {
+      const exts = ['.TW', '.TWO'];
+      for (const ext of exts) {
+        try {
+          const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}${ext}?range=1y&interval=1d`;
+          const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 3500);
+          if (res.ok) {
+            const d = await safeParseJsonResponse(res, `Yahoo-Chart1Y-${code}${ext}`);
+            const result = d?.chart?.result?.[0];
+            const quote = result?.indicators?.quote?.[0];
+            if (!quote || !quote.close) continue;
 
-      if (curPrice < 15 || curPrice > 500) continue;
+            const closes: number[] = [];
+            const highs: number[] = [];
+            const lows: number[] = [];
+            const volumes: number[] = [];
 
-      const volumeAvg5d = Math.round(klines.volumes.slice(-5).reduce((a, b) => a + b, 0) / 5) || 0;
-      if (volumeAvg5d <= 1000) continue;
+            for (let i = 0; i < quote.close.length; i++) {
+              const c = quote.close[i];
+              if (typeof c === 'number' && !isNaN(c) && c > 0) {
+                closes.push(c);
+                highs.push(typeof quote.high?.[i] === 'number' ? quote.high[i] : c);
+                lows.push(typeof quote.low?.[i] === 'number' ? quote.low[i] : c);
+                volumes.push(
+                  typeof quote.volume?.[i] === 'number' ? Math.round(quote.volume[i] / 1000) : 0
+                );
+              }
+            }
 
-      const highs = klines.highs && klines.highs.length > 0 ? klines.highs : klines.closes;
-      const lows = klines.lows && klines.lows.length > 0 ? klines.lows : klines.closes;
+            if (closes.length < 50) continue;
 
-      const { atr20, atrPct } = calculateATR20Pct(klines.closes, highs, lows, curPrice);
-      if (atrPct < 2.2) continue;
+            const curPrice = Number(closes[closes.length - 1].toFixed(2));
+            const prevClose = Number((closes[closes.length - 2] || curPrice).toFixed(2));
+            const yearHigh = Math.max(...highs, curPrice);
+            const yearLow = Math.min(...lows, curPrice);
+            const range = yearHigh - yearLow;
+            const positionPct = range > 0 ? Number((((curPrice - yearLow) / range) * 100).toFixed(1)) : 50;
+            const ma20 = Number((closes.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(2));
+            const prevCloses = closes.slice(0, -1);
+            const prevMa20 = Number((prevCloses.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(2));
+            const volumeAvg5d = Math.round(volumes.slice(-5).reduce((a, b) => a + b, 0) / 5) || 0;
 
-      const yearHigh = Math.max(...highs, curPrice);
-      const yearLow = Math.min(...lows, curPrice);
-      const range = yearHigh - yearLow;
-      const positionPct = range > 0 ? Number((((curPrice - yearLow) / range) * 100).toFixed(1)) : 50;
-      if (positionPct > 35.0) continue;
+            const { atr20, atrPct } = calculateATR20Pct(closes, highs, lows, curPrice);
+            const name = getStockName(code);
 
-      const ma20 = calculateMovingAverage(klines.closes, 20, curPrice, isIntraday, klines.lastDataDate, todayTaipeiDate);
-      const prevCloses = klines.closes.slice(0, -1);
-      const prevMa20 = calculateMovingAverage(prevCloses, 20, prevCloses[prevCloses.length - 1] || curPrice, false);
+            if (isBlacklistedStock(code, name)) continue;
+            if (curPrice < 15 || curPrice > 500) continue;
 
-      const isAboveMa20 = curPrice >= ma20;
-      const isMa20FlatOrRising = ma20 >= prevMa20 * 0.995;
-      const isSafeBottom = isAboveMa20 && isMa20FlatOrRising;
-      if (!isSafeBottom) continue;
+            const isAboveMa20 = curPrice >= ma20;
+            const isMa20FlatOrRising = ma20 >= prevMa20 * 0.995;
+            const isSafeBottom = isAboveMa20 && isMa20FlatOrRising;
 
-      const name = getStockName(code);
-      shortlisted.push({
-        code,
-        name,
-        curPrice,
-        prevClose,
-        klines: {
-          closes: klines.closes,
-          highs,
-          lows,
-          volumes: klines.volumes,
-          lastDataDate: klines.lastDataDate,
-        },
-        atrPct,
-        atr20,
-        volumeAvg5d,
-        positionPct,
-        ma20,
-        isSafeBottom,
-      });
+            return {
+              code,
+              name,
+              curPrice,
+              prevClose,
+              yearHigh,
+              yearLow,
+              positionPct,
+              ma20,
+              prevMa20,
+              volumeAvg5d,
+              atr20,
+              atrPct,
+              isAboveMa20,
+              isMa20FlatOrRising,
+              isSafeBottom,
+              klines: { closes, highs, lows, volumes },
+            };
+          }
+        } catch {}
+      }
+      return null;
+    })
+  );
 
-      if (shortlisted.length >= 12) break;
-    } catch (e) {
-      // continue next
-    }
+  const validStocks = parsedCandidates.filter(Boolean) as Array<NonNullable<(typeof parsedCandidates)[0]>>;
+
+  // 篩選出符合低檔（位階 <= 35%、站上 20MA、ATR% >= 2.2%）的個股，並依位階由低至高放入「潛在價值轉型池 (allStocks)」
+  let lowBasePool = validStocks.filter((s) => s.positionPct <= 35.0);
+  if (lowBasePool.length < 8) {
+    // 若極端多頭市場位階普遍偏高，適度放寬至 38% 確保全池不為空
+    lowBasePool = validStocks.filter((s) => s.positionPct <= 38.0);
   }
 
-  // 對通過技術濾網的候選個股，精準查詢 FinMind 個股真實營收與季報 EPS
+  // 排序：符合「站上 20MA 且 ATR% >= 2.2%」之安全打底者優先，同條件下依近一年位階由低至高排序
+  lowBasePool.sort((a, b) => {
+    const aPrime = a.isSafeBottom && a.atrPct >= 2.2 ? 1 : 0;
+    const bPrime = b.isSafeBottom && b.atrPct >= 2.2 ? 1 : 0;
+    if (aPrime !== bPrime) return bPrime - aPrime;
+    return a.positionPct - b.positionPct;
+  });
+
+  const targetCandidates = lowBasePool.slice(0, 15);
   const d14m = new Date();
   d14m.setMonth(d14m.getMonth() - 14);
   const start14m = d14m.toISOString().split('T')[0];
 
-  for (const item of shortlisted) {
-    try {
+  // 針對前 15 檔低基期股票並行查詢 FinMind 營收與近四季 EPS 驗證轉型條件
+  const results: TurnaroundStockItem[] = await Promise.all(
+    targetCandidates.map(async (item) => {
       let revenueYoY = 0;
       let latestRevMonth = 9;
+      let sumEps: number | null = null;
+
       try {
         const revUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id=${item.code}&start_date=${start14m}&token=${FINMIND_TOKEN}`;
-        const revRes = await fetchWithTimeout(revUrl, {}, 6000);
-        const revJson = await safeParseJsonResponse(revRes, `FinMind-Rev-${item.code}`);
-        const revRows = Array.isArray(revJson?.data) ? revJson.data : [];
-        if (revRows.length > 0) {
-          const lastRev = revRows[revRows.length - 1];
+        const eUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${item.code}&start_date=2025-01-01&token=${FINMIND_TOKEN}`;
+
+        const [revRes, eRes] = await Promise.all([
+          fetchWithTimeout(revUrl, {}, 3500)
+            .then(async (r) => (r.ok ? safeParseJsonResponse(r, `FinMind-Rev-${item.code}`) : null))
+            .catch(() => null),
+          fetchWithTimeout(eUrl, {}, 3500)
+            .then(async (r) => (r.ok ? safeParseJsonResponse(r, `FinMind-EPS-${item.code}`) : null))
+            .catch(() => null),
+        ]);
+
+        if (revRes && Array.isArray(revRes.data) && revRes.data.length > 0) {
+          const lastRev = revRes.data[revRes.data.length - 1];
           revenueYoY = Number(lastRev.revenue_yoy || lastRev.YoY || 0);
           latestRevMonth = Number(lastRev.revenue_month || 9);
         }
-      } catch (err) {
-        console.warn(`[Turnaround Fallback] Revenue fetch failed for ${item.code}:`, err);
-      }
 
-      let sumEps: number | null = null;
-      try {
-        const eUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${item.code}&start_date=2025-01-01&token=${FINMIND_TOKEN}`;
-        const eRes = await fetchWithTimeout(eUrl, {}, 5000);
-        const eJson = await safeParseJsonResponse(eRes, `FinMind-EPS-${item.code}`);
-        const epsRows = (eJson?.data || []).filter((r: any) => r.type === 'EPS');
-        if (epsRows.length > 0) {
-          sumEps = epsRows.slice(-4).reduce((acc: number, r: any) => acc + Number(r.value || 0), 0);
+        if (eRes && Array.isArray(eRes.data)) {
+          const epsRows = eRes.data.filter((r: any) => r.type === 'EPS');
+          if (epsRows.length > 0) {
+            sumEps = epsRows.slice(-4).reduce((acc: number, r: any) => acc + Number(r.value || 0), 0);
+          }
         }
-      } catch (err) {
-        // eps error
+      } catch (err: any) {
+        console.warn(`[Turnaround Fallback] FinMind details fetch failed for ${item.code}:`, err?.message || err);
       }
 
+      const isLowBase = item.positionPct <= 35.0;
       const isProfitable = sumEps !== null && sumEps > 0;
       const isRevGrowing = revenueYoY >= 8.0;
+      const isAtrPass = item.atrPct >= 2.2;
+      const isTurnaroundMatched = isLowBase && item.isSafeBottom && isProfitable && isRevGrowing && isAtrPass;
+
       const change = Number((item.curPrice - item.prevClose).toFixed(2));
       const changePercent = item.prevClose > 0 ? Number(((change / item.prevClose) * 100).toFixed(2)) : 0;
       const stopLossPrice = Number((item.ma20 * 0.96).toFixed(2));
       const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(item.code, item.name);
 
-      const dynamicCatalyst = `低基期位階 ${item.positionPct}%，站穩20MA打底，近一年EPS ${sumEps !== null ? sumEps.toFixed(2) : '--'}元`;
-      const actionNote = `🛡️ 轉機低基期打底成型：站穩 20MA (${item.ma20})，年位階僅 ${item.positionPct}%，嚴守停損防守價 ${stopLossPrice} 元 [ATR% ${item.atrPct}%]`;
+      const maStatus = !item.isAboveMa20
+        ? `現價(${item.curPrice}元)仍在 20MA(${item.ma20}元)之下弱勢整理，尚未打底轉強`
+        : item.isMa20FlatOrRising
+        ? `現價(${item.curPrice}元)站上 20MA(${item.ma20}元)打底成型且均線走平翻揚`
+        : `現價(${item.curPrice}元)站上 20MA(${item.ma20}元)，但 20MA 仍處扣高下彎整理中`;
 
-      results.push({
+      const posStatus = isLowBase
+        ? `近一年處於 ${item.positionPct}% 低檔基期`
+        : `近一年位階達 ${item.positionPct}% (超過 35% 低基期門檻)`;
+
+      const dynamicCatalyst = `${industryTheme}，最新單月營收年增達 ${revenueYoY >= 0 ? '+' : ''}${revenueYoY}%，${posStatus}，${maStatus}。`;
+      const actionNote = isTurnaroundMatched
+        ? `💎 轉機低基期打底成型：位階近一年 ${item.positionPct}% 低檔、單月營收 YoY +${revenueYoY}%、站穩 20MA (${item.ma20}元) 翻揚、嚴守防守價 ${stopLossPrice} 元 [ATR% ${item.atrPct}%]`
+        : `🛡️ 潛在低基期轉型觀察：位階 ${item.positionPct}%，${maStatus}，近一年 EPS ${sumEps !== null ? sumEps.toFixed(2) : '--'}元 [ATR% ${item.atrPct}%]`;
+
+      return {
         symbol: item.code,
         name: item.name,
         industry: industryTheme,
@@ -2596,8 +2698,8 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         changePercent,
         prevClose: item.prevClose,
         volume: item.klines.volumes[item.klines.volumes.length - 1] || item.volumeAvg5d,
-        yearHigh: Math.max(...item.klines.highs, item.curPrice),
-        yearLow: Math.min(...item.klines.lows, item.curPrice),
+        yearHigh: item.yearHigh,
+        yearLow: item.yearLow,
         positionPct: item.positionPct,
         positionLabel: `處於近一年 ${item.positionPct}% 低檔區`,
         latestRevenueMonth: latestRevMonth,
@@ -2605,20 +2707,24 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         eps4Q: sumEps !== null ? Number(sumEps.toFixed(2)) : null,
         isProfitable,
         isRevGrowing,
-        isLowBase: true,
-        isSafeBottom: true,
-        isTurnaroundMatched: true,
+        isLowBase,
+        isSafeBottom: item.isSafeBottom,
+        isTurnaroundMatched,
         catalyst: dynamicCatalyst,
         stopLossPrice,
         actionNote,
         atr20: item.atr20,
         atrPct: item.atrPct,
         volumeAvg5d: item.volumeAvg5d,
-      });
-    } catch (err) {
-      console.warn(`[Turnaround Fallback] Failed processing ${item.code}:`, err);
-    }
-  }
+      };
+    })
+  );
+
+  results.sort((a, b) => {
+    if (a.isTurnaroundMatched && !b.isTurnaroundMatched) return -1;
+    if (!a.isTurnaroundMatched && b.isTurnaroundMatched) return 1;
+    return a.positionPct - b.positionPct;
+  });
 
   return results;
 }
@@ -2676,6 +2782,11 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
       time: quote.time,
     });
     if (qualifiedCandidates.length >= 35) break;
+  }
+
+  if (qualifiedCandidates.length === 0) {
+    console.warn('[Turnaround Scanner] 無法透過即時報價取得有效候選標的，啟用海外機房備援快篩...');
+    return await scanTurnaroundFallback(todayTaipeiDate, marketStatus.isIntradayTrading);
   }
 
   // -------------------------------------------------------------------------
@@ -2874,6 +2985,11 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
     return b.revenueYoY - a.revenueYoY;
   });
 
+  if (results.length === 0) {
+    console.warn('[Turnaround Scanner] 標準掃描無任何符合標的，啟用海外機房備援快篩...');
+    return await scanTurnaroundFallback(todayTaipeiDate, marketStatus.isIntradayTrading);
+  }
+
   return results;
 }
 
@@ -2984,11 +3100,13 @@ async function getTurnaroundData(force = false): Promise<TurnaroundScreenerRespo
       marketStatusText,
     };
 
-    turnaroundCache = {
-      data: responseData,
-      cachedAt: now,
-      expireAt: now + cacheTTL,
-    };
+    if (allStocks.length > 0) {
+      turnaroundCache = {
+        data: responseData,
+        cachedAt: now,
+        expireAt: now + cacheTTL,
+      };
+    }
 
     return responseData;
   } finally {
@@ -3311,6 +3429,7 @@ function saveWatchlistBriefingDiskCache() {
 
 interface WatchlistStockChipData {
   timestamp: number;
+  settledDate: string;
   trustNetLots: number;
   foreignNetLots: number;
   marginChangeLots: number;
@@ -3321,8 +3440,10 @@ const WATCHLIST_CHIP_CACHE_TTL = 30 * 60 * 1000; // 30 分鐘記憶體快取
 
 /**
  * 單檔股票極速籌碼查詢（FinMind 法人買賣超 + 融資消長，支援 30 分鐘快取與 3500ms 超時保護）
+ * 永遠直接抓取資料集中最新一筆已結算的真實日期與張數，絕不受 15:30 盤中尚未結算影響
  */
 async function fetchSingleStockChips(symbol: string): Promise<{
+  settledDate: string;
   trustNetLots: number;
   foreignNetLots: number;
   marginChangeLots: number;
@@ -3331,6 +3452,7 @@ async function fetchSingleStockChips(symbol: string): Promise<{
   const cached = watchlistStockChipCache.get(symbol);
   if (cached && now - cached.timestamp < WATCHLIST_CHIP_CACHE_TTL) {
     return {
+      settledDate: cached.settledDate,
       trustNetLots: cached.trustNetLots,
       foreignNetLots: cached.foreignNetLots,
       marginChangeLots: cached.marginChangeLots,
@@ -3340,11 +3462,12 @@ async function fetchSingleStockChips(symbol: string): Promise<{
   let trustNetLots = 0;
   let foreignNetLots = 0;
   let marginChangeLots = 0;
+  let settledDate = '';
 
   try {
-    const d7 = new Date();
-    d7.setDate(d7.getDate() - 7);
-    const startDate = d7.toISOString().split('T')[0];
+    const d14 = new Date();
+    d14.setDate(d14.getDate() - 14); // 帶入最近 14 天，保證涵蓋連假與週末
+    const startDate = d14.toISOString().split('T')[0];
 
     const instUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id=${symbol}&start_date=${startDate}&token=${FINMIND_TOKEN}`;
     const marginUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMarginPurchaseShortSale&data_id=${symbol}&start_date=${startDate}&token=${FINMIND_TOKEN}`;
@@ -3358,37 +3481,47 @@ async function fetchSingleStockChips(symbol: string): Promise<{
         .catch(() => null),
     ]);
 
-    // Parse Institutional Buy/Sell (FinMind returns shares; divide by 1000 to get lots)
+    // Parse Institutional Buy/Sell: 抓取最新一筆已結算的真實日期與張數 (FinMind 回傳股數，除以 1000 換算張數)
     if (instRes && Array.isArray(instRes.data) && instRes.data.length > 0) {
       const rows = instRes.data;
-      const latestDate = rows[rows.length - 1]?.date;
-      const latestRows = rows.filter((r: any) => r.date === latestDate);
+      const distinctDates: string[] = Array.from(new Set<string>(rows.map((r: any) => String(r.date || ''))))
+        .filter((d): d is string => Boolean(d))
+        .sort();
+      const latestInstDate = distinctDates[distinctDates.length - 1];
+      if (latestInstDate) {
+        settledDate = latestInstDate;
+        const latestRows = rows.filter((r: any) => r.date === latestInstDate);
+        for (const r of latestRows) {
+          const buy = Number(r.buy || 0);
+          const sell = Number(r.sell || 0);
+          const netLots = Math.round((buy - sell) / 1000);
 
-      for (const r of latestRows) {
-        const buy = Number(r.buy || 0);
-        const sell = Number(r.sell || 0);
-        const netLots = Math.round((buy - sell) / 1000);
-
-        if (r.name === 'Investment_Trust') {
-          trustNetLots += netLots;
-        } else if (r.name === 'Foreign_Investor' || r.name === 'Foreign_Dealer_Self') {
-          foreignNetLots += netLots;
+          if (r.name === 'Investment_Trust') {
+            trustNetLots += netLots;
+          } else if (r.name === 'Foreign_Investor' || r.name === 'Foreign_Dealer_Self') {
+            foreignNetLots += netLots;
+          }
         }
       }
     }
 
-    // Parse Margin Purchase / Short Sale (FinMind returns lots)
+    // Parse Margin Purchase / Short Sale: 取最新一筆已有結算資料
     if (marginRes && Array.isArray(marginRes.data) && marginRes.data.length > 0) {
-      const latestMargin = marginRes.data[marginRes.data.length - 1];
+      const marginRows = marginRes.data;
+      const latestMargin = marginRows[marginRows.length - 1];
       if (latestMargin) {
         const todayBal = Number(latestMargin.MarginPurchaseTodayBalance ?? 0);
         const yestBal = Number(latestMargin.MarginPurchaseYesterdayBalance ?? 0);
         marginChangeLots = todayBal - yestBal;
+        if (!settledDate && latestMargin.date) {
+          settledDate = String(latestMargin.date);
+        }
       }
     }
 
     watchlistStockChipCache.set(symbol, {
       timestamp: now,
+      settledDate,
       trustNetLots,
       foreignNetLots,
       marginChangeLots,
@@ -3397,7 +3530,7 @@ async function fetchSingleStockChips(symbol: string): Promise<{
     console.warn(`[WatchlistChips] Error fetching chips for ${symbol}:`, err?.message || err);
   }
 
-  return { trustNetLots, foreignNetLots, marginChangeLots };
+  return { settledDate, trustNetLots, foreignNetLots, marginChangeLots };
 }
 
 /**
@@ -3838,30 +3971,322 @@ app.get('/api/market/quotes', async (req: Request, res: Response) => {
 });
 
 // -------------------------------------------------------------------------
-// 7. 自選清單跨裝置雲端同步（電腦與手機同步）
+// 7. Supabase 雲端資料庫串接與操盤手資金管理 / 交易日記持久化儲存
 // -------------------------------------------------------------------------
+const USER_PORTFOLIO_STORE_FILE = path.join(process.cwd(), '.user_portfolio_store.json');
 const PORTFOLIO_DISK_CACHE_FILE = path.join(process.cwd(), '.cached_portfolio.json');
 
-app.get('/api/watchlist/portfolio', (_req: Request, res: Response) => {
+interface UserStoreData {
+  initialCapital: number;
+  portfolio: any[];
+  tradeHistory: any[];
+}
+
+function readLocalUserStore(): UserStoreData {
+  try {
+    if (fs.existsSync(USER_PORTFOLIO_STORE_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(USER_PORTFOLIO_STORE_FILE, 'utf-8'));
+      return {
+        initialCapital: typeof parsed.initialCapital === 'number' ? parsed.initialCapital : 1000000,
+        portfolio: Array.isArray(parsed.portfolio) ? parsed.portfolio : [],
+        tradeHistory: Array.isArray(parsed.tradeHistory) ? parsed.tradeHistory : [],
+      };
+    }
+  } catch (e) {
+    console.warn('[UserStore] Error reading .user_portfolio_store.json:', e);
+  }
+
+  // 舊版快取平滑遷移
   try {
     if (fs.existsSync(PORTFOLIO_DISK_CACHE_FILE)) {
-      const data = JSON.parse(fs.readFileSync(PORTFOLIO_DISK_CACHE_FILE, 'utf-8'));
-      if (Array.isArray(data)) {
-        return res.json(data);
+      const old = JSON.parse(fs.readFileSync(PORTFOLIO_DISK_CACHE_FILE, 'utf-8'));
+      if (Array.isArray(old) && old.length > 0) {
+        return {
+          initialCapital: 1000000,
+          portfolio: old,
+          tradeHistory: [],
+        };
       }
     }
-    return res.json([]);
+  } catch {}
+
+  return {
+    initialCapital: 1000000,
+    portfolio: [],
+    tradeHistory: [],
+  };
+}
+
+function writeLocalUserStore(data: UserStoreData) {
+  try {
+    fs.writeFileSync(USER_PORTFOLIO_STORE_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    fs.writeFileSync(PORTFOLIO_DISK_CACHE_FILE, JSON.stringify(data.portfolio, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('[UserStore] Error writing .user_portfolio_store.json:', e);
+  }
+}
+
+async function getUserData(): Promise<{
+  initialCapital: number;
+  portfolio: any[];
+  tradeHistory: any[];
+  syncStatus: { connected: boolean; provider: 'supabase' | 'local_store'; message: string };
+}> {
+  const local = readLocalUserStore();
+
+  if (!supabase) {
+    return {
+      ...local,
+      syncStatus: {
+        connected: false,
+        provider: 'local_store',
+        message: '未設定 SUPABASE_URL / SUPABASE_KEY，目前以本機檔案與 LocalStorage 高可用備援保存',
+      },
+    };
+  }
+
+  try {
+    // 1. user_settings
+    let initialCapital = local.initialCapital;
+    try {
+      const { data: setRes, error: setError } = await supabase.from('user_settings').select('initial_capital').limit(1);
+      if (!setError && setRes && setRes.length > 0 && setRes[0].initial_capital !== undefined) {
+        initialCapital = Number(setRes[0].initial_capital) || initialCapital;
+      }
+    } catch {}
+
+    // 2. user_portfolio
+    let portfolio = local.portfolio;
+    try {
+      const { data: pRes, error: pError } = await supabase.from('user_portfolio').select('*');
+      if (!pError && Array.isArray(pRes)) {
+        portfolio = pRes.map((r: any) => ({
+          id: String(r.id || r.symbol),
+          symbol: String(r.symbol),
+          name: String(r.name || ''),
+          entryPrice: Number(r.entry_price || 0),
+          sharesLots: Number(r.shares_lots || 1),
+          feeDiscount: Number(r.fee_discount ?? 60),
+          stopLossPrice: Number(r.stop_loss_price || 0),
+          targetPrice: Number(r.target_price || 0),
+          entryDate: String(r.entry_date || ''),
+          strategyType: r.strategy_type || 'momentum',
+          notes: r.notes || '',
+        }));
+      }
+    } catch {}
+
+    // 3. trade_history
+    let tradeHistory = local.tradeHistory;
+    try {
+      const { data: tRes, error: tError } = await supabase.from('trade_history').select('*').order('exit_date', { ascending: false });
+      if (!tError && Array.isArray(tRes)) {
+        tradeHistory = tRes.map((r: any) => ({
+          id: String(r.id),
+          symbol: String(r.symbol),
+          name: String(r.name || ''),
+          strategyType: r.strategy_type || 'momentum',
+          entryPrice: Number(r.entry_price || 0),
+          exitPrice: Number(r.exit_price || 0),
+          sharesLots: Number(r.shares_lots || 1),
+          entryDate: String(r.entry_date || ''),
+          exitDate: String(r.exit_date || ''),
+          exitType: r.exit_type || 'MANUAL',
+          realizedPL: Number(r.realized_pl || 0),
+          returnPct: Number(r.return_pct || 0),
+          holdingDays: Number(r.holding_days || 0),
+          notes: r.notes || '',
+        }));
+      }
+    } catch {}
+
+    // Update local cache
+    writeLocalUserStore({ initialCapital, portfolio, tradeHistory });
+
+    return {
+      initialCapital,
+      portfolio,
+      tradeHistory,
+      syncStatus: {
+        connected: true,
+        provider: 'supabase',
+        message: 'Supabase 雲端資料庫連線正常（跨裝置即時同步已啟用）',
+      },
+    };
   } catch (err: any) {
-    console.warn('Failed to read portfolio file:', err);
+    console.warn('[Supabase] Sync error, fallback to local store:', err?.message || err);
+    return {
+      ...local,
+      syncStatus: {
+        connected: false,
+        provider: 'local_store',
+        message: `Supabase 連線異常，已切換至本機備援：${err?.message || '網路逾時'}`,
+      },
+    };
+  }
+}
+
+async function saveUserData(portfolio: any[], initialCapital?: number) {
+  const current = readLocalUserStore();
+  const cap = typeof initialCapital === 'number' ? initialCapital : current.initialCapital;
+  const updated: UserStoreData = {
+    initialCapital: cap,
+    portfolio,
+    tradeHistory: current.tradeHistory,
+  };
+  writeLocalUserStore(updated);
+
+  if (!supabase) return;
+
+  try {
+    if (typeof initialCapital === 'number') {
+      await supabase.from('user_settings').upsert({
+        id: 'default_user',
+        initial_capital: cap,
+      });
+    }
+
+    const rows = portfolio.map((item) => ({
+      id: String(item.id || item.symbol),
+      symbol: String(item.symbol),
+      name: String(item.name || ''),
+      entry_price: Number(item.entryPrice || 0),
+      shares_lots: Number(item.sharesLots || 1),
+      fee_discount: Number(item.feeDiscount ?? 60),
+      stop_loss_price: Number(item.stopLossPrice || 0),
+      target_price: Number(item.targetPrice || 0),
+      entry_date: String(item.entryDate || ''),
+      strategy_type: String(item.strategyType || 'momentum'),
+      notes: String(item.notes || ''),
+    }));
+
+    await supabase.from('user_portfolio').delete().neq('id', '___none___');
+    if (rows.length > 0) {
+      await supabase.from('user_portfolio').upsert(rows);
+    }
+  } catch (err: any) {
+    console.warn('[Supabase] Error saving user portfolio to Supabase:', err?.message || err);
+  }
+}
+
+async function addTradeRecord(trade: any) {
+  const current = readLocalUserStore();
+  const tradeItem = {
+    ...trade,
+    id: trade.id || `trade_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+  };
+  current.tradeHistory.unshift(tradeItem);
+  writeLocalUserStore(current);
+
+  if (!supabase) return tradeItem;
+
+  try {
+    await supabase.from('trade_history').upsert({
+      id: tradeItem.id,
+      symbol: String(tradeItem.symbol),
+      name: String(tradeItem.name || ''),
+      strategy_type: String(tradeItem.strategyType || 'momentum'),
+      entry_price: Number(tradeItem.entryPrice || 0),
+      exit_price: Number(tradeItem.exitPrice || 0),
+      shares_lots: Number(tradeItem.sharesLots || 1),
+      entry_date: String(tradeItem.entryDate || ''),
+      exit_date: String(tradeItem.exitDate || ''),
+      exit_type: String(tradeItem.exitType || 'MANUAL'),
+      realized_pl: Number(tradeItem.realizedPL || 0),
+      return_pct: Number(tradeItem.returnPct || 0),
+      holding_days: Number(tradeItem.holdingDays || 0),
+      notes: String(tradeItem.notes || ''),
+    });
+  } catch (err: any) {
+    console.warn('[Supabase] Error saving trade to Supabase:', err?.message || err);
+  }
+  return tradeItem;
+}
+
+async function deleteTradeRecord(id: string) {
+  const current = readLocalUserStore();
+  current.tradeHistory = current.tradeHistory.filter((t) => t.id !== id);
+  writeLocalUserStore(current);
+
+  if (!supabase) return;
+
+  try {
+    await supabase.from('trade_history').delete().eq('id', id);
+  } catch (err: any) {
+    console.warn('[Supabase] Error deleting trade from Supabase:', err?.message || err);
+  }
+}
+
+// 7.1 使用者資金、持股與歷史交易日記 API
+app.get('/api/user/portfolio', async (_req: Request, res: Response) => {
+  try {
+    const data = await getUserData();
+    return res.json(data);
+  } catch (err: any) {
+    console.error('Error in GET /api/user/portfolio:', err);
+    return res.status(500).json({ error: 'Failed to fetch user portfolio', message: err?.message });
+  }
+});
+
+app.post('/api/user/portfolio', async (req: Request, res: Response) => {
+  try {
+    const { portfolio, initialCapital } = req.body;
+    const portfolioArray = Array.isArray(portfolio)
+      ? portfolio
+      : Array.isArray(req.body)
+      ? req.body
+      : [];
+    const capitalNum = typeof initialCapital === 'number' ? initialCapital : undefined;
+    await saveUserData(portfolioArray, capitalNum);
+    return res.json({ success: true, count: portfolioArray.length, initialCapital: capitalNum });
+  } catch (err: any) {
+    console.error('Error in POST /api/user/portfolio:', err);
+    return res.status(500).json({ error: 'Failed to update user portfolio' });
+  }
+});
+
+app.post('/api/user/trades', async (req: Request, res: Response) => {
+  try {
+    const tradeData = req.body;
+    if (!tradeData || !tradeData.symbol) {
+      return res.status(400).json({ error: 'Missing trade data' });
+    }
+    const saved = await addTradeRecord(tradeData);
+    return res.json({ success: true, trade: saved });
+  } catch (err: any) {
+    console.error('Error in POST /api/user/trades:', err);
+    return res.status(500).json({ error: 'Failed to add trade' });
+  }
+});
+
+app.delete('/api/user/trades/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'Missing trade id' });
+    await deleteTradeRecord(id);
+    return res.json({ success: true });
+  } catch (err: any) {
+    console.error('Error in DELETE /api/user/trades/:id:', err);
+    return res.status(500).json({ error: 'Failed to delete trade' });
+  }
+});
+
+// 舊版自選清單跨裝置雲端同步向後相容
+app.get('/api/watchlist/portfolio', async (_req: Request, res: Response) => {
+  try {
+    const data = await getUserData();
+    return res.json(data.portfolio);
+  } catch (err: any) {
+    console.warn('Failed to read portfolio:', err);
     return res.json([]);
   }
 });
 
-app.post('/api/watchlist/portfolio', (req: Request, res: Response) => {
+app.post('/api/watchlist/portfolio', async (req: Request, res: Response) => {
   try {
     const data = req.body;
     const portfolioArray = Array.isArray(data) ? data : Array.isArray(data?.portfolio) ? data.portfolio : [];
-    fs.writeFileSync(PORTFOLIO_DISK_CACHE_FILE, JSON.stringify(portfolioArray, null, 2), 'utf-8');
+    await saveUserData(portfolioArray);
     return res.json({ success: true, count: portfolioArray.length });
   } catch (err: any) {
     console.error('Failed to save portfolio file:', err);
@@ -3976,6 +4401,436 @@ app.get('/api/stocks/:symbol', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error(`Error in /api/stocks/${symbol}:`, err);
     return res.status(500).json({ error: 'Failed to fetch stock data', message: err?.message });
+  }
+});
+
+// -------------------------------------------------------------------------
+// 8. 個股量化策略健檢 API (輸入 4 碼代號直接透視策略評級與籌碼屬性)
+// -------------------------------------------------------------------------
+async function fetchYahooChart1Y(code: string): Promise<{
+  dates: string[];
+  closes: number[];
+  highs: number[];
+  lows: number[];
+  volumes: number[];
+} | null> {
+  const exts = ['.TW', '.TWO'];
+  for (const ext of exts) {
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}${ext}?range=1y&interval=1d`;
+      const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 3500);
+      if (res.ok) {
+        const d = await safeParseJsonResponse(res, `Yahoo-Chart1Y-${code}${ext}`);
+        const result = d?.chart?.result?.[0];
+        const quote = result?.indicators?.quote?.[0];
+        const timestamps = result?.timestamp;
+        if (!quote || !quote.close) continue;
+
+        const dates: string[] = [];
+        const closes: number[] = [];
+        const highs: number[] = [];
+        const lows: number[] = [];
+        const volumes: number[] = [];
+
+        for (let i = 0; i < quote.close.length; i++) {
+          const c = quote.close[i];
+          if (typeof c === 'number' && !isNaN(c) && c > 0) {
+            closes.push(c);
+            highs.push(typeof quote.high?.[i] === 'number' ? quote.high[i] : c);
+            lows.push(typeof quote.low?.[i] === 'number' ? quote.low[i] : c);
+            volumes.push(typeof quote.volume?.[i] === 'number' ? Math.round(quote.volume[i] / 1000) : 0);
+            if (timestamps && timestamps[i]) {
+              dates.push(new Date(timestamps[i] * 1000).toISOString().split('T')[0]);
+            } else {
+              dates.push('');
+            }
+          }
+        }
+
+        if (closes.length >= 20) {
+          return { dates, closes, highs, lows, volumes };
+        }
+      }
+    } catch {}
+  }
+  return null;
+}
+
+app.get('/api/stocks/:symbol/strategy-audit', async (req: Request, res: Response) => {
+  const symbol = String(req.params.symbol).trim();
+  if (!symbol || !/^[1-9][0-9]{3}$/.test(symbol)) {
+    return res.status(400).json({ error: '請輸入有效的 4 碼台股代號' });
+  }
+
+  const d365 = new Date();
+  d365.setDate(d365.getDate() - 365);
+  const start365 = d365.toISOString().split('T')[0];
+
+  const d30 = new Date();
+  d30.setDate(d30.getDate() - 30);
+  const start30 = d30.toISOString().split('T')[0];
+
+  try {
+    // 平行查詢：MIS 即時撮合報價、一年走勢、30日法人、30日融資、主力分點
+    const [misQuotes, finPriceRes, chipsRes, marginRes, brokerData] = await Promise.all([
+      fetchBatchTWSEMisQuotes([symbol]),
+      fetchWithTimeout(
+        `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${symbol}&start_date=${start365}&token=${FINMIND_TOKEN}`,
+        {},
+        8000
+      )
+        .then((r) => (r.ok ? safeParseJsonResponse(r, `Audit-Price-${symbol}`) : null))
+        .catch(() => null),
+      fetchWithTimeout(
+        `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id=${symbol}&start_date=${start30}&token=${FINMIND_TOKEN}`,
+        {},
+        8000
+      )
+        .then((r) => (r.ok ? safeParseJsonResponse(r, `Audit-Chips-${symbol}`) : null))
+        .catch(() => null),
+      fetchWithTimeout(
+        `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMarginPurchaseShortSale&data_id=${symbol}&start_date=${start30}&token=${FINMIND_TOKEN}`,
+        {},
+        8000
+      )
+        .then((r) => (r.ok ? safeParseJsonResponse(r, `Audit-Margin-${symbol}`) : null))
+        .catch(() => null),
+      fetchBrokerTrading(symbol, 0).catch(() => null),
+    ]);
+
+    const misQuote = misQuotes.get(symbol);
+    let prices = Array.isArray(finPriceRes?.data) ? finPriceRes.data : [];
+
+    // 若 FinMind 價格天數不足，備援使用 Yahoo Finance 1Y Chart
+    if (prices.length < 20) {
+      try {
+        const yahooData = await fetchYahooChart1Y(symbol);
+        if (yahooData && yahooData.closes.length >= 20) {
+          prices = yahooData.closes.map((c: number, i: number) => ({
+            date: yahooData.dates[i] || '',
+            close: c,
+            max: yahooData.highs[i] || c,
+            min: yahooData.lows[i] || c,
+            Trading_Volume: (yahooData.volumes[i] || 0) * 1000,
+          }));
+        }
+      } catch (yErr) {
+        console.warn(`[Audit] Yahoo chart fallback failed for ${symbol}:`, yErr);
+      }
+    }
+
+    if (prices.length === 0 && !misQuote) {
+      return res.status(404).json({ error: `查無股票 ${symbol} 之歷史與即時報價，請確認代號是否正確。` });
+    }
+
+    const name = getStockName(symbol, misQuote?.name);
+    let curPrice = misQuote?.price || 0;
+    if (curPrice <= 0 && prices.length > 0) {
+      curPrice = Number(prices[prices.length - 1].close);
+    }
+    const prevClose = misQuote?.prevClose || (prices.length >= 2 ? Number(prices[prices.length - 2].close) : curPrice);
+    const change = Number((curPrice - prevClose).toFixed(2));
+    const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
+    const updateTime = misQuote?.time || new Date().toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' });
+
+    // 技術指標：5MA, 10MA, 20MA, ATR20, ATR%
+    const histCloses = prices.map((p: any) => Number(p.close));
+    const histHighs = prices.map((p: any) => Number(p.max || p.close));
+    const histLows = prices.map((p: any) => Number(p.min || p.close));
+    const histVolumes = prices.map((p: any) => Math.round(Number(p.Trading_Volume || p.volume || 0) / 1000));
+
+    const marketStatus = getTaipeiMarketStatus();
+    const isIntraday = marketStatus.isIntradayTrading;
+    const lastPriceDate = prices.length > 0 ? prices[prices.length - 1].date : '';
+    const todayDate = marketStatus.dateString;
+
+    const ma5 = histCloses.length >= 5 ? calculateMovingAverage(histCloses, 5, curPrice, isIntraday, lastPriceDate, todayDate) : curPrice;
+    const ma10 = histCloses.length >= 10 ? calculateMovingAverage(histCloses, 10, curPrice, isIntraday, lastPriceDate, todayDate) : ma5;
+    const ma20 = histCloses.length >= 20 ? calculateMovingAverage(histCloses, 20, curPrice, isIntraday, lastPriceDate, todayDate) : ma10;
+
+    // 前一日 20MA 檢驗走勢扣抵
+    const hasToday = Boolean(lastPriceDate && todayDate && lastPriceDate === todayDate);
+    const prevHistory = hasToday ? histCloses.slice(0, -1) : histCloses;
+    const prevMa20 = calculateMovingAverage(prevHistory, 20, prevHistory[prevHistory.length - 1] || curPrice, false);
+    const isMa20FlatOrRising = ma20 >= prevMa20 * 0.995;
+
+    const bias20ma = ma20 > 0 ? Number((((curPrice - ma20) / ma20) * 100).toFixed(2)) : 0;
+    const { atr20, atrPct } = calculateATR20Pct(histCloses, histHighs, histLows, curPrice);
+
+    // 成交量與均量
+    const volumeLots = misQuote?.volumeLots || (histVolumes.length > 0 ? histVolumes[histVolumes.length - 1] : 0);
+    const volumeAvg5d = histVolumes.length >= 5
+      ? Math.round(histVolumes.slice(-5).reduce((a: number, b: number) => a + b, 0) / 5)
+      : volumeLots > 0 ? volumeLots : 1000;
+    const volumeRatio = volumeAvg5d > 0 ? Number((volumeLots / volumeAvg5d).toFixed(2)) : 1.0;
+
+    // 一年高低點與位階
+    const yearHigh = histHighs.length > 0 ? Math.max(...histHighs, curPrice) : curPrice;
+    const yearLow = histLows.length > 0 ? Math.min(...histLows, curPrice) : curPrice;
+    const range = yearHigh - yearLow;
+    const positionPct = range > 0 ? Number((((curPrice - yearLow) / range) * 100).toFixed(1)) : 50;
+
+    // 籌碼與融資分析
+    let trustNetLotsToday = 0;
+    let foreignNetLotsToday = 0;
+    let trustNetLots10d = 0;
+    const chipsRows = Array.isArray(chipsRes?.data) ? chipsRes.data : [];
+
+    if (chipsRows.length > 0) {
+      const distinctDates: string[] = Array.from(new Set<string>(chipsRows.map((r: any) => String(r.date || ''))))
+        .filter((d): d is string => Boolean(d))
+        .sort();
+      const last10Dates = distinctDates.slice(-10);
+      const latestDate = distinctDates[distinctDates.length - 1];
+
+      for (const r of chipsRows) {
+        const netLots = Math.round((Number(r.buy || 0) - Number(r.sell || 0)) / 1000);
+        if (r.name === 'Investment_Trust') {
+          if (last10Dates.includes(r.date)) {
+            trustNetLots10d += netLots;
+          }
+          if (r.date === latestDate) {
+            trustNetLotsToday += netLots;
+          }
+        } else if (r.name === 'Foreign_Investor' || r.name === 'Foreign_Dealer_Self') {
+          if (r.date === latestDate) {
+            foreignNetLotsToday += netLots;
+          }
+        }
+      }
+    }
+
+    let marginChangeLotsToday = 0;
+    const marginRows = Array.isArray(marginRes?.data) ? marginRes.data : [];
+    if (marginRows.length > 0) {
+      const latestMargin = marginRows[marginRows.length - 1];
+      if (latestMargin) {
+        marginChangeLotsToday = Number(latestMargin.MarginPurchaseTodayBalance ?? 0) - Number(latestMargin.MarginPurchaseYesterdayBalance ?? 0);
+      }
+    }
+
+    // 營收與 EPS
+    let revenueYoY = 0;
+    let eps4Q: number | null = null;
+    const cachedTurnaround = turnaroundHistCache.get(symbol);
+    if (cachedTurnaround) {
+      revenueYoY = cachedTurnaround.revenueYoY;
+      eps4Q = cachedTurnaround.sumEps;
+    } else {
+      try {
+        const d60 = new Date();
+        d60.setDate(d60.getDate() - 60);
+        const rRes = await fetchWithTimeout(
+          `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id=${symbol}&start_date=${d60.toISOString().split('T')[0]}&token=${FINMIND_TOKEN}`,
+          {},
+          5000
+        );
+        const rJson = await safeParseJsonResponse(rRes, `Audit-Rev-${symbol}`);
+        if (Array.isArray(rJson?.data) && rJson.data.length > 0) {
+          const latestRev = rJson.data[rJson.data.length - 1];
+          const curRev = Number(latestRev.revenue || 0);
+          const lastYearRev = Number(latestRev.last_year_revenue || 0);
+          if (lastYearRev > 0) {
+            revenueYoY = Number((((curRev - lastYearRev) / lastYearRev) * 100).toFixed(2));
+          }
+        }
+      } catch {}
+
+      try {
+        const eRes = await fetchWithTimeout(
+          `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${symbol}&start_date=2025-01-01&token=${FINMIND_TOKEN}`,
+          {},
+          5000
+        );
+        const eJson = await safeParseJsonResponse(eRes, `Audit-EPS-${symbol}`);
+        const epsRows = (eJson?.data || []).filter((r: any) => r.type === 'EPS');
+        if (epsRows.length > 0) {
+          eps4Q = Number(epsRows.slice(-4).reduce((acc: number, r: any) => acc + Number(r.value || 0), 0).toFixed(2));
+        }
+      } catch {}
+    }
+
+    const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(symbol, name);
+
+    // -------------------------------------------------------------------------
+    // 1. 強勢動能突破策略審查
+    // -------------------------------------------------------------------------
+    const isTrustPass = trustNetLots10d >= 100;
+    const isBullishMa = curPrice >= ma5 && ma5 > ma10 && ma10 > ma20;
+    const isVolumeExpanding = volumeRatio >= 1.3 || (volumeLots > 0 && volumeLots >= volumeAvg5d * 1.3);
+    const isBiasSafe = bias20ma <= 10.0;
+    const isMomentumMatched = isTrustPass && isBullishMa && isVolumeExpanding && isBiasSafe;
+
+    const momentumChecks = [
+      {
+        name: '投信波段認養',
+        target: '近 10 日投信累計買超 >= 100 張',
+        actual: `近 10 日累計 ${trustNetLots10d >= 0 ? '+' : ''}${trustNetLots10d.toLocaleString()} 張 (今日 ${trustNetLotsToday >= 0 ? '+' : ''}${trustNetLotsToday.toLocaleString()} 張)`,
+        passed: isTrustPass,
+      },
+      {
+        name: '均線多頭排列',
+        target: '現價 >= 5MA 且 5MA > 10MA > 20MA',
+        actual: `現價 $${curPrice} / 5MA $${ma5} / 10MA $${ma10} / 20MA $${ma20}`,
+        passed: isBullishMa,
+      },
+      {
+        name: '出量攻擊突破',
+        target: '成交量 >= 1.3 倍 5日均量 (預估放大)',
+        actual: `成交量 ${volumeLots.toLocaleString()} 張 / 5日均量 ${volumeAvg5d.toLocaleString()} 張 (${volumeRatio}x)`,
+        passed: isVolumeExpanding,
+      },
+      {
+        name: '20MA 正乖離率防護',
+        target: '偏離 20MA 乖離率 <= 10% (避免過熱追高)',
+        actual: `目前正乖離率 ${bias20ma > 0 ? '+' : ''}${bias20ma}%`,
+        passed: isBiasSafe,
+      },
+    ];
+
+    let momentumVerdict = '';
+    if (isMomentumMatched) {
+      momentumVerdict = '✅ 完全符合動能發動突破：均線多頭排列、投信連續波段認養加碼，成交量明顯擴增！';
+    } else {
+      const fails: string[] = [];
+      if (!isTrustPass) fails.push(`投信10日買超 ${trustNetLots10d} 張 (未達 100 張門檻)`);
+      if (!isBullishMa) fails.push(`均線未呈多頭排列 (需現價>=5MA>10MA>20MA)`);
+      if (!isVolumeExpanding) fails.push(`量能尚未放大 (目前僅 ${volumeRatio} 倍均量)`);
+      if (!isBiasSafe) fails.push(`20MA乖離率高達 ${bias20ma}% (已過熱)`);
+      momentumVerdict = `❌ 未達動能選股標準：${fails.join('；')}`;
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. 低基期價值轉型策略審查
+    // -------------------------------------------------------------------------
+    const isLowBase = positionPct <= 35.0;
+    const isSafeBottom = curPrice >= ma20 && isMa20FlatOrRising;
+    const isRevGrowing = revenueYoY >= 8.0;
+    const isProfitable = eps4Q !== null ? eps4Q > 0 : true;
+    const isTurnaroundMatched = isLowBase && isSafeBottom && isRevGrowing && isProfitable;
+
+    const turnaroundChecks = [
+      {
+        name: '近一年價格位階',
+        target: '位階 <= 35% (近一年相對低檔區間)',
+        actual: `位階 ${positionPct}% (近一年最高 $${yearHigh} / 最低 $${yearLow})`,
+        passed: isLowBase,
+      },
+      {
+        name: '20MA 打底安全閥',
+        target: '現價站上 20MA 且均線走平或微揚',
+        actual: `現價 $${curPrice} / 20MA $${ma20} (${curPrice >= ma20 ? '已站上' : '跌破'}，${isMa20FlatOrRising ? '均線走平微揚' : '均線扣高下彎'})`,
+        passed: isSafeBottom,
+      },
+      {
+        name: '最新單月營收年增率',
+        target: '營收 YoY >= +8% (脫離基本面谷底)',
+        actual: `最新單月營收 YoY ${revenueYoY >= 0 ? '+' : ''}${revenueYoY}%`,
+        passed: isRevGrowing,
+      },
+      {
+        name: '近四季累計獲利能力',
+        target: '近四季累計 EPS > 0 元 (賺錢無虧損)',
+        actual: eps4Q !== null ? `近四季累計 EPS ${eps4Q > 0 ? '+' : ''}${eps4Q} 元` : '查無虧損資訊 (無獲利警訊)',
+        passed: isProfitable,
+      },
+    ];
+
+    let turnaroundVerdict = '';
+    if (isTurnaroundMatched) {
+      turnaroundVerdict = '✅ 完全符合低基期價值轉型：位階低檔打底成型、營收脫離谷底且站穩月線！';
+    } else {
+      const fails: string[] = [];
+      if (!isLowBase) fails.push(`近一年位階達 ${positionPct}% (超過 35% 低檔門檻)`);
+      if (!isSafeBottom) fails.push(curPrice < ma20 ? `現價跌破 20MA($${ma20}) 弱勢整理` : `20MA 下彎尚未打底成型`);
+      if (!isRevGrowing) fails.push(`單月營收 YoY ${revenueYoY}% (未達 +8% 成長門檻)`);
+      if (!isProfitable) fails.push(`近四季累計 EPS 為負數 (${eps4Q}元)`);
+      turnaroundVerdict = `❌ 未達低基期轉型標準：${fails.join('；')}`;
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. 籌碼屬性定調
+    // -------------------------------------------------------------------------
+    let badge = '⚖️ 中性整理股';
+    let badgeColor: 'emerald' | 'amber' | 'rose' | 'slate' = 'slate';
+    let description = '均線與籌碼處於區間震盪整理，尚未出現明顯波段攻擊訊號。';
+
+    const concentration = brokerData?.volumeRate || 0;
+
+    if (trustNetLots10d >= 200 || trustNetLotsToday >= 100) {
+      badge = '💎 投信波段認養股';
+      badgeColor = 'emerald';
+      description = '投信法人近期主動波段加碼佈局，籌碼穩定度高，拉回守穩均線為重要買點。';
+    } else if (concentration > 20 || (marginChangeLotsToday > 100 && volumeRatio > 1.2)) {
+      badge = '🔥 主力作手／高集中度籌碼股';
+      badgeColor = 'amber';
+      description = `主力特定分點控盤力道強（前五大買超集中度 ${concentration.toFixed(1)}%），外資短線頻繁換手，波動較劇烈。`;
+    } else if (curPrice < ma20 && !isMa20FlatOrRising) {
+      badge = '⚠️ 空頭弱勢股';
+      badgeColor = 'rose';
+      description = `現價已跌破 20MA 月線防守點，且短期均線反壓沉重，籌碼面缺乏買盤支撐。`;
+    }
+
+    const auditResponse = {
+      symbol,
+      name,
+      price: curPrice,
+      change,
+      changePercent,
+      prevClose,
+      volume: volumeLots,
+      volumeAvg5d,
+      volumeRatio,
+      ma5,
+      ma10,
+      ma20,
+      bias20ma,
+      atr20,
+      atrPct,
+      industry: industryTheme,
+      industryTheme,
+      isPriorityWhiteList,
+      updateTime,
+      momentum: {
+        isMatched: isMomentumMatched,
+        verdict: momentumVerdict,
+        checks: momentumChecks,
+        trustNetLots10d,
+        isBullishMa,
+        isVolumeExpanding,
+        isBiasSafe,
+      },
+      turnaround: {
+        isMatched: isTurnaroundMatched,
+        verdict: turnaroundVerdict,
+        checks: turnaroundChecks,
+        positionPct,
+        yearHigh,
+        yearLow,
+        isLowBase,
+        isSafeBottom,
+        revenueYoY,
+        eps4Q,
+        isProfitable,
+        isRevGrowing,
+      },
+      chipsAttribute: {
+        badge,
+        badgeColor,
+        description,
+        trustNetLotsToday,
+        foreignNetLotsToday,
+        marginChangeLotsToday,
+        majorConcentration5dPct: concentration,
+        topBuyBroker: brokerData?.topBuyBrokers?.[0]?.name,
+      },
+      timestamp: new Date().toISOString(),
+    };
+
+    return res.json(auditResponse);
+  } catch (err: any) {
+    console.error(`Error in /api/stocks/${symbol}/strategy-audit:`, err);
+    return res.status(500).json({ error: '健檢分析失敗', message: err?.message });
   }
 });
 

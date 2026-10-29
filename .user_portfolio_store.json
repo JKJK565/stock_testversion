@@ -1,0 +1,22 @@
+{
+  "initialCapital": 1000000,
+  "portfolio": [
+    {
+      "id": "3596-1791966379111",
+      "symbol": "3596",
+      "name": "智易",
+      "entryPrice": 160.5,
+      "sharesLots": 1,
+      "stopLossPrice": 156.4,
+      "targetPrice": 216.7,
+      "entryDate": "2026-10-14",
+      "notes": "【價值轉型】處於近一年 13.5% 低檔區，歐美一線電信商啟動 WiFi 7 換機潮，加速佈局 5G FWA 局端設備與低軌衛星使用者接收端模組",
+      "strategyType": "turnaround",
+      "currentPrice": 156,
+      "change": -2.5,
+      "changePercent": -1.58,
+      "updateTime": "13:30:00"
+    }
+  ],
+  "tradeHistory": []
+}

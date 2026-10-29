@@ -185,8 +185,12 @@ export interface PortfolioStockItem {
   change?: number;
   changePercent?: number;
   updateTime?: string;
-  unrealizedPL?: number; // 損益金額 (TWD)
-  returnPct?: number; // 報酬率 %
+  unrealizedPL?: number; // 毛損益金額 (TWD)
+  returnPct?: number; // 毛報酬率 %
+  feeDiscount?: number; // 手續費折數 (例如 60 代表 6 折，預設 60；100 代表無折扣原價)
+  feeCostTotal?: number; // 預估總交易成本 (買進手續費 + 賣出手續費 + 0.3% 證交稅)
+  netPL?: number; // 實拿淨損益 = 毛損益 - feeCostTotal
+  netReturnPct?: number; // 淨報酬率 %
   isStopLossTriggered?: boolean;
   isTargetTriggered?: boolean;
   // Health Evaluation Details
@@ -368,3 +372,109 @@ export interface DailyChips {
   trustNetLots: number;
   dealerNetLots: number;
 }
+
+// ---------------------------------------------------------------------------
+// 操盤手資金管理與歷史平倉交易日記 (Trade Diary)
+// ---------------------------------------------------------------------------
+export interface TradeRecordItem {
+  id: string;
+  symbol: string;
+  name: string;
+  strategyType?: string; // 'momentum' | 'turnaround' | 'custom'
+  entryPrice: number;
+  exitPrice: number;
+  sharesLots: number; // 張數 (1張 = 1000股)
+  entryDate: string; // YYYY-MM-DD
+  exitDate: string; // YYYY-MM-DD
+  exitType: 'TAKE_PROFIT' | 'STOP_LOSS' | 'MANUAL';
+  realizedPL: number; // 已實現損益 (TWD)
+  returnPct: number; // 報酬率 %
+  holdingDays: number;
+  notes?: string;
+}
+
+export interface UserSettings {
+  initialCapital: number;
+}
+
+export interface UserPortfolioResponse {
+  initialCapital: number;
+  portfolio: PortfolioStockItem[];
+  tradeHistory: TradeRecordItem[];
+  syncStatus?: {
+    connected: boolean;
+    provider: 'supabase' | 'local_store';
+    message: string;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 個股量化策略健檢 (Stock Strategy Audit)
+// ---------------------------------------------------------------------------
+export interface StrategyCheckItem {
+  name: string;
+  target: string;
+  actual: string;
+  passed: boolean;
+  note?: string;
+}
+
+export interface StrategyAuditResponse {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  prevClose: number;
+  volume: number; // 當日即時張數
+  volumeAvg5d: number; // 5日均量
+  volumeRatio: number; // 量能倍數
+  ma5: number;
+  ma10: number;
+  ma20: number;
+  bias20ma: number; // 20MA乖離率 %
+  atr20: number;
+  atrPct: number;
+  industry: string;
+  industryTheme: string;
+  isPriorityWhiteList: boolean;
+  updateTime: string;
+  // 1. 強勢動能突破策略
+  momentum: {
+    isMatched: boolean;
+    verdict: string;
+    checks: StrategyCheckItem[];
+    trustNetLots10d: number;
+    isBullishMa: boolean;
+    isVolumeExpanding: boolean;
+    isBiasSafe: boolean;
+  };
+  // 2. 低基期價值轉型策略
+  turnaround: {
+    isMatched: boolean;
+    verdict: string;
+    checks: StrategyCheckItem[];
+    positionPct: number;
+    yearHigh: number;
+    yearLow: number;
+    isLowBase: boolean;
+    isSafeBottom: boolean;
+    revenueYoY: number;
+    eps4Q: number | null;
+    isProfitable: boolean;
+    isRevGrowing: boolean;
+  };
+  // 3. 籌碼屬性定調
+  chipsAttribute: {
+    badge: string; // e.g. "💎 投信波段認養股"
+    badgeColor: 'emerald' | 'amber' | 'rose' | 'slate';
+    description: string;
+    trustNetLotsToday: number;
+    foreignNetLotsToday: number;
+    marginChangeLotsToday: number;
+    majorConcentration5dPct?: number;
+    topBuyBroker?: string;
+  };
+  timestamp: string;
+}
+

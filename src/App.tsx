@@ -7,6 +7,7 @@ import {
   TurnaroundStockItem,
   MorningBriefingResponse,
   PortfolioStockItem,
+  TradeRecordItem,
   WatchlistAlertDetail,
   NotificationItem,
   WatchlistBriefingResponse,
@@ -27,6 +28,7 @@ import { Navbar } from './components/Navbar';
 import { NotificationCenter } from './components/NotificationCenter';
 import { WatchlistView } from './components/WatchlistView';
 import { StockDetailModal } from './components/StockDetailModal';
+import { StockStrategyAuditModal } from './components/StockStrategyAuditModal';
 import {
   TrendingUp,
   TrendingDown,
@@ -207,6 +209,32 @@ export default function App() {
     setSelectedStockSymbol(null);
   };
 
+  // Stock Strategy Audit Modal state (個股量化策略健檢)
+  const [auditSymbol, setAuditSymbol] = useState<string | null>(null);
+  const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
+
+  const handleOpenStrategyAudit = (symbol: string) => {
+    setAuditSymbol(symbol);
+    setIsAuditModalOpen(true);
+  };
+
+  const handleCloseStrategyAudit = () => {
+    setIsAuditModalOpen(false);
+    setAuditSymbol(null);
+  };
+
+  // 操盤手資金管理：初始本金 (預設 1,000,000 TWD)
+  const [initialCapital, setInitialCapital] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('tw_swing_initial_capital');
+      if (saved) {
+        const val = Number(saved);
+        if (!isNaN(val) && val > 0) return val;
+      }
+    } catch {}
+    return 1000000;
+  });
+
   // Portfolio stored in localStorage
   const [portfolio, setPortfolio] = useState<PortfolioStockItem[]>(() => {
     try {
@@ -218,52 +246,202 @@ export default function App() {
     return [];
   });
 
-
-  const syncPortfolioToServer = useCallback(async (currentPortfolio: PortfolioStockItem[]) => {
+  // 操盤手已平倉歷史戰績交易日記 (Trade Diary)
+  const [tradeHistory, setTradeHistory] = useState<TradeRecordItem[]>(() => {
     try {
-      await fetch('/api/watchlist/portfolio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(currentPortfolio),
-      });
+      const saved = localStorage.getItem('tw_swing_trade_history');
+      if (saved) return JSON.parse(saved);
     } catch (e) {
-      console.warn('Failed to sync portfolio to server:', e);
+      console.error('Failed to load tradeHistory from localStorage:', e);
     }
-  }, []);
+    return [];
+  });
 
-  // 7. 自選清單跨裝置雲端同步（電腦與手機同步）
+  // Supabase / 本機資料庫同步狀態
+  const [syncStatus, setSyncStatus] = useState<{
+    connected: boolean;
+    provider: 'supabase' | 'local_store';
+    message: string;
+  }>({
+    connected: false,
+    provider: 'local_store',
+    message: '本機資料持久化中',
+  });
+
+  const syncUserPortfolioToServer = useCallback(
+    async (currentPortfolio: PortfolioStockItem[], cap?: number) => {
+      try {
+        await fetch('/api/user/portfolio', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ portfolio: currentPortfolio, initialCapital: cap }),
+        });
+      } catch (e) {
+        console.warn('Failed to sync user portfolio to server:', e);
+      }
+    },
+    []
+  );
+
+  // 7. Supabase 雲端資料庫串接與資料持久化同步
   useEffect(() => {
     let isMounted = true;
-    const syncCloudPortfolio = async () => {
+    const syncCloudUserData = async () => {
       try {
-        const res = await fetch('/api/watchlist/portfolio');
+        const res = await fetch('/api/user/portfolio');
         if (res.ok) {
           const serverData = await res.json();
-          if (Array.isArray(serverData) && serverData.length > 0) {
-            if (isMounted) {
-              setPortfolio(serverData);
-              localStorage.setItem('tw_swing_portfolio', JSON.stringify(serverData));
+          if (isMounted) {
+            if (typeof serverData.initialCapital === 'number' && serverData.initialCapital > 0) {
+              setInitialCapital(serverData.initialCapital);
+              localStorage.setItem('tw_swing_initial_capital', String(serverData.initialCapital));
             }
-            return;
+            if (Array.isArray(serverData.portfolio) && serverData.portfolio.length > 0) {
+              setPortfolio(serverData.portfolio);
+              localStorage.setItem('tw_swing_portfolio', JSON.stringify(serverData.portfolio));
+            } else {
+              // 若伺服器為空但本機有，自動同步上去
+              const saved = localStorage.getItem('tw_swing_portfolio');
+              if (saved) {
+                const localItems = JSON.parse(saved);
+                if (Array.isArray(localItems) && localItems.length > 0) {
+                  syncUserPortfolioToServer(localItems, initialCapital);
+                }
+              }
+            }
+            if (Array.isArray(serverData.tradeHistory) && serverData.tradeHistory.length > 0) {
+              setTradeHistory(serverData.tradeHistory);
+              localStorage.setItem('tw_swing_trade_history', JSON.stringify(serverData.tradeHistory));
+            }
+            if (serverData.syncStatus) {
+              setSyncStatus(serverData.syncStatus);
+            }
           }
-        }
-        // 若伺服器端為空但本地 localStorage 有資料，則自動上傳同步至伺服器
-        const saved = localStorage.getItem('tw_swing_portfolio');
-        if (saved) {
-          const localItems = JSON.parse(saved);
-          if (Array.isArray(localItems) && localItems.length > 0) {
-            syncPortfolioToServer(localItems);
-          }
+          return;
         }
       } catch (err) {
-        console.warn('Portfolio initial sync error:', err);
+        console.warn('User portfolio initial sync error:', err);
       }
     };
-    syncCloudPortfolio();
+    syncCloudUserData();
     return () => {
       isMounted = false;
     };
-  }, [syncPortfolioToServer]);
+  }, [syncUserPortfolioToServer, initialCapital]);
+
+  // 修改初始本金
+  const handleUpdateInitialCapital = useCallback(
+    (newCap: number) => {
+      setInitialCapital(newCap);
+      try {
+        localStorage.setItem('tw_swing_initial_capital', String(newCap));
+      } catch {}
+      syncUserPortfolioToServer(portfolio, newCap);
+    },
+    [portfolio, syncUserPortfolioToServer]
+  );
+
+  // 🎯 停利平倉 / 🛑 停損平倉：自動計算已實現損益、持有天數，移入交易日記並持久化
+  const handleClosePosition = useCallback(
+    async (tradeData: Omit<TradeRecordItem, 'id'>, removePortfolioId: string) => {
+      const tradeItem: TradeRecordItem = {
+        ...tradeData,
+        id: `trade_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      };
+
+      setTradeHistory((prev) => {
+        const updated = [tradeItem, ...prev];
+        try {
+          localStorage.setItem('tw_swing_trade_history', JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+
+      const nextPortfolio = portfolio.filter((p) => p.id !== removePortfolioId);
+      setPortfolio(nextPortfolio);
+      try {
+        localStorage.setItem('tw_swing_portfolio', JSON.stringify(nextPortfolio));
+      } catch {}
+
+      try {
+        await fetch('/api/user/trades', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(tradeItem),
+        });
+        syncUserPortfolioToServer(nextPortfolio, initialCapital);
+      } catch (e) {
+        console.warn('Failed to record closed trade to server:', e);
+      }
+    },
+    [portfolio, initialCapital, syncUserPortfolioToServer]
+  );
+
+  // 刪除單筆歷史平倉紀錄
+  const handleDeleteTradeRecord = useCallback(async (id: string) => {
+    setTradeHistory((prev) => {
+      const updated = prev.filter((t) => t.id !== id);
+      try {
+        localStorage.setItem('tw_swing_trade_history', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    try {
+      await fetch(`/api/user/trades/${id}`, { method: 'DELETE' });
+    } catch (e) {
+      console.warn('Failed to delete trade record from server:', e);
+    }
+  }, []);
+
+  // 備份匯出 (JSON 下載)
+  const handleExportBackup = useCallback(() => {
+    const backupData = {
+      version: '2.6.0',
+      exportedAt: new Date().toISOString(),
+      initialCapital,
+      portfolio,
+      tradeHistory,
+    };
+    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `台股量化波段雷達_交易紀錄備份_${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [initialCapital, portfolio, tradeHistory]);
+
+  // 備份匯入還原
+  const handleImportBackup = useCallback(
+    async (file: File) => {
+      try {
+        const text = await file.text();
+        const json = JSON.parse(text);
+        let cap = initialCapital;
+        if (typeof json.initialCapital === 'number' && json.initialCapital > 0) {
+          cap = json.initialCapital;
+          setInitialCapital(cap);
+          localStorage.setItem('tw_swing_initial_capital', String(cap));
+        }
+        let port = portfolio;
+        if (Array.isArray(json.portfolio)) {
+          port = json.portfolio;
+          setPortfolio(port);
+          localStorage.setItem('tw_swing_portfolio', JSON.stringify(port));
+        }
+        if (Array.isArray(json.tradeHistory)) {
+          setTradeHistory(json.tradeHistory);
+          localStorage.setItem('tw_swing_trade_history', JSON.stringify(json.tradeHistory));
+        }
+        syncUserPortfolioToServer(port, cap);
+        alert('🎉 交易紀錄備份還原成功！已自動同步至雲端與本機。');
+      } catch (e) {
+        alert('匯入備份失敗，請確認檔案是否為正確的 JSON 格式。');
+      }
+    },
+    [portfolio, initialCapital, syncUserPortfolioToServer]
+  );
 
   // Notifications stored in localStorage
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => {
@@ -283,8 +461,8 @@ export default function App() {
     } catch (e) {
       console.error('Failed to save portfolio to localStorage:', e);
     }
-    syncPortfolioToServer(portfolio);
-  }, [portfolio, syncPortfolioToServer]);
+    syncUserPortfolioToServer(portfolio, initialCapital);
+  }, [portfolio, initialCapital, syncUserPortfolioToServer]);
 
   // Save notifications to localStorage
   useEffect(() => {
@@ -739,9 +917,20 @@ export default function App() {
       const ma20 = diag?.ma20 ?? maInfo?.ma20 ?? item.ma20;
       const trustDays = maInfo?.trustDays ?? item.trustNetBuyDays ?? 2;
 
-      const plPerShare = curPrice - item.entryPrice;
-      const unrealizedPL = Math.round(plPerShare * (item.sharesLots * 1000));
-      const returnPct = Number((((curPrice - item.entryPrice) / item.entryPrice) * 100).toFixed(2));
+      // 精準台股交易成本計算：
+      const feeDiscount = typeof item.feeDiscount === 'number' && !isNaN(item.feeDiscount) ? item.feeDiscount : 60;
+      const discountRatio = feeDiscount / 100;
+      const buyTotal = item.entryPrice * item.sharesLots * 1000;
+      const curMarketTotal = curPrice * item.sharesLots * 1000;
+      const buyFee = Math.max(20, Math.round(buyTotal * 0.001425 * discountRatio));
+      const sellFee = Math.max(20, Math.round(curMarketTotal * 0.001425 * discountRatio));
+      const sellTax = Math.round(curMarketTotal * 0.003); // 現股 0.3%
+      const feeCostTotal = buyFee + sellFee + sellTax;
+      const grossPL = Math.round(curMarketTotal - buyTotal);
+      const netPL = grossPL - feeCostTotal;
+      const netReturnPct = buyTotal > 0 ? Number(((netPL / buyTotal) * 100).toFixed(2)) : 0;
+      const returnPct = item.entryPrice > 0 ? Number((((curPrice - item.entryPrice) / item.entryPrice) * 100).toFixed(2)) : 0;
+      const unrealizedPL = grossPL;
 
       // 4 Health Risk Evaluation Conditions & Anti-Shakeout Dual Verification
       const healthAlerts: WatchlistAlertDetail[] = [];
@@ -854,6 +1043,10 @@ export default function App() {
         updateTime,
         unrealizedPL,
         returnPct,
+        feeDiscount,
+        feeCostTotal,
+        netPL,
+        netReturnPct,
         isStopLossTriggered: finalStopLossTriggered,
         isTargetTriggered,
         ma5,
@@ -953,6 +1146,7 @@ export default function App() {
         alertWatchlistCount={alertWatchlistCount}
         onToggleNotificationCenter={() => setIsNotificationCenterOpen((prev) => !prev)}
         isNotificationCenterOpen={isNotificationCenterOpen}
+        onOpenStrategyAudit={handleOpenStrategyAudit}
       />
 
       {/* Notification Center Popover */}
@@ -2423,6 +2617,12 @@ export default function App() {
         {activeModule === 'watchlist' && (
           <WatchlistView
             portfolio={enrichedPortfolio}
+            tradeHistory={tradeHistory}
+            initialCapital={initialCapital}
+            syncStatus={syncStatus}
+            onUpdateInitialCapital={handleUpdateInitialCapital}
+            onClosePosition={handleClosePosition}
+            onDeleteTradeRecord={handleDeleteTradeRecord}
             onUpdateItem={handleUpdatePortfolioItem}
             onRemoveItem={handleRemovePortfolioItem}
             onNavigateToScreener={() => setActiveModule('screener')}
@@ -2436,6 +2636,8 @@ export default function App() {
             isBriefingLoading={isWatchlistBriefingLoading}
             isBriefingGenerating={isWatchlistBriefingGenerating}
             onGenerateBriefing={loadWatchlistBriefing}
+            onExportBackup={handleExportBackup}
+            onImportBackup={handleImportBackup}
           />
         )}
       </main>
@@ -2457,6 +2659,20 @@ export default function App() {
               handleAddStockBySymbol(stk.symbol);
             }
           }}
+        />
+      )}
+
+      {/* ========================================================================= */}
+      {/* 個股量化雙策略體檢對話框 (Stock Strategy Audit Modal)                     */}
+      {/* ========================================================================= */}
+      {auditSymbol && (
+        <StockStrategyAuditModal
+          symbol={auditSymbol}
+          isOpen={isAuditModalOpen}
+          onClose={handleCloseStrategyAudit}
+          onOpenStockDetail={handleOpenStockDetail}
+          onAddToPortfolio={handleAddStockBySymbol}
+          isInPortfolio={portfolio.some((p) => p.symbol === auditSymbol)}
         />
       )}
     </div>
