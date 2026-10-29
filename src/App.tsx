@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   MarketOverviewResponse,
   ScreenerResponse,
@@ -363,21 +363,43 @@ export default function App() {
     }
   }, []);
 
+  // 避免 15 秒輪詢報價更新時因 portfolio 陣列參照改變而反覆重新觸發/中斷戰報
+  const portfolioSymbolsKey = useMemo(() => {
+    return Array.from(new Set(portfolio.map((p) => p.symbol))).sort().join(',');
+  }, [portfolio]);
+  const isGeneratingWatchlistRef = useRef(false);
+
   // 載入自選持股每日量化晨會戰報與深層防洗盤籌碼診斷
   const loadWatchlistBriefing = useCallback(async (generate = false) => {
-    if (portfolio.length === 0) {
+    if (!portfolioSymbolsKey) {
       setWatchlistBriefing(null);
       return;
     }
-    const symbols = Array.from(new Set(portfolio.map((p) => p.symbol)));
+    // 若當前正在進行 Gemini 深度生成，嚴禁被背景自動檢查 (generate = false) 覆蓋或中斷
+    if (!generate && isGeneratingWatchlistRef.current) {
+      return;
+    }
+
+    const symbols = portfolioSymbolsKey.split(',').filter(Boolean);
+    if (symbols.length === 0) {
+      setWatchlistBriefing(null);
+      return;
+    }
+
     if (generate) {
+      isGeneratingWatchlistRef.current = true;
       setIsWatchlistBriefingGenerating(true);
     } else {
       setIsWatchlistBriefingLoading(true);
     }
+
     try {
       const res = await fetchWatchlistMorningBriefing(symbols, generate);
       if (res) {
+        // 若背景查詢完成時已有正在生成中的戰報，避免覆蓋生成中狀態
+        if (!generate && isGeneratingWatchlistRef.current) {
+          return;
+        }
         setWatchlistBriefing(res);
         if (res.diagnostics) {
           setWatchlistDiagnostics((prev) => ({ ...prev, ...res.diagnostics }));
@@ -386,10 +408,14 @@ export default function App() {
     } catch (e) {
       console.error('Failed to load watchlist morning briefing:', e);
     } finally {
-      setIsWatchlistBriefingLoading(false);
-      setIsWatchlistBriefingGenerating(false);
+      if (generate) {
+        isGeneratingWatchlistRef.current = false;
+        setIsWatchlistBriefingGenerating(false);
+      } else {
+        setIsWatchlistBriefingLoading(false);
+      }
     }
-  }, [portfolio]);
+  }, [portfolioSymbolsKey]);
 
   // Initial load once on mount
   useEffect(() => {
@@ -399,12 +425,12 @@ export default function App() {
     loadTurnaround();
   }, [loadMarket, loadBriefing, loadScreener, loadTurnaround]);
 
-  // 當有自選股時，自動檢查並獲取今日晨會戰報狀態與診斷
+  // 當自選股代碼變更時，自動檢查並獲取今日晨會戰報狀態與診斷
   useEffect(() => {
-    if (portfolio.length > 0) {
+    if (portfolioSymbolsKey) {
       loadWatchlistBriefing(false);
     }
-  }, [portfolio.length, loadWatchlistBriefing]);
+  }, [portfolioSymbolsKey, loadWatchlistBriefing]);
 
   // Force Refresh Screener Handler
   const handleForceRefresh = async () => {
@@ -1561,109 +1587,56 @@ export default function App() {
             {/* ========================================================================= */}
             {/* 【四、 產業屬性與客觀量化波動度雙重過濾機制（嚴禁牛皮存股與電信業）】PANEL */}
             {/* ========================================================================= */}
-            <div className="p-4 sm:p-5 rounded-3xl bg-slate-900/90 border border-slate-800 shadow-md space-y-3.5">
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-2.5">
+            {/* ========================================================================= */}
+            {/* 【四、 產業屬性與客觀量化波動度雙重過濾機制】極簡精緻面板 */}
+            {/* ========================================================================= */}
+            <div className="p-3.5 sm:p-4 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-sm space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/60 pb-2">
                 <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-400 flex items-center justify-center flex-shrink-0">
-                    <ShieldCheck className="w-4 h-4 text-rose-400" />
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                      <span>選股過濾與聚焦機制</span>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono">
-                        量化雙濾網 & 產業聚焦
-                      </span>
-                    </h4>
-                  </div>
+                  <ShieldCheck className="w-4 h-4 text-rose-400 flex-shrink-0" />
+                  <span className="text-xs sm:text-sm font-bold text-white">選股雙重過濾與產業聚焦</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
+                    量化防護
+                  </span>
                 </div>
                 <div className="text-[11px] text-slate-400">
-                  排除牛皮存股，鎖定具備充足價差空間之高動能與轉型潛力股
+                  剔除牛皮存股，鎖定具爆發空間之強勢與轉型標的
                 </div>
               </div>
 
-              {/* 三大機制架構卡片 */}
+              {/* 三大機制簡約卡片 */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
-                {/* 1. 產業黑名單直接排除 */}
-                <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800/90 space-y-1.5">
-                  <div className="flex items-center gap-1.5 font-bold text-rose-300">
+                {/* 1. 產業黑名單 */}
+                <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80 space-y-1">
+                  <div className="flex items-center gap-1.5 font-bold text-rose-300 text-xs">
                     <Ban className="w-3.5 h-3.5 text-rose-400 flex-shrink-0" />
-                    <span>1. 產業黑名單排除</span>
+                    <span>1. 產業黑名單（全數剔除）</span>
                   </div>
-                  <ul className="text-slate-300 space-y-1 text-xs">
-                    <li className="flex items-start gap-1.5">
-                      <span className="text-rose-400">•</span>
-                      <span><strong>金融保險業</strong></span>
-                    </li>
-                    <li className="flex items-start gap-1.5">
-                      <span className="text-rose-400">•</span>
-                      <span><strong>電信服務業</strong></span>
-                    </li>
-                    <li className="flex items-start gap-1.5">
-                      <span className="text-rose-400">•</span>
-                      <span><strong>公用事業與油電燃氣</strong></span>
-                    </li>
-                  </ul>
-                  <div className="text-[10px] text-rose-400/80 font-mono pt-0.5">
-                    ✓ 系統自動剔除牛皮防守型死水
-                  </div>
+                  <p className="text-slate-300 text-[11px] leading-relaxed">
+                    剔除<strong className="text-white">電信三雄</strong>、<strong className="text-white">金融保險</strong>、<strong className="text-white">公用事業與油電燃氣</strong>等低波動牛皮存股。
+                  </p>
                 </div>
 
                 {/* 2. 客觀量化雙濾網 */}
-                <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800/90 space-y-1.5">
-                  <div className="flex items-center gap-1.5 font-bold text-amber-300">
+                <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80 space-y-1">
+                  <div className="flex items-center gap-1.5 font-bold text-amber-300 text-xs">
                     <Zap className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
                     <span>2. 客觀量化雙濾網</span>
                   </div>
-                  <ul className="text-slate-300 space-y-1 text-xs">
-                    <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400">•</span>
-                      <span><strong>20日 ATR% 波動度</strong>：動能突破 ≥ 2.5%、價值轉型 ≥ 2.2%</span>
-                    </li>
-                    <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400">•</span>
-                      <span><strong>5日均量</strong>：&gt; 1,000 張</span>
-                    </li>
-                    <li className="flex items-start gap-1.5">
-                      <span className="text-amber-400">•</span>
-                      <span><strong>股價區間</strong>：15 ~ 500 元</span>
-                    </li>
-                  </ul>
-                  <div className="text-[10px] text-amber-400/80 font-mono pt-0.5">
-                    ✓ 實時過濾，確保波段空間與資金效率
-                  </div>
+                  <p className="text-slate-300 text-[11px] leading-relaxed">
+                    20日 ATR 波動度 <strong className="text-white">≥ 2.5%</strong>（低基期 <strong className="text-white">≥ 2.2%</strong>）、5日均量 <strong className="text-white">&gt; 1,000 張</strong>、股價 <strong className="text-white">15 ~ 500 元</strong>。
+                  </p>
                 </div>
 
                 {/* 3. 優先聚焦五大產業白名單 */}
-                <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800/90 space-y-1.5">
-                  <div className="flex items-center gap-1.5 font-bold text-emerald-300">
+                <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80 space-y-1">
+                  <div className="flex items-center gap-1.5 font-bold text-emerald-300 text-xs">
                     <Sparkles className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                    <span>3. 優先聚焦產業白名單</span>
+                    <span>3. 聚焦五大產業白名單</span>
                   </div>
-                  <ul className="text-slate-300 space-y-0.5 text-xs">
-                    <li className="flex items-center gap-1.5">
-                      <span className="text-emerald-400">•</span>
-                      <span><strong>AI 硬體周邊</strong>：散熱、機殼、滑軌、高功率電源</span>
-                    </li>
-                    <li className="flex items-center gap-1.5">
-                      <span className="text-emerald-400">•</span>
-                      <span><strong>半導體設備與 CoWoS</strong>：先進封裝、載板、測試</span>
-                    </li>
-                    <li className="flex items-center gap-1.5">
-                      <span className="text-emerald-400">•</span>
-                      <span><strong>CPO 矽光子</strong>：高速光通訊、光電整合模組</span>
-                    </li>
-                    <li className="flex items-center gap-1.5">
-                      <span className="text-emerald-400">•</span>
-                      <span><strong>重電電網與儲能</strong>：變壓器升級、綠能海纜</span>
-                    </li>
-                    <li className="flex items-center gap-1.5">
-                      <span className="text-emerald-400">•</span>
-                      <span><strong>低基期轉型爆發</strong>：利基傳產 / 電子高值化</span>
-                    </li>
-                  </ul>
-                  <div className="text-[10px] text-emerald-400/80 font-mono pt-0.5">
-                    ✓ 主流題材與法人波段認養優先
-                  </div>
+                  <p className="text-slate-300 text-[11px] leading-relaxed">
+                    聚焦 <strong className="text-white">AI 硬體周邊</strong>、<strong className="text-white">CoWoS/半導體設備</strong>、<strong className="text-white">CPO 矽光子</strong>、<strong className="text-white">重電儲能</strong>、<strong className="text-white">低基期轉型</strong>。
+                  </p>
                 </div>
               </div>
 

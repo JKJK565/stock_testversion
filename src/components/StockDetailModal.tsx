@@ -550,8 +550,8 @@ export function StockDetailModal({
                       {/* Tab 1: 成交量最大前 5 家券商買賣超金額 (核心規格) */}
                       {activeTab === 'topVolume' && (
                         <div className="mt-3 space-y-3">
-                          {/* Mobile Card Layout (sm:hidden): Completely fixes mobile text wrapping and overlapping */}
-                          <div className="space-y-2.5 sm:hidden">
+                          {/* Mobile Card Layout (md:hidden): Completely fixes mobile text wrapping and overlapping */}
+                          <div className="space-y-2.5 md:hidden">
                             {brokerSummary.topBrokersByVolume?.map((broker, idx) => {
                               const isBuy = broker.netLots > 0;
                               const isSell = broker.netLots < 0;
@@ -569,12 +569,12 @@ export function StockDetailModal({
                                       <span className="font-bold text-white text-sm truncate">
                                         {broker.name}
                                       </span>
-                                      <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950/70 border border-indigo-900/60 px-1.5 py-0.5 rounded flex-shrink-0">
+                                      <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950/70 border border-indigo-900/60 px-1.5 py-0.5 rounded flex-shrink-0 whitespace-nowrap">
                                         佔 {broker.volumeRatioPct ?? 0}%
                                       </span>
                                     </div>
                                     <span
-                                      className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex-shrink-0 ${
+                                      className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex-shrink-0 whitespace-nowrap ${
                                         isBuy
                                           ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
                                           : isSell
@@ -588,7 +588,7 @@ export function StockDetailModal({
 
                                   <div className="grid grid-cols-3 gap-1.5 text-center">
                                     <div className="p-2 rounded-xl bg-slate-950/70 border border-slate-850">
-                                      <div className="text-[10px] text-slate-500">買進 / 賣出</div>
+                                      <div className="text-[10px] text-slate-500 whitespace-nowrap">買進 / 賣出</div>
                                       <div className="text-[11px] font-mono font-medium mt-0.5 whitespace-nowrap">
                                         <span className="text-rose-400">+{broker.buyLots?.toLocaleString()}</span>
                                         <span className="text-slate-600 mx-0.5">/</span>
@@ -596,7 +596,7 @@ export function StockDetailModal({
                                       </div>
                                     </div>
                                     <div className="p-2 rounded-xl bg-slate-950/70 border border-slate-850">
-                                      <div className="text-[10px] text-slate-500">淨買賣超</div>
+                                      <div className="text-[10px] text-slate-500 whitespace-nowrap">淨買賣超</div>
                                       <div
                                         className={`text-xs font-mono font-bold mt-0.5 whitespace-nowrap ${
                                           isBuy ? 'text-rose-400' : isSell ? 'text-emerald-400' : 'text-slate-400'
@@ -607,7 +607,7 @@ export function StockDetailModal({
                                       </div>
                                     </div>
                                     <div className="p-2 rounded-xl bg-slate-950/70 border border-slate-850">
-                                      <div className="text-[10px] text-slate-500">金額</div>
+                                      <div className="text-[10px] text-slate-500 whitespace-nowrap">金額</div>
                                       <div
                                         className={`text-xs font-mono font-black mt-0.5 whitespace-nowrap ${
                                           isBuy ? 'text-rose-300' : isSell ? 'text-emerald-300' : 'text-slate-300'
@@ -622,18 +622,18 @@ export function StockDetailModal({
                             })}
                           </div>
 
-                          {/* Desktop Table View (hidden sm:block) */}
-                          <div className="hidden sm:block overflow-x-auto">
-                            <table className="w-full min-w-[640px] text-left text-xs text-slate-300 whitespace-nowrap">
+                          {/* Desktop Table View (hidden md:block) */}
+                          <div className="hidden md:block overflow-x-auto">
+                            <table className="w-full min-w-[720px] text-left text-xs text-slate-300 whitespace-nowrap">
                               <thead>
                                 <tr className="border-b border-slate-800 text-[11px] text-slate-500 font-semibold">
-                                  <th className="pb-2 pl-2">排名 / 主力分點券商</th>
-                                  <th className="pb-2 text-right">成交量佔比</th>
-                                  <th className="pb-2 text-right">5日總成交量</th>
-                                  <th className="pb-2 text-right">買進張數 / 賣出張數</th>
-                                  <th className="pb-2 text-right font-bold text-slate-400">買賣超張數</th>
-                                  <th className="pb-2 text-right font-bold text-white pr-2">買賣超金額</th>
-                                  <th className="pb-2 text-center">籌碼動態</th>
+                                  <th className="pb-2 pl-2 whitespace-nowrap">排名 / 主力分點券商</th>
+                                  <th className="pb-2 text-right whitespace-nowrap">成交量佔比</th>
+                                  <th className="pb-2 text-right whitespace-nowrap">5日總成交量</th>
+                                  <th className="pb-2 text-right whitespace-nowrap">買進張數 / 賣出張數</th>
+                                  <th className="pb-2 text-right font-bold text-slate-400 whitespace-nowrap">買賣超張數</th>
+                                  <th className="pb-2 text-right font-bold text-white pr-2 whitespace-nowrap">買賣超金額</th>
+                                  <th className="pb-2 text-center whitespace-nowrap">籌碼動態</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-800/60">
@@ -647,24 +647,24 @@ export function StockDetailModal({
                                       className="hover:bg-slate-850/60 transition group"
                                     >
                                       {/* Broker Name & Rank */}
-                                      <td className="py-2.5 pl-2 font-medium">
-                                        <div className="flex items-center gap-2">
-                                          <span className="w-5 h-5 rounded-full bg-slate-800 text-[10px] font-mono font-bold flex items-center justify-center text-slate-400 group-hover:bg-indigo-600 group-hover:text-white transition">
+                                      <td className="py-2.5 pl-2 font-medium whitespace-nowrap">
+                                        <div className="flex items-center gap-2 whitespace-nowrap">
+                                          <span className="w-5 h-5 rounded-full bg-slate-800 text-[10px] font-mono font-bold flex items-center justify-center text-slate-400 group-hover:bg-indigo-600 group-hover:text-white transition flex-shrink-0">
                                             #{idx + 1}
                                           </span>
-                                          <span className="font-bold text-white text-sm">
+                                          <span className="font-bold text-white text-sm whitespace-nowrap">
                                             {broker.name}
                                           </span>
                                         </div>
                                       </td>
 
                                       {/* Volume Ratio with mini bar */}
-                                      <td className="py-2.5 text-right font-mono">
-                                        <div className="flex items-center justify-end gap-1.5">
-                                          <span className="text-slate-300 font-bold">
+                                      <td className="py-2.5 text-right font-mono whitespace-nowrap">
+                                        <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+                                          <span className="text-slate-300 font-bold whitespace-nowrap">
                                             {broker.volumeRatioPct ?? 0}%
                                           </span>
-                                          <div className="w-12 h-1.5 bg-slate-800 rounded-full overflow-hidden hidden sm:block">
+                                          <div className="w-12 h-1.5 bg-slate-800 rounded-full overflow-hidden hidden sm:block flex-shrink-0">
                                             <div
                                               className="h-full bg-indigo-500 rounded-full"
                                               style={{ width: `${Math.min(100, (broker.volumeRatioPct ?? 0) * 4)}%` }}
@@ -674,31 +674,33 @@ export function StockDetailModal({
                                       </td>
 
                                       {/* Total Lots */}
-                                      <td className="py-2.5 text-right font-mono text-slate-300">
-                                        {broker.totalLots?.toLocaleString()} 張
+                                      <td className="py-2.5 text-right font-mono text-slate-300 whitespace-nowrap">
+                                        <span className="whitespace-nowrap">{broker.totalLots?.toLocaleString()} 張</span>
                                       </td>
 
                                       {/* Buy / Sell Lots */}
-                                      <td className="py-2.5 text-right font-mono text-[11px] text-slate-400">
-                                        <span className="text-rose-400">+{broker.buyLots?.toLocaleString()}</span>
-                                        {' / '}
-                                        <span className="text-emerald-400">-{broker.sellLots?.toLocaleString()}</span>
+                                      <td className="py-2.5 text-right font-mono text-[11px] text-slate-400 whitespace-nowrap">
+                                        <span className="text-rose-400 whitespace-nowrap">+{broker.buyLots?.toLocaleString()}</span>
+                                        <span className="text-slate-600 mx-1">/</span>
+                                        <span className="text-emerald-400 whitespace-nowrap">-{broker.sellLots?.toLocaleString()}</span>
                                       </td>
 
                                       {/* Net Lots */}
                                       <td
-                                        className={`py-2.5 text-right font-mono font-bold ${
+                                        className={`py-2.5 text-right font-mono font-bold whitespace-nowrap ${
                                           isBuy ? 'text-rose-400' : isSell ? 'text-emerald-400' : 'text-slate-400'
                                         }`}
                                       >
-                                        {isBuy ? '+' : ''}
-                                        {broker.netLots?.toLocaleString()} 張
+                                        <span className="whitespace-nowrap">
+                                          {isBuy ? '+' : ''}
+                                          {broker.netLots?.toLocaleString()} 張
+                                        </span>
                                       </td>
 
                                       {/* Net Amount */}
-                                      <td className="py-2.5 text-right font-mono font-black pr-2">
+                                      <td className="py-2.5 text-right font-mono font-black pr-2 whitespace-nowrap">
                                         <span
-                                          className={`px-2 py-0.5 rounded-lg text-xs ${
+                                          className={`inline-block px-2 py-0.5 rounded-lg text-xs whitespace-nowrap ${
                                             isBuy
                                               ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
                                               : isSell
@@ -711,17 +713,17 @@ export function StockDetailModal({
                                       </td>
 
                                       {/* Action Badge */}
-                                      <td className="py-2.5 text-center">
+                                      <td className="py-2.5 text-center whitespace-nowrap">
                                         {isBuy ? (
-                                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 font-bold border border-rose-500/40">
+                                          <span className="inline-block text-[10px] px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 font-bold border border-rose-500/40 whitespace-nowrap">
                                             主力買超
                                           </span>
                                         ) : isSell ? (
-                                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40">
+                                          <span className="inline-block text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40 whitespace-nowrap">
                                             主力調節
                                           </span>
                                         ) : (
-                                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">
+                                          <span className="inline-block text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 whitespace-nowrap">
                                             多空換手
                                           </span>
                                         )}
@@ -738,79 +740,79 @@ export function StockDetailModal({
                       {/* Tab 2: 買超前 5 名主力券商 */}
                       {activeTab === 'topBuy' && (
                         <div className="mt-3 space-y-3">
-                          {/* Mobile Card Layout (sm:hidden) */}
-                          <div className="space-y-2.5 sm:hidden">
+                          {/* Mobile Card Layout (md:hidden) */}
+                          <div className="space-y-2.5 md:hidden">
                             {brokerSummary.topBuyBrokers?.map((broker, idx) => (
                               <div
                                 key={idx}
                                 className="p-3 rounded-2xl bg-slate-900 border border-slate-800 space-y-2.5"
                               >
                                 <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
-                                  <div className="flex items-center gap-2">
-                                    <span className="w-5 h-5 rounded-full bg-rose-500/20 text-rose-400 text-[10px] font-mono font-bold flex items-center justify-center">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span className="w-5 h-5 rounded-full bg-rose-500/20 text-rose-400 text-[10px] font-mono font-bold flex items-center justify-center flex-shrink-0">
                                       +{idx + 1}
                                     </span>
-                                    <span className="font-bold text-white text-sm">{broker.name}</span>
+                                    <span className="font-bold text-white text-sm truncate">{broker.name}</span>
                                   </div>
-                                  <span className="text-xs font-black font-mono px-2 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                                  <span className="text-xs font-black font-mono px-2 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/40 whitespace-nowrap flex-shrink-0">
                                     {broker.netAmountFormatted}
                                   </span>
                                 </div>
                                 <div className="grid grid-cols-3 gap-1.5 text-center text-xs font-mono">
                                   <div className="p-2 rounded-xl bg-slate-950/70 border border-slate-850">
-                                    <div className="text-[10px] text-slate-500 font-sans">買進</div>
-                                    <div className="text-rose-400 font-bold mt-0.5">+{broker.buyLots?.toLocaleString()}</div>
+                                    <div className="text-[10px] text-slate-500 font-sans whitespace-nowrap">買進</div>
+                                    <div className="text-rose-400 font-bold mt-0.5 whitespace-nowrap">+{broker.buyLots?.toLocaleString()}</div>
                                   </div>
                                   <div className="p-2 rounded-xl bg-slate-950/70 border border-slate-850">
-                                    <div className="text-[10px] text-slate-500 font-sans">賣出</div>
-                                    <div className="text-slate-400 font-medium mt-0.5">-{broker.sellLots?.toLocaleString()}</div>
+                                    <div className="text-[10px] text-slate-500 font-sans whitespace-nowrap">賣出</div>
+                                    <div className="text-slate-400 font-medium mt-0.5 whitespace-nowrap">-{broker.sellLots?.toLocaleString()}</div>
                                   </div>
                                   <div className="p-2 rounded-xl bg-slate-950/70 border border-slate-850">
-                                    <div className="text-[10px] text-slate-500 font-sans">淨買超</div>
-                                    <div className="text-rose-400 font-black mt-0.5">+{broker.netLots?.toLocaleString()} 張</div>
+                                    <div className="text-[10px] text-slate-500 font-sans whitespace-nowrap">淨買超</div>
+                                    <div className="text-rose-400 font-black mt-0.5 whitespace-nowrap">+{broker.netLots?.toLocaleString()} 張</div>
                                   </div>
                                 </div>
                               </div>
                             ))}
                           </div>
 
-                          {/* Desktop Table (hidden sm:block) */}
-                          <div className="hidden sm:block overflow-x-auto">
-                            <table className="w-full min-w-[560px] text-left text-xs text-slate-300 whitespace-nowrap">
+                          {/* Desktop Table (hidden md:block) */}
+                          <div className="hidden md:block overflow-x-auto">
+                            <table className="w-full min-w-[720px] text-left text-xs text-slate-300 whitespace-nowrap">
                               <thead>
                                 <tr className="border-b border-slate-800 text-[11px] text-slate-500 font-semibold">
-                                  <th className="pb-2 pl-2">主力買超券商分點</th>
-                                  <th className="pb-2 text-right">買進張數</th>
-                                  <th className="pb-2 text-right">賣出張數</th>
-                                  <th className="pb-2 text-right font-bold text-rose-400">淨買超張數</th>
-                                  <th className="pb-2 text-right font-bold text-rose-300 pr-2">淨買超金額</th>
-                                  <th className="pb-2 text-right">總成交金額</th>
+                                  <th className="pb-2 pl-2 whitespace-nowrap">主力買超券商分點</th>
+                                  <th className="pb-2 text-right whitespace-nowrap">買進張數</th>
+                                  <th className="pb-2 text-right whitespace-nowrap">賣出張數</th>
+                                  <th className="pb-2 text-right font-bold text-rose-400 whitespace-nowrap">淨買超張數</th>
+                                  <th className="pb-2 text-right font-bold text-rose-300 pr-2 whitespace-nowrap">淨買超金額</th>
+                                  <th className="pb-2 text-right whitespace-nowrap">總成交金額</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-800/60">
                                 {brokerSummary.topBuyBrokers?.map((broker, idx) => (
                                   <tr key={idx} className="hover:bg-slate-850/60 transition">
-                                    <td className="py-2.5 pl-2 font-bold text-white flex items-center gap-2">
-                                      <span className="w-5 h-5 rounded-full bg-rose-500/20 text-rose-400 text-[10px] font-mono font-bold flex items-center justify-center">
+                                    <td className="py-2.5 pl-2 font-bold text-white flex items-center gap-2 whitespace-nowrap">
+                                      <span className="w-5 h-5 rounded-full bg-rose-500/20 text-rose-400 text-[10px] font-mono font-bold flex items-center justify-center flex-shrink-0">
                                         +{idx + 1}
                                       </span>
-                                      <span>{broker.name}</span>
+                                      <span className="whitespace-nowrap">{broker.name}</span>
                                     </td>
-                                    <td className="py-2.5 text-right font-mono text-rose-400">
+                                    <td className="py-2.5 text-right font-mono text-rose-400 whitespace-nowrap">
                                       +{broker.buyLots?.toLocaleString()}
                                     </td>
-                                    <td className="py-2.5 text-right font-mono text-slate-400">
+                                    <td className="py-2.5 text-right font-mono text-slate-400 whitespace-nowrap">
                                       -{broker.sellLots?.toLocaleString()}
                                     </td>
-                                    <td className="py-2.5 text-right font-mono font-bold text-rose-400">
+                                    <td className="py-2.5 text-right font-mono font-bold text-rose-400 whitespace-nowrap">
                                       +{broker.netLots?.toLocaleString()} 張
                                     </td>
-                                    <td className="py-2.5 text-right font-mono font-black text-rose-300 pr-2">
-                                      <span className="px-2 py-0.5 rounded-lg bg-rose-500/20 border border-rose-500/40">
+                                    <td className="py-2.5 text-right font-mono font-black text-rose-300 pr-2 whitespace-nowrap">
+                                      <span className="inline-block px-2 py-0.5 rounded-lg bg-rose-500/20 border border-rose-500/40 whitespace-nowrap">
                                         {broker.netAmountFormatted}
                                       </span>
                                     </td>
-                                    <td className="py-2.5 text-right font-mono text-slate-400">
+                                    <td className="py-2.5 text-right font-mono text-slate-400 whitespace-nowrap">
                                       {broker.totalAmountFormatted}
                                     </td>
                                   </tr>
@@ -824,79 +826,79 @@ export function StockDetailModal({
                       {/* Tab 3: 賣超前 5 名主力券商 */}
                       {activeTab === 'topSell' && (
                         <div className="mt-3 space-y-3">
-                          {/* Mobile Card Layout (sm:hidden) */}
-                          <div className="space-y-2.5 sm:hidden">
+                          {/* Mobile Card Layout (md:hidden) */}
+                          <div className="space-y-2.5 md:hidden">
                             {brokerSummary.topSellBrokers?.map((broker, idx) => (
                               <div
                                 key={idx}
                                 className="p-3 rounded-2xl bg-slate-900 border border-slate-800 space-y-2.5"
                               >
                                 <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
-                                  <div className="flex items-center gap-2">
-                                    <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-mono font-bold flex items-center justify-center">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-mono font-bold flex items-center justify-center flex-shrink-0">
                                       -{idx + 1}
                                     </span>
-                                    <span className="font-bold text-white text-sm">{broker.name}</span>
+                                    <span className="font-bold text-white text-sm truncate">{broker.name}</span>
                                   </div>
-                                  <span className="text-xs font-black font-mono px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                  <span className="text-xs font-black font-mono px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 whitespace-nowrap flex-shrink-0">
                                     {broker.netAmountFormatted}
                                   </span>
                                 </div>
                                 <div className="grid grid-cols-3 gap-1.5 text-center text-xs font-mono">
                                   <div className="p-2 rounded-xl bg-slate-950/70 border border-slate-850">
-                                    <div className="text-[10px] text-slate-500 font-sans">買進</div>
-                                    <div className="text-slate-400 font-medium mt-0.5">+{broker.buyLots?.toLocaleString()}</div>
+                                    <div className="text-[10px] text-slate-500 font-sans whitespace-nowrap">買進</div>
+                                    <div className="text-slate-400 font-medium mt-0.5 whitespace-nowrap">+{broker.buyLots?.toLocaleString()}</div>
                                   </div>
                                   <div className="p-2 rounded-xl bg-slate-950/70 border border-slate-850">
-                                    <div className="text-[10px] text-slate-500 font-sans">賣出</div>
-                                    <div className="text-emerald-400 font-bold mt-0.5">-{broker.sellLots?.toLocaleString()}</div>
+                                    <div className="text-[10px] text-slate-500 font-sans whitespace-nowrap">賣出</div>
+                                    <div className="text-emerald-400 font-bold mt-0.5 whitespace-nowrap">-{broker.sellLots?.toLocaleString()}</div>
                                   </div>
                                   <div className="p-2 rounded-xl bg-slate-950/70 border border-slate-850">
-                                    <div className="text-[10px] text-slate-500 font-sans">淨賣超</div>
-                                    <div className="text-emerald-400 font-black mt-0.5">{broker.netLots?.toLocaleString()} 張</div>
+                                    <div className="text-[10px] text-slate-500 font-sans whitespace-nowrap">淨賣超</div>
+                                    <div className="text-emerald-400 font-black mt-0.5 whitespace-nowrap">{broker.netLots?.toLocaleString()} 張</div>
                                   </div>
                                 </div>
                               </div>
                             ))}
                           </div>
 
-                          {/* Desktop Table (hidden sm:block) */}
-                          <div className="hidden sm:block overflow-x-auto">
-                            <table className="w-full min-w-[560px] text-left text-xs text-slate-300 whitespace-nowrap">
+                          {/* Desktop Table (hidden md:block) */}
+                          <div className="hidden md:block overflow-x-auto">
+                            <table className="w-full min-w-[720px] text-left text-xs text-slate-300 whitespace-nowrap">
                               <thead>
                                 <tr className="border-b border-slate-800 text-[11px] text-slate-500 font-semibold">
-                                  <th className="pb-2 pl-2">主力賣超券商分點</th>
-                                  <th className="pb-2 text-right">買進張數</th>
-                                  <th className="pb-2 text-right">賣出張數</th>
-                                  <th className="pb-2 text-right font-bold text-emerald-400">淨賣超張數</th>
-                                  <th className="pb-2 text-right font-bold text-emerald-300 pr-2">淨賣超金額</th>
-                                  <th className="pb-2 text-right">總成交金額</th>
+                                  <th className="pb-2 pl-2 whitespace-nowrap">主力賣超券商分點</th>
+                                  <th className="pb-2 text-right whitespace-nowrap">買進張數</th>
+                                  <th className="pb-2 text-right whitespace-nowrap">賣出張數</th>
+                                  <th className="pb-2 text-right font-bold text-emerald-400 whitespace-nowrap">淨賣超張數</th>
+                                  <th className="pb-2 text-right font-bold text-emerald-300 pr-2 whitespace-nowrap">淨賣超金額</th>
+                                  <th className="pb-2 text-right whitespace-nowrap">總成交金額</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-800/60">
                                 {brokerSummary.topSellBrokers?.map((broker, idx) => (
                                   <tr key={idx} className="hover:bg-slate-850/60 transition">
-                                    <td className="py-2.5 pl-2 font-bold text-white flex items-center gap-2">
-                                      <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-mono font-bold flex items-center justify-center">
+                                    <td className="py-2.5 pl-2 font-bold text-white flex items-center gap-2 whitespace-nowrap">
+                                      <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-mono font-bold flex items-center justify-center flex-shrink-0">
                                         -{idx + 1}
                                       </span>
-                                      <span>{broker.name}</span>
+                                      <span className="whitespace-nowrap">{broker.name}</span>
                                     </td>
-                                    <td className="py-2.5 text-right font-mono text-slate-400">
+                                    <td className="py-2.5 text-right font-mono text-slate-400 whitespace-nowrap">
                                       +{broker.buyLots?.toLocaleString()}
                                     </td>
-                                    <td className="py-2.5 text-right font-mono text-emerald-400">
+                                    <td className="py-2.5 text-right font-mono text-emerald-400 whitespace-nowrap">
                                       -{broker.sellLots?.toLocaleString()}
                                     </td>
-                                    <td className="py-2.5 text-right font-mono font-bold text-emerald-400">
+                                    <td className="py-2.5 text-right font-mono font-bold text-emerald-400 whitespace-nowrap">
                                       {broker.netLots?.toLocaleString()} 張
                                     </td>
-                                    <td className="py-2.5 text-right font-mono font-black text-emerald-300 pr-2">
-                                      <span className="px-2 py-0.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40">
+                                    <td className="py-2.5 text-right font-mono font-black text-emerald-300 pr-2 whitespace-nowrap">
+                                      <span className="inline-block px-2 py-0.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 whitespace-nowrap">
                                         {broker.netAmountFormatted}
                                       </span>
                                     </td>
-                                    <td className="py-2.5 text-right font-mono text-slate-400">
+                                    <td className="py-2.5 text-right font-mono text-slate-400 whitespace-nowrap">
                                       {broker.totalAmountFormatted}
                                     </td>
                                   </tr>
