@@ -288,6 +288,10 @@ export function WatchlistView({
           realizedPL,
           returnPct,
           holdingDays,
+          feeDiscount,
+          feeCostTotal: totalFees,
+          netPL: realizedPL,
+          netReturnPct: returnPct,
           notes: closeNote,
         },
         closingStock.id

@@ -4118,9 +4118,13 @@ async function getUserData(): Promise<{
           entryDate: String(r.entry_date || r.entryDate || ''),
           exitDate: String(r.exit_date || r.exitDate || ''),
           exitType: r.exit_type || r.exitType || 'MANUAL',
-          realizedPL: Number(r.realized_pl ?? r.realizedPL ?? 0),
-          returnPct: Number(r.return_pct ?? r.returnPct ?? 0),
+          realizedPL: Number(r.realized_pl ?? r.net_pl ?? r.realizedPL ?? 0),
+          returnPct: Number(r.return_pct ?? r.net_return_pct ?? r.returnPct ?? 0),
           holdingDays: Number(r.holding_days ?? r.holdingDays ?? 0),
+          feeDiscount: Number(r.fee_discount ?? r.feeDiscount ?? 60),
+          feeCostTotal: Number(r.fee_cost_total ?? r.feeCostTotal ?? 0),
+          netPL: Number(r.net_pl ?? r.realized_pl ?? r.netPL ?? r.realizedPL ?? 0),
+          netReturnPct: Number(r.net_return_pct ?? r.return_pct ?? r.netReturnPct ?? r.returnPct ?? 0),
           notes: r.notes || '',
         }));
       }
@@ -4226,23 +4230,72 @@ async function saveUserData(portfolio: any[], initialCapital?: number) {
   }
 }
 
-async function addTradeRecord(trade: any) {
-  const current = readLocalUserStore();
-  const tradeItem = {
-    id: String(trade.id || `trade_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`),
+function formatTradePayload(trade: any) {
+  const id = String(trade.id || `trade_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
+  return {
+    id,
     symbol: String(trade.symbol),
     name: String(trade.name || ''),
-    strategyType: trade.strategyType || trade.strategy_type || 'momentum',
-    entryPrice: Number(trade.entryPrice ?? trade.entry_price ?? 0),
-    exitPrice: Number(trade.exitPrice ?? trade.exit_price ?? 0),
-    sharesLots: Number(trade.sharesLots ?? trade.shares_lots ?? 1),
-    entryDate: String(trade.entryDate || trade.entry_date || ''),
-    exitDate: String(trade.exitDate || trade.exit_date || ''),
-    exitType: String(trade.exitType || trade.exit_type || 'MANUAL'),
-    realizedPL: Number(trade.realizedPL ?? trade.realized_pl ?? 0),
-    returnPct: Number(trade.returnPct ?? trade.return_pct ?? 0),
-    holdingDays: Number(trade.holdingDays ?? trade.holding_days ?? 0),
-    notes: String(trade.notes || ''),
+    strategy_type: String(trade.strategyType || trade.strategy_type || 'momentum'),
+    entry_price: Number(trade.entryPrice ?? trade.entry_price ?? 0),
+    exit_price: Number(trade.exitPrice ?? trade.exit_price ?? 0),
+    shares_lots: Number(trade.sharesLots ?? trade.shares_lots ?? 1),
+    entry_date: String(trade.entryDate || trade.entry_date || ''),
+    exit_date: String(trade.exitDate || trade.exit_date || ''),
+    exit_type: String(trade.exitType || trade.exit_type || 'MANUAL'),
+    realized_pl: Number(trade.realizedPL ?? trade.realized_pl ?? trade.netPL ?? 0),
+    return_pct: Number(trade.returnPct ?? trade.return_pct ?? trade.netReturnPct ?? 0),
+    holding_days: Number(trade.holdingDays ?? trade.holding_days ?? 0),
+    fee_discount: Number(trade.feeDiscount ?? trade.fee_discount ?? 60),
+    fee_cost_total: Number(trade.feeCostTotal ?? trade.fee_cost_total ?? 0),
+    net_pl: Number(trade.netPL ?? trade.net_pl ?? trade.realizedPL ?? trade.realized_pl ?? 0),
+    net_return_pct: Number(trade.netReturnPct ?? trade.net_return_pct ?? trade.returnPct ?? trade.return_pct ?? 0),
+    notes: trade.notes ? String(trade.notes) : null,
+  };
+}
+
+function toBaseTradePayload(payload: ReturnType<typeof formatTradePayload>) {
+  return {
+    id: payload.id,
+    symbol: payload.symbol,
+    name: payload.name,
+    strategy_type: payload.strategy_type,
+    entry_price: payload.entry_price,
+    exit_price: payload.exit_price,
+    shares_lots: payload.shares_lots,
+    entry_date: payload.entry_date,
+    exit_date: payload.exit_date,
+    exit_type: payload.exit_type,
+    realized_pl: payload.realized_pl,
+    return_pct: payload.return_pct,
+    holding_days: payload.holding_days,
+    notes: payload.notes,
+  };
+}
+
+async function addTradeRecord(trade: any) {
+  const current = readLocalUserStore();
+  const tradePayload = formatTradePayload(trade);
+
+  const tradeItem = {
+    id: tradePayload.id,
+    symbol: tradePayload.symbol,
+    name: tradePayload.name,
+    strategyType: tradePayload.strategy_type,
+    entryPrice: tradePayload.entry_price,
+    exitPrice: tradePayload.exit_price,
+    sharesLots: tradePayload.shares_lots,
+    entryDate: tradePayload.entry_date,
+    exitDate: tradePayload.exit_date,
+    exitType: tradePayload.exit_type,
+    realizedPL: tradePayload.realized_pl,
+    returnPct: tradePayload.return_pct,
+    holdingDays: tradePayload.holding_days,
+    feeDiscount: tradePayload.fee_discount,
+    feeCostTotal: tradePayload.fee_cost_total,
+    netPL: tradePayload.net_pl,
+    netReturnPct: tradePayload.net_return_pct,
+    notes: tradePayload.notes || '',
   };
 
   current.tradeHistory = [tradeItem, ...current.tradeHistory.filter((t) => t.id !== tradeItem.id)];
@@ -4254,29 +4307,19 @@ async function addTradeRecord(trade: any) {
   }
 
   try {
-    const tradeRow = {
-      id: tradeItem.id,
-      symbol: tradeItem.symbol,
-      name: tradeItem.name,
-      strategy_type: tradeItem.strategyType,
-      entry_price: tradeItem.entryPrice,
-      exit_price: tradeItem.exitPrice,
-      shares_lots: tradeItem.sharesLots,
-      entry_date: tradeItem.entryDate,
-      exit_date: tradeItem.exitDate,
-      exit_type: tradeItem.exitType,
-      realized_pl: tradeItem.realizedPL,
-      return_pct: tradeItem.returnPct,
-      holding_days: tradeItem.holdingDays,
-      notes: tradeItem.notes,
-    };
-
-    const { error: tradeErr } = await supabase.from('trade_history').upsert(tradeRow);
+    const { error: tradeErr } = await supabase.from('trade_history').upsert(tradePayload);
     if (tradeErr) {
-      console.error('[Supabase Error] trade_history upsert failed:', tradeErr);
-      throw tradeErr;
+      console.warn('[Supabase Warn] trade_history full upsert failed, testing column fallback:', tradeErr.message || tradeErr);
+      const basePayload = toBaseTradePayload(tradePayload);
+      const { error: fallbackErr } = await supabase.from('trade_history').upsert(basePayload);
+      if (fallbackErr) {
+        console.error('[Supabase Error] Base trade_history fallback also failed:', fallbackErr);
+        throw fallbackErr;
+      } else {
+        console.log(`[Supabase] Successfully saved trade ${tradePayload.symbol} (${tradePayload.name}) to trade_history via 14-column fallback!`);
+      }
     } else {
-      console.log(`[Supabase] Successfully saved trade ${tradeRow.symbol} (${tradeRow.name}) to trade_history!`);
+      console.log(`[Supabase] Successfully saved trade ${tradePayload.symbol} (${tradePayload.name}) to trade_history!`);
     }
   } catch (err: any) {
     console.error('[Supabase Error] Error saving trade to Supabase:', err?.message || err);
@@ -4364,23 +4407,30 @@ app.post('/api/user/trades/sync', async (req: Request, res: Response) => {
     for (const t of current.tradeHistory) {
       if (t.id) tradeMap.set(t.id, t);
     }
+
+    const formattedPayloads: any[] = [];
     for (const t of rawTrades) {
-      const id = t.id || `trade_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      tradeMap.set(id, {
-        id,
-        symbol: String(t.symbol),
-        name: String(t.name || ''),
-        strategyType: t.strategyType || t.strategy_type || 'momentum',
-        entryPrice: Number(t.entryPrice ?? t.entry_price ?? 0),
-        exitPrice: Number(t.exitPrice ?? t.exit_price ?? 0),
-        sharesLots: Number(t.sharesLots ?? t.shares_lots ?? 1),
-        entryDate: String(t.entryDate || t.entry_date || ''),
-        exitDate: String(t.exitDate || t.exit_date || ''),
-        exitType: String(t.exitType || t.exit_type || 'MANUAL'),
-        realizedPL: Number(t.realizedPL ?? t.realized_pl ?? 0),
-        returnPct: Number(t.returnPct ?? t.return_pct ?? 0),
-        holdingDays: Number(t.holdingDays ?? t.holding_days ?? 0),
-        notes: String(t.notes || ''),
+      const payload = formatTradePayload(t);
+      formattedPayloads.push(payload);
+      tradeMap.set(payload.id, {
+        id: payload.id,
+        symbol: payload.symbol,
+        name: payload.name,
+        strategyType: payload.strategy_type,
+        entryPrice: payload.entry_price,
+        exitPrice: payload.exit_price,
+        sharesLots: payload.shares_lots,
+        entryDate: payload.entry_date,
+        exitDate: payload.exit_date,
+        exitType: payload.exit_type,
+        realizedPL: payload.realized_pl,
+        returnPct: payload.return_pct,
+        holdingDays: payload.holding_days,
+        feeDiscount: payload.fee_discount,
+        feeCostTotal: payload.fee_cost_total,
+        netPL: payload.net_pl,
+        netReturnPct: payload.net_return_pct,
+        notes: payload.notes || '',
       });
     }
 
@@ -4388,29 +4438,19 @@ app.post('/api/user/trades/sync', async (req: Request, res: Response) => {
     writeLocalUserStore(current);
 
     if (supabase) {
-      const rows = current.tradeHistory.map((t: any) => ({
-        id: String(t.id),
-        symbol: String(t.symbol),
-        name: String(t.name || ''),
-        strategy_type: String(t.strategyType || t.strategy_type || 'momentum'),
-        entry_price: Number(t.entryPrice ?? t.entry_price ?? 0),
-        exit_price: Number(t.exitPrice ?? t.exit_price ?? 0),
-        shares_lots: Number(t.sharesLots ?? t.shares_lots ?? 1),
-        entry_date: String(t.entryDate || t.entry_date || ''),
-        exit_date: String(t.exitDate || t.exit_date || ''),
-        exit_type: String(t.exitType || t.exit_type || 'MANUAL'),
-        realized_pl: Number(t.realizedPL ?? t.realized_pl ?? 0),
-        return_pct: Number(t.returnPct ?? t.return_pct ?? 0),
-        holding_days: Number(t.holdingDays ?? t.holding_days ?? 0),
-        notes: String(t.notes || ''),
-      }));
-
-      const { error: bulkErr } = await supabase.from('trade_history').upsert(rows);
+      const { error: bulkErr } = await supabase.from('trade_history').upsert(formattedPayloads);
       if (bulkErr) {
-        console.error('[Supabase Error] Bulk sync trade_history error:', bulkErr);
-        return res.status(500).json({ error: 'Supabase sync failed', details: bulkErr.message });
+        console.warn('[Supabase Warn] Bulk sync full schema failed, trying 14-column fallback:', bulkErr.message || bulkErr);
+        const baseRows = formattedPayloads.map(toBaseTradePayload);
+        const { error: fallbackErr } = await supabase.from('trade_history').upsert(baseRows);
+        if (fallbackErr) {
+          console.error('[Supabase Error] Bulk sync fallback error:', fallbackErr);
+          return res.status(500).json({ error: 'Supabase sync failed', details: fallbackErr.message });
+        } else {
+          console.log(`[Supabase] Successfully bulk synced ${baseRows.length} trades via 14-column fallback!`);
+        }
       } else {
-        console.log(`[Supabase] Successfully bulk synced ${rows.length} trades to trade_history!`);
+        console.log(`[Supabase] Successfully bulk synced ${formattedPayloads.length} trades to trade_history!`);
       }
     }
 

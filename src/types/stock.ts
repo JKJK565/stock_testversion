@@ -390,6 +390,10 @@ export interface TradeRecordItem {
   realizedPL: number; // 已實現損益 (TWD)
   returnPct: number; // 報酬率 %
   holdingDays: number;
+  feeDiscount?: number; // 券商手續費折數 % (例如 60 代表 6 折)
+  feeCostTotal?: number; // 交易稅費總額 (買賣手續費低消20 + 0.3%證交稅)
+  netPL?: number; // 實拿淨已實現損益 (扣除稅費)
+  netReturnPct?: number; // 實拿淨報酬率 %
   notes?: string;
 }
 

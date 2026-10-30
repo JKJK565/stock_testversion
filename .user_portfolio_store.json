@@ -6,14 +6,14 @@
       "symbol": "3006",
       "name": "晶豪科",
       "entryPrice": 282.5,
-      "currentPrice": 272,
-      "change": -10.5,
-      "changePercent": -3.72,
+      "currentPrice": 277,
+      "change": -5.5,
+      "changePercent": -1.95,
       "sharesLots": 1,
       "stopLossPrice": 260.6,
       "targetPrice": 353.13,
       "entryDate": "2026-10-29",
-      "updateTime": "11:00:00",
+      "updateTime": "13:30:00",
       "notes": "【自選加入】電子工業",
       "strategyType": "momentum"
     }
