@@ -5,6 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import cron from 'node-cron';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -220,6 +221,10 @@ export interface MorningBriefingResponse {
   expiresInSeconds?: number;
   dailyDate?: string;
   isDailyCached?: boolean;
+  status?: 'COMPLETED' | 'PENDING';
+  statusMessage?: string;
+  isPast830?: boolean;
+  source?: string;
 }
 
 export interface WatchlistStockDiagnostic {
@@ -253,6 +258,11 @@ export interface WatchlistBriefingResponse {
   generatedAt?: string;
   cachedAt?: string;
   diagnostics?: Record<string, WatchlistStockDiagnostic>;
+  status?: 'COMPLETED' | 'NO_STOCKS' | 'PENDING';
+  statusMessage?: string;
+  isPast2130?: boolean;
+  message?: string;
+  source?: string;
 }
 
 // In-Memory Caches
@@ -1305,6 +1315,50 @@ async function getMarketOverview(force = false): Promise<MarketOverviewResponse>
 }
 
 // 7. Gemini AI-Powered Deep Morning Briefing Generator with Daily Persistent Cache
+async function saveMarketBriefingToSupabase(briefing: {
+  date: string;
+  markdown: string;
+  model: string;
+}) {
+  if (!supabase) return;
+  try {
+    const { error } = await supabase.from('market_briefings').upsert({
+      date: briefing.date,
+      markdown: briefing.markdown,
+      model: briefing.model,
+      created_at: new Date().toISOString(),
+    });
+    if (error) {
+      console.warn('[Supabase Warn] market_briefings upsert warning:', error.message);
+    } else {
+      console.log(`[Supabase] Successfully saved market_briefing for ${briefing.date}`);
+    }
+  } catch (err: any) {
+    console.warn('[Supabase Error] Exception saving market_briefing to Supabase:', err?.message || err);
+  }
+}
+
+async function getMarketBriefingFromSupabase(
+  date: string
+): Promise<{ date: string; markdown: string; model: string; created_at?: string } | null> {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase
+      .from('market_briefings')
+      .select('date, markdown, model, created_at')
+      .eq('date', date)
+      .maybeSingle();
+    if (error) {
+      console.warn('[Supabase] market_briefings query warning:', error.message);
+      return null;
+    }
+    return data;
+  } catch (err: any) {
+    console.warn('[Supabase] Exception fetching market_briefing from Supabase:', err?.message || err);
+    return null;
+  }
+}
+
 function getCachedMorningBriefing(todayTaipeiDate: string): MorningBriefingResponse | null {
   // 1. Check in-memory daily cache (0s load, no token cost)
   if (
@@ -1536,6 +1590,13 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
   } catch (e) {
     console.warn('Error saving briefing disk cache:', e);
   }
+
+  // 存入 Supabase 雲端資料庫 market_briefings 表
+  await saveMarketBriefingToSupabase({
+    date: result.date || todayTaipeiDate,
+    markdown: result.markdown || '',
+    model: result.model || usedModel,
+  });
 
   return result;
 }
@@ -3148,28 +3209,79 @@ const handleMarketOverview = async (req: Request, res: Response) => {
 app.get('/api/market', handleMarketOverview);
 app.get('/api/market/overview', handleMarketOverview);
 
-// 2. 旗艦版每日深度操盤早報 (Gemini 2.5 Pro + 手動觸發機制 + 當日持久快取)
+// 2. 旗艦版每日深度操盤早報 (08:30 自動排程定稿 + Supabase 雲端持久化 + 0秒秒開)
 app.get('/api/market/morning-briefing', async (req: Request, res: Response) => {
   try {
     const todayTaipeiDate = getTaipeiDateString();
-    const shouldGenerate = req.query.generate === 'true' || req.query.force === 'true';
+    const marketStatus = getTaipeiMarketStatus();
+    const isPast830 = marketStatus.timeInMinutes >= 510; // 08:30 in Taipei
+    const force = req.query.force === 'true';
+    const shouldGenerate = req.query.generate === 'true' || force;
 
-    // 若今日快取檔案已存在，且未指定強制生成，直接回傳快取戰報
-    if (!shouldGenerate) {
+    // 若未要求強制重新生成，優先檢查本機快取與 Supabase 雲端資料庫當日定稿
+    if (!force) {
+      // 1. 本地記憶體或硬碟快取 (0 秒秒開)
       const cached = getCachedMorningBriefing(todayTaipeiDate);
-      if (cached) {
-        return res.json(cached);
+      if (cached && cached.markdown) {
+        return res.json({
+          ...cached,
+          isPast830,
+          status: 'COMPLETED',
+          statusMessage: isPast830 ? '✅ 08:30 今日晨會作戰定稿（已鎖定）' : '⏳ 今日早報預計於 08:30 自動產出定稿',
+        });
       }
-      // 今日尚未生成：回傳 isGenerated: false，嚴禁自動在背景呼叫 Gemini！
-      return res.json({
-        isGenerated: false,
-        date: todayTaipeiDate,
-      });
+
+      // 2. 查詢 Supabase market_briefings 當日定稿 (跨裝置即時同步)
+      const sbBriefing = await getMarketBriefingFromSupabase(todayTaipeiDate);
+      if (sbBriefing && sbBriefing.markdown) {
+        const briefingData: MorningBriefingResponse = {
+          isGenerated: true,
+          date: sbBriefing.date,
+          markdown: sbBriefing.markdown,
+          model: sbBriefing.model,
+          generatedAt: sbBriefing.created_at || new Date().toISOString(),
+          cachedAt: new Date().toISOString(),
+          isDailyCached: true,
+          dailyDate: sbBriefing.date,
+          expiresInSeconds: getSecondsUntilMidnightTaipei(),
+          status: 'COMPLETED',
+          statusMessage: isPast830 ? '✅ 08:30 今日晨會作戰定稿（已鎖定）' : '⏳ 今日早報預計於 08:30 自動產出定稿',
+          isPast830,
+          source: 'supabase',
+        };
+
+        // 回填本地快取加速下次讀取
+        dailyMorningBriefingCache = {
+          date: todayTaipeiDate,
+          data: briefingData,
+        };
+        try {
+          fs.writeFileSync(BRIEFING_CACHE_FILE, JSON.stringify(dailyMorningBriefingCache, null, 2), 'utf-8');
+        } catch {}
+
+        return res.json(briefingData);
+      }
+
+      // 今日尚未生成且未傳入 ?generate=true：回傳未生成狀態與排程狀態提示
+      if (!shouldGenerate) {
+        return res.json({
+          isGenerated: false,
+          date: todayTaipeiDate,
+          isPast830,
+          status: 'PENDING',
+          statusMessage: isPast830 ? '⏳ 08:30 早報準備中或可點擊手動產出' : '⏳ 今日早報預計於 08:30 自動產出定稿',
+        });
+      }
     }
 
-    // 當收到 ?generate=true (或 ?force=true) 時，正式啟動 Gemini 2.5 Pro 進行深度推演並寫入快取
+    // 當收到 ?generate=true 或 ?force=true，正式啟動 Gemini 2.5 Pro 進行深度推演並存入 Supabase
     const briefing = await generateGeminiDeepMorningBriefing(true);
-    return res.json(briefing);
+    return res.json({
+      ...briefing,
+      isPast830,
+      status: 'COMPLETED',
+      statusMessage: '✅ 08:30 今日晨會作戰定稿（已鎖定）',
+    });
   } catch (e: any) {
     console.error('Morning briefing error:', e);
     return res.status(500).json({ error: 'Failed to generate morning briefing', details: e?.message });
@@ -3420,7 +3532,14 @@ async function fetchBrokerTrading(symbol: string, currentPrice: number) {
 const WATCHLIST_BRIEFING_CACHE_FILE = path.join(process.cwd(), '.daily_watchlist_briefing_cache.json');
 let watchlistBriefingDiskCache: Record<
   string,
-  { markdown: string; date: string; model: string; generatedAt: string }
+  {
+    markdown: string;
+    date: string;
+    model: string;
+    generatedAt: string;
+    status?: 'COMPLETED' | 'NO_STOCKS' | 'PENDING';
+    diagnostics?: Record<string, WatchlistStockDiagnostic>;
+  }
 > = {};
 
 function loadWatchlistBriefingDiskCache() {
@@ -3440,6 +3559,85 @@ function saveWatchlistBriefingDiskCache() {
     fs.writeFileSync(WATCHLIST_BRIEFING_CACHE_FILE, JSON.stringify(watchlistBriefingDiskCache, null, 2), 'utf-8');
   } catch (e) {
     console.warn('Error saving watchlist briefing disk cache:', e);
+  }
+}
+
+async function saveWatchlistBriefingToSupabaseAndCache(item: {
+  date: string;
+  markdown: string;
+  model: string;
+  diagnostics: Record<string, WatchlistStockDiagnostic>;
+  status: 'COMPLETED' | 'NO_STOCKS';
+}) {
+  const generatedAt = new Date().toISOString();
+  watchlistBriefingDiskCache[item.date] = {
+    status: item.status,
+    date: item.date,
+    markdown: item.markdown,
+    model: item.model,
+    diagnostics: item.diagnostics,
+    generatedAt,
+  };
+  saveWatchlistBriefingDiskCache();
+
+  if (!supabase) return;
+  try {
+    const payload = {
+      date: item.date,
+      markdown: item.markdown,
+      model: item.model,
+      diagnostics: item.diagnostics,
+      status: item.status,
+      created_at: generatedAt,
+    };
+    const { error } = await supabase.from('watchlist_briefings').upsert(payload);
+    if (error) {
+      console.warn('[Supabase Warn] watchlist_briefings full upsert failed, testing schema fallback:', error.message);
+      // Fallback: If status column doesn't exist, retry without status column
+      const fallbackPayload = {
+        date: item.date,
+        markdown: item.markdown,
+        model: item.model,
+        diagnostics: item.diagnostics,
+        created_at: generatedAt,
+      };
+      const { error: fErr } = await supabase.from('watchlist_briefings').upsert(fallbackPayload);
+      if (fErr) {
+        console.warn('[Supabase Warn] Base watchlist_briefings fallback error:', fErr.message);
+      } else {
+        console.log(`[Supabase] Saved watchlist_briefings for ${item.date} via base fallback`);
+      }
+    } else {
+      console.log(`[Supabase] Successfully saved watchlist_briefings for ${item.date} (${item.status})`);
+    }
+  } catch (err: any) {
+    console.warn('[Supabase Error] Exception saving watchlist_briefing:', err?.message || err);
+  }
+}
+
+async function getWatchlistBriefingFromSupabase(date: string): Promise<{
+  date: string;
+  markdown: string;
+  model: string;
+  diagnostics?: any;
+  status?: string;
+  created_at?: string;
+} | null> {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase
+      .from('watchlist_briefings')
+      .select('date, markdown, model, diagnostics, status, created_at')
+      .eq('date', date)
+      .maybeSingle();
+    if (error) {
+      console.warn('[Supabase] watchlist_briefings query warning:', error.message);
+      return null;
+    }
+    return data;
+  } catch (err: any) {
+    console.warn('[Supabase] Exception fetching watchlist_briefing:', err?.message || err);
+    return null;
   }
 }
 
@@ -3863,7 +4061,7 @@ ${stockLines}
   };
 }
 
-// 5. 專屬自選持股每日量化晨會戰報與即時防洗盤籌碼診斷 (POST)
+// 5. 專屬自選持股每日量化晨會戰報與即時防洗盤籌碼診斷 (21:30 結算定稿 + Supabase 持久化)
 app.post('/api/watchlist/morning-briefing', async (req: Request, res: Response) => {
   try {
     const rawSymbols = req.body?.symbols;
@@ -3872,7 +4070,10 @@ app.post('/api/watchlist/morning-briefing', async (req: Request, res: Response) 
       .filter((s: string) => /^[1-9][0-9]{3}$/.test(s));
 
     const todayTaipeiDate = getTaipeiDateString();
-    const shouldGenerate = req.query.generate === 'true' || req.query.force === 'true';
+    const marketStatus = getTaipeiMarketStatus();
+    const isPast2130 = marketStatus.timeInMinutes >= 1290; // 21:30 in Taipei
+    const force = req.query.force === 'true';
+    const shouldGenerate = req.query.generate === 'true' || force;
 
     // 取得即時診斷資訊 (包含防洗盤 SHAKEOUT_HOLD vs CONFIRMED_STOP_LOSS，加入 8 秒超時保護防止請求卡死)
     let diagnostics: Record<string, WatchlistStockDiagnostic> = {};
@@ -3889,46 +4090,137 @@ app.post('/api/watchlist/morning-briefing', async (req: Request, res: Response) 
       }
     }
 
+    // 無持股防浪費保護：若當前自選清單為空（0 檔），不呼叫 Gemini，戰報狀態設定為 NO_STOCKS
     if (symbols.length === 0) {
       return res.json({
         isGenerated: false,
+        status: 'NO_STOCKS',
         date: todayTaipeiDate,
+        message: '目前自選清單無標的，暫不生成戰報',
+        isPast2130,
+        statusMessage: '自選清單尚無標的，未觸發夜盤體檢',
         diagnostics: {},
       });
     }
 
     const sortedKey = `${todayTaipeiDate}:${symbols.slice().sort().join(',')}`;
-    const cached = watchlistBriefingDiskCache[sortedKey];
 
-    // 若未要求手動生成，且當日已有快取
-    if (!shouldGenerate) {
-      if (cached && cached.markdown) {
+    // 若未要求強制重新生成，優先檢查本地快取與 Supabase 雲端資料庫當日定稿 (0 秒秒開)
+    if (!force) {
+      // 1. 本地快取
+      const cached = watchlistBriefingDiskCache[sortedKey] || watchlistBriefingDiskCache[todayTaipeiDate];
+      if (cached) {
+        if (cached.status === 'NO_STOCKS') {
+          return res.json({
+            isGenerated: false,
+            status: 'NO_STOCKS',
+            date: todayTaipeiDate,
+            message: '目前自選清單無標的，暫不生成戰報',
+            isPast2130,
+            statusMessage: '自選清單尚無標的，未觸發夜盤體檢',
+            diagnostics,
+          });
+        }
+        if (cached.markdown) {
+          const mergedDiagnostics = { ...(cached.diagnostics || {}), ...diagnostics };
+          return res.json({
+            isGenerated: true,
+            status: 'COMPLETED',
+            date: todayTaipeiDate,
+            markdown: cached.markdown,
+            model: cached.model,
+            generatedAt: cached.generatedAt,
+            diagnostics: mergedDiagnostics,
+            isPast2130,
+            statusMessage: isPast2130 ? '🛡️ 21:30 全日籌碼結算定稿' : '⏳ 今日自選籌碼健檢將於 21:30 融資券結算後自動產出',
+          });
+        }
+      }
+
+      // 2. Supabase 雲端資料庫 watchlist_briefings 表 (跨裝置即時同步)
+      const sbBriefing = await getWatchlistBriefingFromSupabase(todayTaipeiDate);
+      if (sbBriefing) {
+        if (sbBriefing.status === 'NO_STOCKS') {
+          watchlistBriefingDiskCache[todayTaipeiDate] = {
+            status: 'NO_STOCKS',
+            date: todayTaipeiDate,
+            markdown: '',
+            model: 'NONE',
+            diagnostics: {},
+            generatedAt: sbBriefing.created_at || new Date().toISOString(),
+          };
+          saveWatchlistBriefingDiskCache();
+
+          return res.json({
+            isGenerated: false,
+            status: 'NO_STOCKS',
+            date: todayTaipeiDate,
+            message: '目前自選清單無標的，暫不生成戰報',
+            isPast2130,
+            statusMessage: '自選清單尚無標的，未觸發夜盤體檢',
+            diagnostics,
+          });
+        }
+        if (sbBriefing.markdown) {
+          const mergedDiagnostics = { ...(sbBriefing.diagnostics || {}), ...diagnostics };
+          watchlistBriefingDiskCache[todayTaipeiDate] = {
+            status: 'COMPLETED',
+            date: todayTaipeiDate,
+            markdown: sbBriefing.markdown,
+            model: sbBriefing.model,
+            diagnostics: mergedDiagnostics,
+            generatedAt: sbBriefing.created_at || new Date().toISOString(),
+          };
+          saveWatchlistBriefingDiskCache();
+
+          return res.json({
+            isGenerated: true,
+            status: 'COMPLETED',
+            date: todayTaipeiDate,
+            markdown: sbBriefing.markdown,
+            model: sbBriefing.model,
+            generatedAt: sbBriefing.created_at,
+            diagnostics: mergedDiagnostics,
+            isPast2130,
+            statusMessage: isPast2130 ? '🛡️ 21:30 全日籌碼結算定稿' : '⏳ 今日自選籌碼健檢將於 21:30 融資券結算後自動產出',
+            source: 'supabase',
+          });
+        }
+      }
+
+      // 今日尚未生成且未傳入 ?generate=true：回傳未生成狀態與排程狀態提示
+      if (!shouldGenerate) {
         return res.json({
-          isGenerated: true,
+          isGenerated: false,
+          status: 'PENDING',
           date: todayTaipeiDate,
-          markdown: cached.markdown,
-          model: cached.model,
-          generatedAt: cached.generatedAt,
+          isPast2130,
+          statusMessage: isPast2130 ? '⏳ 21:30 戰報整理中或點擊手動分析' : '⏳ 今日自選籌碼健檢將於 21:30 融資券結算後自動產出',
           diagnostics,
         });
       }
-      // 若尚未生成，回傳 isGenerated: false，嚴禁自動呼叫 Gemini！
-      return res.json({
-        isGenerated: false,
-        date: todayTaipeiDate,
-        diagnostics,
-      });
     }
 
-    // 收到 ?generate=true，啟動 Gemini 2.5 Pro 生成
+    // 收到 ?generate=true 或 ?force=true，啟動 Gemini 2.5 Pro 生成並寫入 Supabase
     const gen = await generateWatchlistBriefing(symbols, diagnostics, true);
+    await saveWatchlistBriefingToSupabaseAndCache({
+      date: gen.date,
+      markdown: gen.markdown,
+      model: gen.model,
+      diagnostics,
+      status: 'COMPLETED',
+    });
+
     return res.json({
       isGenerated: true,
+      status: 'COMPLETED',
       date: todayTaipeiDate,
       markdown: gen.markdown,
       model: gen.model,
       generatedAt: new Date().toISOString(),
       diagnostics,
+      isPast2130,
+      statusMessage: isPast2130 ? '🛡️ 21:30 全日籌碼結算定稿' : '⏳ 今日自選籌碼健檢將於 21:30 融資券結算後自動產出',
     });
   } catch (err: any) {
     console.error('Error in /api/watchlist/morning-briefing:', err);
@@ -5045,10 +5337,85 @@ app.get('/api/health', (_req: Request, res: Response) => {
   });
 });
 
+// 定時自動排程管理 (Asia/Taipei 台北時區)
+function setupQuantCronSchedulers() {
+  console.log('[Cron] Initializing Taiwan Quant Scheduled Jobs (Asia/Taipei)...');
+
+  // 1. 大盤深度早報：每個交易日（週一至週五）早上 08:30 (30 8 * * 1-5)
+  cron.schedule(
+    '30 8 * * 1-5',
+    async () => {
+      console.log('[Cron Scheduler 08:30] ⏰ 觸發交易日大盤深度操盤早報自動產出與鎖定...');
+      try {
+        const result = await generateGeminiDeepMorningBriefing(true);
+        console.log(`[Cron Scheduler 08:30] ✅ 大盤深度早報已產出定稿並鎖定：${result.date} (${result.model})`);
+      } catch (err: any) {
+        console.error('[Cron Scheduler 08:30] ❌ 產出大盤深度早報失敗:', err?.message || err);
+      }
+    },
+    {
+      timezone: 'Asia/Taipei',
+    }
+  );
+
+  // 2. 自選持股深層籌碼健診戰報：每個交易日（週一至週五）晚上 21:30 (30 21 * * 1-5)
+  cron.schedule(
+    '30 21 * * 1-5',
+    async () => {
+      console.log('[Cron Scheduler 21:30] ⏰ 觸發全日籌碼結算自選持股健診戰報定稿...');
+      try {
+        const userData = await getUserData();
+        const rawSymbols = Array.isArray(userData.portfolio) ? userData.portfolio.map((p) => p.symbol) : [];
+        const symbols = Array.from(new Set(rawSymbols))
+          .map((s) => String(s || '').trim())
+          .filter((s) => /^[1-9][0-9]{3}$/.test(s));
+
+        const todayTaipeiDate = getTaipeiDateString();
+
+        // 無持股防浪費保護：若當前自選清單為空（0 檔），不呼叫 Gemini，戰報狀態設定為 NO_STOCKS
+        if (symbols.length === 0) {
+          console.log('[Cron Scheduler 21:30] 🛡️ 無持股防浪費保護啟動：當前自選清單為空 (0檔)，暫不呼叫 Gemini。');
+          await saveWatchlistBriefingToSupabaseAndCache({
+            date: todayTaipeiDate,
+            markdown: '',
+            model: 'NONE',
+            diagnostics: {},
+            status: 'NO_STOCKS',
+          });
+          return;
+        }
+
+        // 有持股時：抓取當日三大法人與融資消長，呼叫 generateWatchlistBriefing 進行深度體檢
+        console.log(`[Cron Scheduler 21:30] 📊 正在為 ${symbols.length} 檔自選持股抓取結算籌碼並呼叫 Gemini 推理...`);
+        const diagnostics = await getWatchlistStockDiagnostics(symbols);
+        const gen = await generateWatchlistBriefing(symbols, diagnostics, true);
+        await saveWatchlistBriefingToSupabaseAndCache({
+          date: gen.date,
+          markdown: gen.markdown,
+          model: gen.model,
+          diagnostics,
+          status: 'COMPLETED',
+        });
+        console.log(`[Cron Scheduler 21:30] ✅ 自選持股健診戰報已定稿並鎖定：${gen.date} (${symbols.length} 檔)`);
+      } catch (err: any) {
+        console.error('[Cron Scheduler 21:30] ❌ 產出自選持股健診戰報失敗:', err?.message || err);
+      }
+    },
+    {
+      timezone: 'Asia/Taipei',
+    }
+  );
+
+  console.log('[Cron] ✅ Quant scheduled jobs registered for 08:30 (Market) and 21:30 (Watchlist) Asia/Taipei.');
+}
+
 // Start Server and Mount Vite
 async function startServer() {
   // 啟動時一次性健全全台股字典映射（上市與上櫃股票中文名稱與真實產業類別）
   initTaiwanStockInfo().catch((e) => console.error('[StockInfo] Init error:', e));
+
+  // 啟動定時自動排程 (08:30 大盤操盤早報、21:30 自選深層籌碼健診戰報)
+  setupQuantCronSchedulers();
 
   // 啟動時驗證 Supabase 資料庫連線狀態
   if (supabase) {

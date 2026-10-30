@@ -485,72 +485,134 @@ export function WatchlistView({
       </section>
 
       {/* ========================================================================= */}
-      {/* 1. 📊 GEMINI 2.5 PRO 自選持股每日量化晨會戰報 (可展開/收合)                 */}
+      {/* 1. 📊 GEMINI 2.5 PRO 自選持股深層籌碼健診戰報 (21:30 自動定稿 + Supabase 持久化) */}
       {/* ========================================================================= */}
-      <section className="rounded-3xl bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 border border-slate-800 shadow-xl p-5 sm:p-6 relative overflow-hidden">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-slate-800/80">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center">
-              <SunMedium className="w-5 h-5 text-amber-400" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-base sm:text-lg font-bold text-white">自選持股量化晨會戰報</h2>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-mono flex items-center gap-1">
-                  <Sparkles className="w-3 h-3 text-indigo-400" />
-                  {watchlistBriefing?.model || 'Gemini 2.5 Pro 旗艦推理'}
-                </span>
+      {(() => {
+        const isPast2130Taipei = (() => {
+          if (typeof watchlistBriefing?.isPast2130 === 'boolean') return watchlistBriefing.isPast2130;
+          const now = new Date();
+          const timeStr = now.toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
+          const [h, m] = timeStr.split(':').map(Number);
+          return h * 60 + m >= 21 * 60 + 30;
+        })();
+
+        const isNoStocks = portfolio.length === 0 || watchlistBriefing?.status === 'NO_STOCKS';
+
+        return (
+          <section className="rounded-3xl bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 border border-slate-800 shadow-xl p-5 sm:p-6 relative overflow-hidden">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-slate-800/80">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center">
+                  <SunMedium className="w-5 h-5 text-amber-400" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-base sm:text-lg font-bold text-white">自選持股深層籌碼健診戰報</h2>
+                    {isNoStocks ? (
+                      <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-400 font-semibold">
+                        自選清單尚無標的，未觸發夜盤體檢
+                      </span>
+                    ) : watchlistBriefing?.isGenerated && watchlistBriefing.markdown ? (
+                      <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                        🛡️ 21:30 全日籌碼結算定稿
+                      </span>
+                    ) : !isPast2130Taipei ? (
+                      <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-300 font-semibold">
+                        ⏳ 今日自選籌碼健檢將於 21:30 融資券結算後自動產出
+                      </span>
+                    ) : (
+                      <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/40 text-indigo-300 font-semibold">
+                        ⏳ 21:30 籌碼健檢整理中或點擊手動刷新
+                      </span>
+                    )}
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-mono flex items-center gap-1">
+                      <Sparkles className="w-3 h-3 text-indigo-400" />
+                      {watchlistBriefing?.model || 'Gemini 2.5 Pro 旗艦推理'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    專屬體檢 {portfolio.length} 檔持股：防主力甩轎、昨日法人融資消長與 20MA 防守點
+                  </p>
+                </div>
               </div>
-              <p className="text-xs text-slate-400">
-                專屬體檢 {portfolio.length} 檔持股：防主力甩轎、昨日法人融資消長與 20MA 防守點
-              </p>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => onGenerateBriefing?.(true)}
+                  disabled={isBriefingGenerating || portfolio.length === 0}
+                  className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer shadow-sm"
+                  title="緊急手動重新生成自選持股健診戰報 (?force=true)"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isBriefingGenerating ? 'animate-spin text-amber-400' : 'text-slate-400'}`} />
+                  <span>{isBriefingGenerating ? '體檢中...' : '🔄 手動刷新'}</span>
+                </button>
+
+                <button
+                  onClick={() => setIsBriefingExpanded((prev) => !prev)}
+                  className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
+                  title={isBriefingExpanded ? '收合戰報' : '展開戰報'}
+                >
+                  {isBriefingExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            {watchlistBriefing?.isGenerated && watchlistBriefing.markdown && (
-              <button
-                onClick={() => onGenerateBriefing?.(true)}
-                disabled={isBriefingGenerating}
-                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isBriefingGenerating ? 'animate-spin text-amber-400' : ''}`} />
-                <span>{isBriefingGenerating ? '體檢中...' : '🔄 重新分析'}</span>
-              </button>
-            )}
-
-            <button
-              onClick={() => setIsBriefingExpanded((prev) => !prev)}
-              className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
-            >
-              {isBriefingExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            </button>
-          </div>
-        </div>
-
-        {isBriefingGenerating ? (
-          <div className="mt-4 p-6 rounded-2xl bg-slate-950/90 border border-indigo-500/30 flex flex-col items-center justify-center text-center space-y-3">
-            <Sparkles className="w-8 h-8 text-amber-400 animate-spin" />
-            <p className="text-sm font-bold text-white">Gemini 2.5 Pro 正在為您的持股進行量化體檢...</p>
-          </div>
-        ) : (!watchlistBriefing || !watchlistBriefing.isGenerated || !watchlistBriefing.markdown) ? (
-          <div className="mt-4 p-5 rounded-2xl bg-slate-950/60 border border-slate-800/80 text-center flex flex-col items-center justify-center">
-            <p className="text-xs text-slate-400 mb-3">今日自選持股戰報尚未產出，建議於開盤前產出量化評析</p>
-            <button
-              onClick={() => onGenerateBriefing?.(true)}
-              disabled={isBriefingGenerating || portfolio.length === 0}
-              className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 via-rose-500 to-indigo-600 text-white font-bold text-xs flex items-center gap-2 shadow-lg cursor-pointer disabled:opacity-50 active:scale-95"
-            >
-              <Sparkles className="w-4 h-4 text-amber-200" />
-              <span>⚡ 產出今日自選持股戰報 (Gemini 2.5 Pro)</span>
-            </button>
-          </div>
-        ) : isBriefingExpanded ? (
-          <div className="mt-4 p-5 rounded-2xl bg-slate-950/80 border border-slate-800/90">
-            <MarkdownRenderer content={watchlistBriefing.markdown} />
-          </div>
-        ) : null}
-      </section>
+            {isBriefingGenerating ? (
+              <div className="mt-4 p-6 rounded-2xl bg-slate-950/90 border border-indigo-500/30 flex flex-col items-center justify-center text-center space-y-3">
+                <Sparkles className="w-8 h-8 text-amber-400 animate-spin" />
+                <p className="text-sm font-bold text-white">Gemini 2.5 Pro 正在為您的持股進行量化體檢...</p>
+              </div>
+            ) : isNoStocks ? (
+              <div className="mt-4 p-6 rounded-2xl bg-slate-950/60 border border-slate-800/80 text-center flex flex-col items-center justify-center space-y-2">
+                <span className="text-2xl">📋</span>
+                <h4 className="text-sm font-bold text-white">目前自選清單無標的，暫不生成戰報</h4>
+                <p className="text-xs text-slate-400 max-w-md">
+                  啟動無持股防浪費保護：請先加入追蹤股票，系統將於每日 21:30 融資券結算後自動進行深度籌碼健檢。
+                </p>
+              </div>
+            ) : (!watchlistBriefing || !watchlistBriefing.isGenerated || !watchlistBriefing.markdown) ? (
+              <div className="mt-4 p-5 rounded-2xl bg-slate-950/60 border border-slate-800/80 text-center flex flex-col items-center justify-center">
+                <h4 className="text-sm font-bold text-white">
+                  {!isPast2130Taipei
+                    ? '⏳ 今日自選籌碼健檢將於 21:30 融資券結算後自動產出'
+                    : '今日自選持股戰報尚未鎖定'}
+                </h4>
+                <p className="text-xs text-slate-400 mt-1 mb-4 max-w-md">
+                  每逢交易日 21:30 全市場融資券正式出爐後，系統將自動針對您的 {portfolio.length} 檔持股執行深層籌碼與防洗盤驗證；您亦可提前手動產出。
+                </p>
+                <button
+                  onClick={() => onGenerateBriefing?.(true)}
+                  disabled={isBriefingGenerating || portfolio.length === 0}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 via-rose-500 to-indigo-600 text-white font-bold text-xs flex items-center gap-2 shadow-lg cursor-pointer disabled:opacity-50 active:scale-95"
+                >
+                  <Sparkles className="w-4 h-4 text-amber-200" />
+                  <span>⚡ 立即執行籌碼體檢 (Gemini 2.5 Pro)</span>
+                </button>
+              </div>
+            ) : isBriefingExpanded ? (
+              <div className="mt-4 p-5 rounded-2xl bg-slate-950/80 border border-slate-800/90">
+                <MarkdownRenderer content={watchlistBriefing.markdown} />
+                <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-[11px] text-slate-500">
+                  <span className="flex items-center gap-1.5 text-emerald-400/90 font-medium">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    🛡️ 21:30 全日籌碼結算定稿（已鎖定・Supabase 雲端持久化・0秒秒開）
+                  </span>
+                  <button
+                    onClick={() => onGenerateBriefing?.(true)}
+                    disabled={isBriefingGenerating}
+                    className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-indigo-300 hover:text-white border border-indigo-500/30 text-[11px] font-medium flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
+                    title="強制重新呼叫 Gemini 2.5 Pro 重整並更新雲端定稿 (?force=true)"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isBriefingGenerating ? 'animate-spin text-amber-400' : ''}`} />
+                    <span>{isBriefingGenerating ? '體檢中...' : '🔄 手動刷新'}</span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </section>
+        );
+      })()}
 
       {/* ========================================================================= */}
       {/* 2. 🚨 自選股破線/減碼警訊清單 (Red Alert Card)                             */}

@@ -550,12 +550,12 @@ export default function App() {
   };
 
   // Load or Generate Gemini 2.5 Pro Morning Briefing
-  const loadBriefing = useCallback(async (generate = false) => {
-    if (generate) setIsBriefingGenerating(true);
+  const loadBriefing = useCallback(async (generate = false, force = false) => {
+    if (generate || force) setIsBriefingGenerating(true);
     else setIsBriefingLoading(true);
 
     try {
-      const data = await fetchMorningBriefing(generate);
+      const data = await fetchMorningBriefing(generate, force);
       if (data) {
         setMorningBriefing(data);
       }
@@ -601,14 +601,14 @@ export default function App() {
   }, [portfolio]);
   const isGeneratingWatchlistRef = useRef(false);
 
-  // 載入自選持股每日量化晨會戰報與深層防洗盤籌碼診斷
-  const loadWatchlistBriefing = useCallback(async (generate = false) => {
+  // 載入自選持股每日量化晨會戰報與深層防洗盤籌碼診斷 (支援 21:30 定稿與手動刷新)
+  const loadWatchlistBriefing = useCallback(async (generate = false, force = false) => {
     if (!portfolioSymbolsKey) {
       setWatchlistBriefing(null);
       return;
     }
     // 若當前正在進行 Gemini 深度生成，嚴禁被背景自動檢查 (generate = false) 覆蓋或中斷
-    if (!generate && isGeneratingWatchlistRef.current) {
+    if (!generate && !force && isGeneratingWatchlistRef.current) {
       return;
     }
 
@@ -618,18 +618,19 @@ export default function App() {
       return;
     }
 
-    if (generate) {
+    if (generate || force) {
       isGeneratingWatchlistRef.current = true;
       setIsWatchlistBriefingGenerating(true);
     } else {
       setIsWatchlistBriefingLoading(true);
     }
 
+    const shouldForce = force || generate;
     try {
-      const res = await fetchWatchlistMorningBriefing(symbols, generate);
+      const res = await fetchWatchlistMorningBriefing(symbols, generate, shouldForce);
       if (res) {
         // 若背景查詢完成時已有正在生成中的戰報，避免覆蓋生成中狀態
-        if (!generate && isGeneratingWatchlistRef.current) {
+        if (!generate && !force && isGeneratingWatchlistRef.current) {
           return;
         }
         setWatchlistBriefing(res);
@@ -640,7 +641,7 @@ export default function App() {
     } catch (e) {
       console.error('Failed to load watchlist morning briefing:', e);
     } finally {
-      if (generate) {
+      if (generate || force) {
         isGeneratingWatchlistRef.current = false;
         setIsWatchlistBriefingGenerating(false);
       } else {
@@ -1565,8 +1566,18 @@ export default function App() {
                     <SunMedium className="w-6 h-6 text-amber-400" />
                   </div>
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <h3 className="text-lg font-bold text-white">每日深度操盤早報</h3>
+                      {morningBriefing?.isGenerated && morningBriefing.markdown ? (
+                        <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                          ✅ 08:30 今日晨會作戰定稿（已鎖定）
+                        </span>
+                      ) : (
+                        <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-300 font-semibold flex items-center gap-1.5">
+                          ⏳ 今日早報預計於 08:30 自動產出定稿
+                        </span>
+                      )}
                       <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-mono flex items-center gap-1">
                         <Sparkles className="w-3 h-3 text-indigo-400" />
                         {morningBriefing?.model && morningBriefing.isGenerated !== false
@@ -1581,21 +1592,19 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {morningBriefing && morningBriefing.isGenerated !== false && morningBriefing.markdown && (
-                    <button
-                      onClick={() => loadBriefing(true)}
-                      disabled={isBriefingGenerating}
-                      className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
-                      title="手動重新調用 Gemini 2.5 Pro 重整最新戰報"
-                    >
-                      <RefreshCw
-                        className={`w-3.5 h-3.5 ${
-                          isBriefingGenerating ? 'animate-spin text-amber-400' : ''
-                        }`}
-                      />
-                      <span>{isBriefingGenerating ? '深度推演中...' : '🔄 重新產出'}</span>
-                    </button>
-                  )}
+                  <button
+                    onClick={() => loadBriefing(true, true)}
+                    disabled={isBriefingGenerating}
+                    className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer shadow-sm"
+                    title="緊急手動重新生成當日早報定稿 (?force=true)"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 ${
+                        isBriefingGenerating ? 'animate-spin text-amber-400' : 'text-slate-400'
+                      }`}
+                    />
+                    <span>{isBriefingGenerating ? '深度推演中...' : '🔄 手動刷新'}</span>
+                  </button>
 
                   <button
                     onClick={() => setIsBriefingExpanded((prev) => !prev)}
@@ -1650,13 +1659,13 @@ export default function App() {
                     ☕
                   </div>
                   <h4 className="text-lg sm:text-xl font-bold text-white tracking-wide">
-                    今日盤前操盤戰報尚未產出
+                    ⏳ 今日早報預計於 08:30 自動產出定稿
                   </h4>
                   <p className="text-xs sm:text-sm text-slate-400 mt-2 max-w-md leading-relaxed">
-                    建議於早上 08:00 ~ 08:50，外圍美股與台指期夜盤正式收盤後點擊產出。
+                    系統於每個交易日 08:30 自動分析昨夜美股與法人籌碼，並將定稿永久存入雲端資料庫；您亦可隨時點擊下方按鈕手動緊急生成。
                   </p>
                   <button
-                    onClick={() => loadBriefing(true)}
+                    onClick={() => loadBriefing(true, true)}
                     disabled={isBriefingGenerating}
                     className="mt-5 px-6 py-3 rounded-2xl bg-gradient-to-r from-amber-500 via-rose-500 to-indigo-600 hover:from-amber-400 hover:via-rose-400 hover:to-indigo-500 text-white font-bold text-sm sm:text-base shadow-lg shadow-rose-950/60 hover:shadow-rose-900/80 transition-all flex items-center gap-2.5 transform active:scale-95 cursor-pointer disabled:opacity-50"
                   >
@@ -1668,20 +1677,20 @@ export default function App() {
                 <div className="mt-5 p-5 rounded-2xl bg-slate-950/80 border border-slate-800/90 shadow-inner">
                   <MarkdownRenderer content={morningBriefing.markdown} />
                   <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-[11px] text-slate-500">
-                    <span className="flex items-center gap-1.5 text-indigo-400/90 font-medium">
+                    <span className="flex items-center gap-1.5 text-emerald-400/90 font-medium">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                      當日持久快取生效中（Gemini 2.5 Pro 旗艦深度推演・0秒秒開）
+                      ✅ 08:30 今日晨會作戰定稿（已鎖定・Supabase 雲端持久化・0秒秒開）
                     </span>
                     <button
-                      onClick={() => loadBriefing(true)}
+                      onClick={() => loadBriefing(true, true)}
                       disabled={isBriefingGenerating}
                       className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-indigo-300 hover:text-white border border-indigo-500/30 text-[11px] font-medium flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
-                      title="重新呼叫 Gemini 2.5 Pro 進行全維度即時深度推演"
+                      title="強制重新呼叫 Gemini 2.5 Pro 重整並更新雲端定稿 (?force=true)"
                     >
                       <RefreshCw
                         className={`w-3 h-3 ${isBriefingGenerating ? 'animate-spin text-amber-400' : ''}`}
                       />
-                      <span>{isBriefingGenerating ? '深度推演中...' : '🔄 重新產出最新戰報'}</span>
+                      <span>{isBriefingGenerating ? '深度推演中...' : '🔄 手動刷新'}</span>
                     </button>
                   </div>
                 </div>

@@ -167,6 +167,10 @@ export interface MorningBriefingResponse {
   expiresInSeconds?: number;
   dailyDate?: string;
   isDailyCached?: boolean;
+  status?: 'COMPLETED' | 'PENDING';
+  statusMessage?: string;
+  isPast830?: boolean;
+  source?: string;
 }
 
 export interface PortfolioStockItem {
@@ -246,6 +250,11 @@ export interface WatchlistBriefingResponse {
   generatedAt?: string;
   cachedAt?: string;
   diagnostics?: Record<string, WatchlistStockDiagnostic>;
+  status?: 'COMPLETED' | 'NO_STOCKS' | 'PENDING';
+  statusMessage?: string;
+  isPast2130?: boolean;
+  message?: string;
+  source?: string;
 }
 
 export interface BrokerTradeItem {

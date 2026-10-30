@@ -30,11 +30,13 @@ export async function fetchMarketOverview(force = false): Promise<MarketOverview
 
 /**
  * Fetch or Generate Gemini AI-powered Deep Morning Briefing
- * @param generate If true, triggers Gemini 2.5 Pro generation. If false, only queries today's cached briefing.
+ * @param generate If true, triggers generation. If false, only queries today's cached briefing.
+ * @param force If true, forces regenerating and overwriting today's lock.
  */
-export async function fetchMorningBriefing(generate = false): Promise<MorningBriefingResponse | null> {
+export async function fetchMorningBriefing(generate = false, force = false): Promise<MorningBriefingResponse | null> {
   try {
-    const res = await fetch(`/api/market/morning-briefing${generate ? '?generate=true' : ''}`, {
+    const query = force ? '?force=true' : generate ? '?generate=true' : '';
+    const res = await fetch(`/api/market/morning-briefing${query}`, {
       headers: { Accept: 'application/json' },
     });
     if (!res.ok) {
@@ -193,14 +195,18 @@ export async function fetchStockDetail(symbol: string): Promise<StockDetailRespo
 
 /**
  * Fetch or Generate Watchlist-specific Daily Quantitative Morning Briefing
+ * @param generate If true, triggers generation. If false, only queries today's cached briefing.
+ * @param force If true, forces regenerating and overwriting today's lock.
  */
 export async function fetchWatchlistMorningBriefing(
   symbols: string[],
-  generate = false
+  generate = false,
+  force = false
 ): Promise<WatchlistBriefingResponse | null> {
   if (!symbols || symbols.length === 0) return null;
   try {
-    const res = await fetch(`/api/watchlist/morning-briefing${generate ? '?generate=true' : ''}`, {
+    const query = force ? '?force=true' : generate ? '?generate=true' : '';
+    const res = await fetch(`/api/watchlist/morning-briefing${query}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
