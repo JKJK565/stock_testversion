@@ -268,6 +268,8 @@ export default function App() {
     message: '本機資料持久化中',
   });
 
+  const hasInitialSyncedRef = useRef(false);
+
   const syncUserPortfolioToServer = useCallback(
     async (currentPortfolio: PortfolioStockItem[], cap?: number) => {
       try {
@@ -283,7 +285,23 @@ export default function App() {
     []
   );
 
-  // 7. Supabase 雲端資料庫串接與資料持久化同步
+  const syncTradesToServer = useCallback(async (trades: TradeRecordItem[]) => {
+    if (!trades || trades.length === 0) return;
+    try {
+      const res = await fetch('/api/user/trades/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trades }),
+      });
+      if (res.ok) {
+        console.log(`[App] Synced ${trades.length} trades to cloud database`);
+      }
+    } catch (e) {
+      console.warn('Failed to sync trades to server:', e);
+    }
+  }, []);
+
+  // 7. Supabase 雲端資料庫串接與資料持久化同步 (Auto-Sync on Load)
   useEffect(() => {
     let isMounted = true;
     const syncCloudUserData = async () => {
@@ -292,30 +310,58 @@ export default function App() {
         if (res.ok) {
           const serverData = await res.json();
           if (isMounted) {
+            // 1. Initial Capital
             if (typeof serverData.initialCapital === 'number' && serverData.initialCapital > 0) {
               setInitialCapital(serverData.initialCapital);
               localStorage.setItem('tw_swing_initial_capital', String(serverData.initialCapital));
             }
+
+            // 2. Portfolio: 雙向同步
+            let localItems: PortfolioStockItem[] = [];
+            try {
+              const saved = localStorage.getItem('tw_swing_portfolio');
+              if (saved) localItems = JSON.parse(saved);
+            } catch {}
+
             if (Array.isArray(serverData.portfolio) && serverData.portfolio.length > 0) {
               setPortfolio(serverData.portfolio);
               localStorage.setItem('tw_swing_portfolio', JSON.stringify(serverData.portfolio));
-            } else {
-              // 若伺服器為空但本機有，自動同步上去
-              const saved = localStorage.getItem('tw_swing_portfolio');
-              if (saved) {
-                const localItems = JSON.parse(saved);
-                if (Array.isArray(localItems) && localItems.length > 0) {
-                  syncUserPortfolioToServer(localItems, initialCapital);
-                }
-              }
+            } else if (localItems.length > 0) {
+              // 伺服器/Supabase 為空但本機有，自動補上傳寫入 Supabase
+              setPortfolio(localItems);
+              syncUserPortfolioToServer(localItems, serverData.initialCapital || initialCapital);
             }
+
+            // 3. Trade History: 雙向同步 (解決本機已有平倉戰績但 Supabase 仍是空的問題)
+            let localTrades: TradeRecordItem[] = [];
+            try {
+              const savedTrades = localStorage.getItem('tw_swing_trade_history');
+              if (savedTrades) localTrades = JSON.parse(savedTrades);
+            } catch {}
+
             if (Array.isArray(serverData.tradeHistory) && serverData.tradeHistory.length > 0) {
-              setTradeHistory(serverData.tradeHistory);
-              localStorage.setItem('tw_swing_trade_history', JSON.stringify(serverData.tradeHistory));
+              // 伺服器已有平倉紀錄，若本機有尚未上傳的紀錄進行合併補齊
+              const serverIds = new Set(serverData.tradeHistory.map((t: any) => t.id));
+              const missingOnServer = localTrades.filter((lt) => !serverIds.has(lt.id));
+              if (missingOnServer.length > 0) {
+                const merged = [...serverData.tradeHistory, ...missingOnServer];
+                setTradeHistory(merged);
+                localStorage.setItem('tw_swing_trade_history', JSON.stringify(merged));
+                syncTradesToServer(merged);
+              } else {
+                setTradeHistory(serverData.tradeHistory);
+                localStorage.setItem('tw_swing_trade_history', JSON.stringify(serverData.tradeHistory));
+              }
+            } else if (localTrades.length > 0) {
+              // 伺服器/Supabase 為空但本機已有紀錄（如圖中的智易與台積電），立即批次上傳寫入 Supabase！
+              setTradeHistory(localTrades);
+              syncTradesToServer(localTrades);
             }
+
             if (serverData.syncStatus) {
               setSyncStatus(serverData.syncStatus);
             }
+            hasInitialSyncedRef.current = true;
           }
           return;
         }
@@ -327,7 +373,7 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, [syncUserPortfolioToServer, initialCapital]);
+  }, [syncUserPortfolioToServer, syncTradesToServer, initialCapital]);
 
   // 修改初始本金
   const handleUpdateInitialCapital = useCallback(
@@ -341,7 +387,7 @@ export default function App() {
     [portfolio, syncUserPortfolioToServer]
   );
 
-  // 🎯 停利平倉 / 🛑 停損平倉：自動計算已實現損益、持有天數，移入交易日記並持久化
+  // 🎯 停利平倉 / 🛑 停損平倉：自動計算已實現損益、持有天數，移入交易日記並即時呼叫 Supabase 持久化
   const handleClosePosition = useCallback(
     async (tradeData: Omit<TradeRecordItem, 'id'>, removePortfolioId: string) => {
       const tradeItem: TradeRecordItem = {
@@ -364,17 +410,22 @@ export default function App() {
       } catch {}
 
       try {
-        await fetch('/api/user/trades', {
+        const res = await fetch('/api/user/trades', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(tradeItem),
         });
+        if (!res.ok) {
+          console.warn('[App] Failed to save trade via /api/user/trades, retrying with syncTradesToServer');
+          syncTradesToServer([tradeItem]);
+        }
         syncUserPortfolioToServer(nextPortfolio, initialCapital);
       } catch (e) {
-        console.warn('Failed to record closed trade to server:', e);
+        console.warn('Failed to record closed trade to server, fallback to bulk sync:', e);
+        syncTradesToServer([tradeItem]);
       }
     },
-    [portfolio, initialCapital, syncUserPortfolioToServer]
+    [portfolio, initialCapital, syncUserPortfolioToServer, syncTradesToServer]
   );
 
   // 刪除單筆歷史平倉紀錄
@@ -433,6 +484,7 @@ export default function App() {
         if (Array.isArray(json.tradeHistory)) {
           setTradeHistory(json.tradeHistory);
           localStorage.setItem('tw_swing_trade_history', JSON.stringify(json.tradeHistory));
+          syncTradesToServer(json.tradeHistory);
         }
         syncUserPortfolioToServer(port, cap);
         alert('🎉 交易紀錄備份還原成功！已自動同步至雲端與本機。');
@@ -440,7 +492,7 @@ export default function App() {
         alert('匯入備份失敗，請確認檔案是否為正確的 JSON 格式。');
       }
     },
-    [portfolio, initialCapital, syncUserPortfolioToServer]
+    [portfolio, initialCapital, syncUserPortfolioToServer, syncTradesToServer]
   );
 
   // Notifications stored in localStorage
@@ -454,14 +506,16 @@ export default function App() {
     return [];
   });
 
-  // Save portfolio to localStorage & sync to server
+  // Save portfolio to localStorage & sync to server (only after initial load has finished)
   useEffect(() => {
     try {
       localStorage.setItem('tw_swing_portfolio', JSON.stringify(portfolio));
     } catch (e) {
       console.error('Failed to save portfolio to localStorage:', e);
     }
-    syncUserPortfolioToServer(portfolio, initialCapital);
+    if (hasInitialSyncedRef.current) {
+      syncUserPortfolioToServer(portfolio, initialCapital);
+    }
   }, [portfolio, initialCapital, syncUserPortfolioToServer]);
 
   // Save notifications to localStorage

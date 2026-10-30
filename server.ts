@@ -14,18 +14,34 @@ app.use(express.json());
 // Initialize Google GenAI
 const ai = new GoogleGenAI();
 
-// Supabase Configuration: read from environment variables
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
+// Supabase Configuration: read from environment variables (supporting standard & alternative aliases)
+const SUPABASE_URL = (
+  process.env.SUPABASE_URL ||
+  process.env.VITE_SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  process.env.SUPABASE_PROJECT_URL ||
+  ''
+).trim().replace(/\/+$/, '');
+
+const SUPABASE_KEY = (
+  process.env.SUPABASE_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_ANON_KEY ||
+  process.env.VITE_SUPABASE_KEY ||
+  process.env.VITE_SUPABASE_ANON_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  ''
+).trim();
+
 let supabase: SupabaseClient | null = null;
 if (SUPABASE_URL && SUPABASE_KEY) {
   try {
     supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
       auth: { persistSession: false },
     });
-    console.log('[Supabase] Initialized Supabase client for cloud portfolio persistence');
+    console.log(`[Supabase] Initialized Supabase client for ${SUPABASE_URL}`);
   } catch (e) {
-    console.warn('[Supabase] Failed to initialize Supabase client:', e);
+    console.error('[Supabase] Failed to initialize Supabase client:', e);
   }
 } else {
   console.log('[Supabase] SUPABASE_URL / SUPABASE_KEY not set. Using local disk & localStorage high-availability fallback.');
@@ -4050,55 +4066,67 @@ async function getUserData(): Promise<{
     let initialCapital = local.initialCapital;
     try {
       const { data: setRes, error: setError } = await supabase.from('user_settings').select('initial_capital').limit(1);
-      if (!setError && setRes && setRes.length > 0 && setRes[0].initial_capital !== undefined) {
+      if (setError) {
+        console.warn('[Supabase] user_settings query note:', setError.message);
+      } else if (setRes && setRes.length > 0 && setRes[0].initial_capital !== undefined) {
         initialCapital = Number(setRes[0].initial_capital) || initialCapital;
       }
-    } catch {}
+    } catch (e: any) {
+      console.warn('[Supabase] Error reading user_settings:', e?.message || e);
+    }
 
     // 2. user_portfolio
     let portfolio = local.portfolio;
     try {
       const { data: pRes, error: pError } = await supabase.from('user_portfolio').select('*');
-      if (!pError && Array.isArray(pRes)) {
+      if (pError) {
+        console.error('[Supabase Error] user_portfolio query error:', pError);
+      } else if (Array.isArray(pRes)) {
         portfolio = pRes.map((r: any) => ({
           id: String(r.id || r.symbol),
           symbol: String(r.symbol),
           name: String(r.name || ''),
-          entryPrice: Number(r.entry_price || 0),
-          sharesLots: Number(r.shares_lots || 1),
-          feeDiscount: Number(r.fee_discount ?? 60),
-          stopLossPrice: Number(r.stop_loss_price || 0),
-          targetPrice: Number(r.target_price || 0),
-          entryDate: String(r.entry_date || ''),
-          strategyType: r.strategy_type || 'momentum',
+          entryPrice: Number(r.entry_price ?? r.entryPrice ?? 0),
+          sharesLots: Number(r.shares_lots ?? r.sharesLots ?? 1),
+          feeDiscount: Number(r.fee_discount ?? r.feeDiscount ?? 60),
+          stopLossPrice: Number(r.stop_loss_price ?? r.stopLossPrice ?? 0),
+          targetPrice: Number(r.target_price ?? r.targetPrice ?? 0),
+          entryDate: String(r.entry_date || r.entryDate || ''),
+          strategyType: r.strategy_type || r.strategyType || 'momentum',
           notes: r.notes || '',
         }));
       }
-    } catch {}
+    } catch (e: any) {
+      console.error('[Supabase Error] user_portfolio query exception:', e?.message || e);
+    }
 
     // 3. trade_history
     let tradeHistory = local.tradeHistory;
     try {
       const { data: tRes, error: tError } = await supabase.from('trade_history').select('*').order('exit_date', { ascending: false });
-      if (!tError && Array.isArray(tRes)) {
+      if (tError) {
+        console.error('[Supabase Error] trade_history query error:', tError);
+      } else if (Array.isArray(tRes)) {
         tradeHistory = tRes.map((r: any) => ({
           id: String(r.id),
           symbol: String(r.symbol),
           name: String(r.name || ''),
-          strategyType: r.strategy_type || 'momentum',
-          entryPrice: Number(r.entry_price || 0),
-          exitPrice: Number(r.exit_price || 0),
-          sharesLots: Number(r.shares_lots || 1),
-          entryDate: String(r.entry_date || ''),
-          exitDate: String(r.exit_date || ''),
-          exitType: r.exit_type || 'MANUAL',
-          realizedPL: Number(r.realized_pl || 0),
-          returnPct: Number(r.return_pct || 0),
-          holdingDays: Number(r.holding_days || 0),
+          strategyType: r.strategy_type || r.strategyType || 'momentum',
+          entryPrice: Number(r.entry_price ?? r.entryPrice ?? 0),
+          exitPrice: Number(r.exit_price ?? r.exitPrice ?? 0),
+          sharesLots: Number(r.shares_lots ?? r.sharesLots ?? 1),
+          entryDate: String(r.entry_date || r.entryDate || ''),
+          exitDate: String(r.exit_date || r.exitDate || ''),
+          exitType: r.exit_type || r.exitType || 'MANUAL',
+          realizedPL: Number(r.realized_pl ?? r.realizedPL ?? 0),
+          returnPct: Number(r.return_pct ?? r.returnPct ?? 0),
+          holdingDays: Number(r.holding_days ?? r.holdingDays ?? 0),
           notes: r.notes || '',
         }));
       }
-    } catch {}
+    } catch (e: any) {
+      console.error('[Supabase Error] trade_history query exception:', e?.message || e);
+    }
 
     // Update local cache
     writeLocalUserStore({ initialCapital, portfolio, tradeHistory });
@@ -4136,69 +4164,123 @@ async function saveUserData(portfolio: any[], initialCapital?: number) {
   };
   writeLocalUserStore(updated);
 
-  if (!supabase) return;
+  if (!supabase) {
+    console.log(`[UserStore] Saved portfolio locally (${portfolio.length} items)`);
+    return;
+  }
 
   try {
     if (typeof initialCapital === 'number') {
-      await supabase.from('user_settings').upsert({
+      const { error: setErr } = await supabase.from('user_settings').upsert({
         id: 'default_user',
         initial_capital: cap,
       });
+      if (setErr) {
+        console.error('[Supabase Error] user_settings upsert error:', setErr);
+      } else {
+        console.log(`[Supabase] Successfully saved initial_capital=${cap} to user_settings`);
+      }
     }
 
     const rows = portfolio.map((item) => ({
       id: String(item.id || item.symbol),
       symbol: String(item.symbol),
       name: String(item.name || ''),
-      entry_price: Number(item.entryPrice || 0),
-      shares_lots: Number(item.sharesLots || 1),
-      fee_discount: Number(item.feeDiscount ?? 60),
-      stop_loss_price: Number(item.stopLossPrice || 0),
-      target_price: Number(item.targetPrice || 0),
-      entry_date: String(item.entryDate || ''),
-      strategy_type: String(item.strategyType || 'momentum'),
+      entry_price: Number(item.entryPrice ?? item.entry_price ?? 0),
+      shares_lots: Number(item.sharesLots ?? item.shares_lots ?? 1),
+      fee_discount: Number(item.feeDiscount ?? item.fee_discount ?? 60),
+      stop_loss_price: Number(item.stopLossPrice ?? item.stop_loss_price ?? 0),
+      target_price: Number(item.targetPrice ?? item.target_price ?? 0),
+      entry_date: String(item.entryDate || item.entry_date || ''),
+      strategy_type: String(item.strategyType || item.strategy_type || 'momentum'),
       notes: String(item.notes || ''),
     }));
 
-    await supabase.from('user_portfolio').delete().neq('id', '___none___');
     if (rows.length > 0) {
-      await supabase.from('user_portfolio').upsert(rows);
+      const { error: upsertErr } = await supabase.from('user_portfolio').upsert(rows);
+      if (upsertErr) {
+        console.error('[Supabase Error] user_portfolio upsert error:', upsertErr);
+      } else {
+        console.log(`[Supabase] Successfully upserted ${rows.length} rows to user_portfolio`);
+      }
+
+      // 清理已不再存在於自選清單中的舊股票
+      const currentIds = rows.map((r) => r.id);
+      const { error: cleanErr } = await supabase
+        .from('user_portfolio')
+        .delete()
+        .not('id', 'in', `(${currentIds.map((id) => `"${id}"`).join(',')})`);
+      if (cleanErr) {
+        console.warn('[Supabase] Warning cleaning removed portfolio items:', cleanErr);
+      }
+    } else {
+      const { error: clearErr } = await supabase.from('user_portfolio').delete().neq('id', '___none___');
+      if (clearErr) {
+        console.error('[Supabase Error] user_portfolio clear error:', clearErr);
+      } else {
+        console.log('[Supabase] Cleared user_portfolio table');
+      }
     }
   } catch (err: any) {
-    console.warn('[Supabase] Error saving user portfolio to Supabase:', err?.message || err);
+    console.error('[Supabase Error] Error saving user portfolio to Supabase:', err?.message || err);
   }
 }
 
 async function addTradeRecord(trade: any) {
   const current = readLocalUserStore();
   const tradeItem = {
-    ...trade,
-    id: trade.id || `trade_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    id: String(trade.id || `trade_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`),
+    symbol: String(trade.symbol),
+    name: String(trade.name || ''),
+    strategyType: trade.strategyType || trade.strategy_type || 'momentum',
+    entryPrice: Number(trade.entryPrice ?? trade.entry_price ?? 0),
+    exitPrice: Number(trade.exitPrice ?? trade.exit_price ?? 0),
+    sharesLots: Number(trade.sharesLots ?? trade.shares_lots ?? 1),
+    entryDate: String(trade.entryDate || trade.entry_date || ''),
+    exitDate: String(trade.exitDate || trade.exit_date || ''),
+    exitType: String(trade.exitType || trade.exit_type || 'MANUAL'),
+    realizedPL: Number(trade.realizedPL ?? trade.realized_pl ?? 0),
+    returnPct: Number(trade.returnPct ?? trade.return_pct ?? 0),
+    holdingDays: Number(trade.holdingDays ?? trade.holding_days ?? 0),
+    notes: String(trade.notes || ''),
   };
-  current.tradeHistory.unshift(tradeItem);
+
+  current.tradeHistory = [tradeItem, ...current.tradeHistory.filter((t) => t.id !== tradeItem.id)];
   writeLocalUserStore(current);
 
-  if (!supabase) return tradeItem;
+  if (!supabase) {
+    console.log(`[UserStore] Saved trade locally for ${tradeItem.symbol}`);
+    return tradeItem;
+  }
 
   try {
-    await supabase.from('trade_history').upsert({
+    const tradeRow = {
       id: tradeItem.id,
-      symbol: String(tradeItem.symbol),
-      name: String(tradeItem.name || ''),
-      strategy_type: String(tradeItem.strategyType || 'momentum'),
-      entry_price: Number(tradeItem.entryPrice || 0),
-      exit_price: Number(tradeItem.exitPrice || 0),
-      shares_lots: Number(tradeItem.sharesLots || 1),
-      entry_date: String(tradeItem.entryDate || ''),
-      exit_date: String(tradeItem.exitDate || ''),
-      exit_type: String(tradeItem.exitType || 'MANUAL'),
-      realized_pl: Number(tradeItem.realizedPL || 0),
-      return_pct: Number(tradeItem.returnPct || 0),
-      holding_days: Number(tradeItem.holdingDays || 0),
-      notes: String(tradeItem.notes || ''),
-    });
+      symbol: tradeItem.symbol,
+      name: tradeItem.name,
+      strategy_type: tradeItem.strategyType,
+      entry_price: tradeItem.entryPrice,
+      exit_price: tradeItem.exitPrice,
+      shares_lots: tradeItem.sharesLots,
+      entry_date: tradeItem.entryDate,
+      exit_date: tradeItem.exitDate,
+      exit_type: tradeItem.exitType,
+      realized_pl: tradeItem.realizedPL,
+      return_pct: tradeItem.returnPct,
+      holding_days: tradeItem.holdingDays,
+      notes: tradeItem.notes,
+    };
+
+    const { error: tradeErr } = await supabase.from('trade_history').upsert(tradeRow);
+    if (tradeErr) {
+      console.error('[Supabase Error] trade_history upsert failed:', tradeErr);
+      throw tradeErr;
+    } else {
+      console.log(`[Supabase] Successfully saved trade ${tradeRow.symbol} (${tradeRow.name}) to trade_history!`);
+    }
   } catch (err: any) {
-    console.warn('[Supabase] Error saving trade to Supabase:', err?.message || err);
+    console.error('[Supabase Error] Error saving trade to Supabase:', err?.message || err);
+    throw err;
   }
   return tradeItem;
 }
@@ -4211,9 +4293,14 @@ async function deleteTradeRecord(id: string) {
   if (!supabase) return;
 
   try {
-    await supabase.from('trade_history').delete().eq('id', id);
+    const { error: delErr } = await supabase.from('trade_history').delete().eq('id', id);
+    if (delErr) {
+      console.error('[Supabase Error] Error deleting trade from Supabase:', delErr);
+    } else {
+      console.log(`[Supabase] Successfully deleted trade ${id} from trade_history`);
+    }
   } catch (err: any) {
-    console.warn('[Supabase] Error deleting trade from Supabase:', err?.message || err);
+    console.error('[Supabase Error] Exception deleting trade from Supabase:', err?.message || err);
   }
 }
 
@@ -4255,7 +4342,82 @@ app.post('/api/user/trades', async (req: Request, res: Response) => {
     return res.json({ success: true, trade: saved });
   } catch (err: any) {
     console.error('Error in POST /api/user/trades:', err);
-    return res.status(500).json({ error: 'Failed to add trade' });
+    return res.status(500).json({ error: 'Failed to add trade', details: err?.message });
+  }
+});
+
+// 批次同步歷史交易日記至 Supabase (解決本機已有紀錄但資料庫為空的問題)
+app.post('/api/user/trades/sync', async (req: Request, res: Response) => {
+  try {
+    const rawTrades = Array.isArray(req.body.trades)
+      ? req.body.trades
+      : Array.isArray(req.body)
+      ? req.body
+      : [];
+
+    if (rawTrades.length === 0) {
+      return res.json({ success: true, count: 0, message: 'No trades provided to sync' });
+    }
+
+    const current = readLocalUserStore();
+    const tradeMap = new Map<string, any>();
+    for (const t of current.tradeHistory) {
+      if (t.id) tradeMap.set(t.id, t);
+    }
+    for (const t of rawTrades) {
+      const id = t.id || `trade_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      tradeMap.set(id, {
+        id,
+        symbol: String(t.symbol),
+        name: String(t.name || ''),
+        strategyType: t.strategyType || t.strategy_type || 'momentum',
+        entryPrice: Number(t.entryPrice ?? t.entry_price ?? 0),
+        exitPrice: Number(t.exitPrice ?? t.exit_price ?? 0),
+        sharesLots: Number(t.sharesLots ?? t.shares_lots ?? 1),
+        entryDate: String(t.entryDate || t.entry_date || ''),
+        exitDate: String(t.exitDate || t.exit_date || ''),
+        exitType: String(t.exitType || t.exit_type || 'MANUAL'),
+        realizedPL: Number(t.realizedPL ?? t.realized_pl ?? 0),
+        returnPct: Number(t.returnPct ?? t.return_pct ?? 0),
+        holdingDays: Number(t.holdingDays ?? t.holding_days ?? 0),
+        notes: String(t.notes || ''),
+      });
+    }
+
+    current.tradeHistory = Array.from(tradeMap.values());
+    writeLocalUserStore(current);
+
+    if (supabase) {
+      const rows = current.tradeHistory.map((t: any) => ({
+        id: String(t.id),
+        symbol: String(t.symbol),
+        name: String(t.name || ''),
+        strategy_type: String(t.strategyType || t.strategy_type || 'momentum'),
+        entry_price: Number(t.entryPrice ?? t.entry_price ?? 0),
+        exit_price: Number(t.exitPrice ?? t.exit_price ?? 0),
+        shares_lots: Number(t.sharesLots ?? t.shares_lots ?? 1),
+        entry_date: String(t.entryDate || t.entry_date || ''),
+        exit_date: String(t.exitDate || t.exit_date || ''),
+        exit_type: String(t.exitType || t.exit_type || 'MANUAL'),
+        realized_pl: Number(t.realizedPL ?? t.realized_pl ?? 0),
+        return_pct: Number(t.returnPct ?? t.return_pct ?? 0),
+        holding_days: Number(t.holdingDays ?? t.holding_days ?? 0),
+        notes: String(t.notes || ''),
+      }));
+
+      const { error: bulkErr } = await supabase.from('trade_history').upsert(rows);
+      if (bulkErr) {
+        console.error('[Supabase Error] Bulk sync trade_history error:', bulkErr);
+        return res.status(500).json({ error: 'Supabase sync failed', details: bulkErr.message });
+      } else {
+        console.log(`[Supabase] Successfully bulk synced ${rows.length} trades to trade_history!`);
+      }
+    }
+
+    return res.json({ success: true, count: current.tradeHistory.length });
+  } catch (err: any) {
+    console.error('Error in POST /api/user/trades/sync:', err);
+    return res.status(500).json({ error: 'Failed to bulk sync trades', message: err?.message });
   }
 });
 
@@ -4847,6 +5009,20 @@ app.get('/api/health', (_req: Request, res: Response) => {
 async function startServer() {
   // 啟動時一次性健全全台股字典映射（上市與上櫃股票中文名稱與真實產業類別）
   initTaiwanStockInfo().catch((e) => console.error('[StockInfo] Init error:', e));
+
+  // 啟動時驗證 Supabase 資料庫連線狀態
+  if (supabase) {
+    try {
+      const { data, error } = await supabase.from('user_settings').select('initial_capital').limit(1);
+      if (error) {
+        console.warn('[Supabase Connection Test] Connected, query note:', error.message);
+      } else {
+        console.log('[Supabase Connection Test] ✅ Successfully connected and verified with Supabase cloud database!');
+      }
+    } catch (err: any) {
+      console.warn('[Supabase Connection Test] Exception testing Supabase:', err?.message || err);
+    }
+  }
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

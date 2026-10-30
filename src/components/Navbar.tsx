@@ -54,7 +54,7 @@ export function Navbar({
                   台股量化波段雷達
                 </span>
                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 font-bold flex-shrink-0">
-                  v2.6.1
+                  v2.6.2
                 </span>
                 <span className="hidden xl:inline-block text-[10px] px-2 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 font-semibold whitespace-nowrap">
                   全市場投信連買 × 價值轉型
