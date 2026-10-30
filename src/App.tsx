@@ -213,8 +213,8 @@ export default function App() {
   const [auditSymbol, setAuditSymbol] = useState<string | null>(null);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
 
-  const handleOpenStrategyAudit = (symbol: string) => {
-    setAuditSymbol(symbol);
+  const handleOpenStrategyAudit = (symbol?: string) => {
+    setAuditSymbol(typeof symbol === 'string' && symbol.trim().length > 0 ? symbol.trim() : null);
     setIsAuditModalOpen(true);
   };
 
@@ -2728,14 +2728,14 @@ export default function App() {
       {/* ========================================================================= */}
       {/* 個股量化雙策略體檢對話框 (Stock Strategy Audit Modal)                     */}
       {/* ========================================================================= */}
-      {auditSymbol && (
+      {isAuditModalOpen && (
         <StockStrategyAuditModal
           symbol={auditSymbol}
           isOpen={isAuditModalOpen}
           onClose={handleCloseStrategyAudit}
           onOpenStockDetail={handleOpenStockDetail}
           onAddToPortfolio={handleAddStockBySymbol}
-          isInPortfolio={portfolio.some((p) => p.symbol === auditSymbol)}
+          isInPortfolio={auditSymbol ? portfolio.some((p) => p.symbol === auditSymbol) : false}
         />
       )}
     </div>

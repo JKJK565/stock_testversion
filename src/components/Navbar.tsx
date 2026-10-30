@@ -19,7 +19,7 @@ interface NavbarProps {
   alertWatchlistCount: number;
   onToggleNotificationCenter: () => void;
   isNotificationCenterOpen: boolean;
-  onOpenStrategyAudit?: (symbol: string) => void;
+  onOpenStrategyAudit?: () => void;
 }
 
 export function Navbar({
@@ -54,7 +54,7 @@ export function Navbar({
                   台股量化波段雷達
                 </span>
                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 font-bold flex-shrink-0">
-                  v2.7.0
+                  v2.7.1
                 </span>
                 <span className="hidden xl:inline-block text-[10px] px-2 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 font-semibold whitespace-nowrap">
                   全市場投信連買 × 價值轉型
@@ -124,11 +124,11 @@ export function Navbar({
           <div className="flex items-center gap-2 flex-shrink-0">
             {/* 🔍 個股健檢快捷按鈕 (桌機圖示+文字，手機只顯示放大鏡圖示) */}
             <button
-              onClick={() => onOpenStrategyAudit?.('')}
+              onClick={onOpenStrategyAudit}
               className="px-2.5 sm:px-3.5 py-2 rounded-xl bg-indigo-600/25 hover:bg-indigo-600 border border-indigo-500/40 text-indigo-300 hover:text-white text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
-              title="輸入台股 4 碼代號開啟雙策略量化健檢"
+              title="輸入台股 4 碼代號進行全維度量化策略健檢"
             >
-              <Search className="w-4 h-4 text-indigo-400 group-hover:text-white flex-shrink-0" />
+              <Search className="w-4 h-4" />
               <span className="hidden sm:inline">個股健檢</span>
             </button>
 
