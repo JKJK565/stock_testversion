@@ -2,20 +2,21 @@
   "initialCapital": 1000000,
   "portfolio": [
     {
-      "id": "3006-1793262239178",
-      "symbol": "3006",
-      "name": "晶豪科",
-      "entryPrice": 282.5,
-      "currentPrice": 277,
-      "change": -5.5,
-      "changePercent": -1.95,
+      "id": "2308-1793344044050",
+      "symbol": "2308",
+      "name": "台達電",
+      "entryPrice": 1335,
       "sharesLots": 1,
-      "stopLossPrice": 260.6,
-      "targetPrice": 353.13,
-      "entryDate": "2026-10-29",
-      "updateTime": "13:30:00",
-      "notes": "【自選加入】電子工業",
-      "strategyType": "momentum"
+      "feeDiscount": 60,
+      "stopLossPrice": 1268.25,
+      "targetPrice": 1668.75,
+      "entryDate": "2026-10-30",
+      "strategyType": "momentum",
+      "notes": "【自選加入】AI硬體周邊 (散熱/機殼/滑軌/電源)",
+      "currentPrice": 1270,
+      "change": -85,
+      "changePercent": -6.27,
+      "updateTime": "13:30:00"
     }
   ],
   "tradeHistory": []
