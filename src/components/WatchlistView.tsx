@@ -113,11 +113,11 @@ export function WatchlistView({
   const handleQuickAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanSymbol = quickSymbol.trim();
-    if (!/^[1-9][0-9]{3}$/.test(cleanSymbol)) {
-      setAddError('請輸入正確的 4 碼台股代號 (如 2330)');
+    if (!cleanSymbol) {
+      setAddError('請輸入台股代號、股票名稱或常見英文 (例: 2330、台積電、TSMC)');
       return;
     }
-    if (portfolio.some((p) => p.symbol === cleanSymbol)) {
+    if (portfolio.some((p) => p.symbol === cleanSymbol || p.name === cleanSymbol)) {
       setAddError(`股票 ${cleanSymbol} 已在自選清單中`);
       return;
     }
@@ -129,7 +129,7 @@ export function WatchlistView({
       if (success) {
         setQuickSymbol('');
       } else {
-        setAddError(`查無股票 ${cleanSymbol} 之即時報價，請確認代碼`);
+        setAddError(`查無對應之台股代號或名稱「${cleanSymbol}」，請確認後重試`);
       }
     }
   };
@@ -711,9 +711,8 @@ export function WatchlistView({
               type="text"
               value={quickSymbol}
               onChange={(e) => setQuickSymbol(e.target.value)}
-              placeholder="快速加入代號 (例: 2330)"
-              maxLength={4}
-              className="w-48 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 font-mono focus:border-amber-500 focus:outline-none"
+              placeholder="輸入代號或名稱 (例: 2330、台積電、TSMC)"
+              className="w-60 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 font-sans focus:border-amber-500 focus:outline-none"
             />
             <button
               type="submit"

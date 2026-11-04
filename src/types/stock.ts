@@ -91,6 +91,29 @@ export interface ScreenerStockItem {
   riskRewardRatio: number;
   actionNote: string;
   updateTime?: string; // 即時撮合時間
+  // 量化買入評分系統 (0 ~ 100分)
+  buyRatingScore?: number;
+  buyRatingLevel?: 'STRONG_BUY' | 'BUY' | 'ACCUMULATE' | 'HOLD_WATCH';
+  buyRatingLabel?: string;
+  buyRatingStars?: string;
+  buyRatingBreakdown?: BuyRatingBreakdown;
+  // 進場戰術類型與說明
+  entryTactic?: EntryTactic;
+  entryTacticLabel?: string;
+  entryActionNote?: string;
+}
+
+export type EntryTactic = 'PULLBACK_BUY' | 'BREAKOUT_BUY' | 'WAIT_PULLBACK';
+
+export interface BuyRatingBreakdown {
+  chip: number;
+  chipMax: number; // 35
+  tech: number;
+  techMax: number; // 30
+  safety: number;
+  safetyMax: number; // 20
+  momentum: number;
+  momentumMax: number; // 15
 }
 
 export type ScreenerMode = 'intraday' | 'after_hours';
@@ -134,12 +157,24 @@ export interface TurnaroundStockItem {
   isTurnaroundMatched: boolean; // 同時符合四大條件
   catalyst: string; // 轉型爆發題材說明
   stopLossPrice: number; // 建議防守價 (跌破年最低點出場)
+  targetPrice?: number; // 潛在獲利目標價
+  suggestedEntryPrice?: number; // 建議低接/進場價
   actionNote: string;
   atr20?: number; // 20日平均真實波動度
   atrPct?: number; // 20日 ATR 波動度百分比 % (必須 >= 1.8%)
   volumeAvg5d?: number; // 5日平均成交量 (必須 > 1,000張)
   industryTheme?: string; // 聚焦產業白名單主題
   isPriorityWhiteList?: boolean; // 符合優先聚焦產業白名單
+  // 量化買入評分系統 (0 ~ 100分)
+  buyRatingScore?: number;
+  buyRatingLevel?: 'STRONG_BUY' | 'BUY' | 'ACCUMULATE' | 'HOLD_WATCH';
+  buyRatingLabel?: string;
+  buyRatingStars?: string;
+  buyRatingBreakdown?: BuyRatingBreakdown;
+  // 進場戰術類型與說明
+  entryTactic?: EntryTactic;
+  entryTacticLabel?: string;
+  entryActionNote?: string;
 }
 
 export interface TurnaroundScreenerResponse {

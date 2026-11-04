@@ -12,6 +12,8 @@ import {
   NotificationItem,
   WatchlistBriefingResponse,
   WatchlistStockDiagnostic,
+  EntryTactic,
+  BuyRatingBreakdown,
 } from './types/stock';
 import {
   fetchMarketOverview,
@@ -144,6 +146,46 @@ function MarkdownRenderer({ content }: { content: string }) {
           />
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * 🎯 客觀量化買入評分徽章組件 (0 ~ 100分，含四維度拆解提示)
+ */
+function renderBuyRatingBadge(score: number = 70, stars: string = '⭐', breakdown?: BuyRatingBreakdown) {
+  let containerClass = 'border-slate-800 bg-slate-950/80 text-slate-300';
+  let badgeGlow = '';
+  if (score >= 90) {
+    containerClass = 'bg-gradient-to-r from-purple-950/60 via-amber-950/40 to-slate-950 border-amber-500/60 text-amber-200 ring-1 ring-amber-500/30 shadow-md shadow-amber-500/10';
+    badgeGlow = 'animate-pulse text-amber-300';
+  } else if (score >= 80) {
+    containerClass = 'bg-gradient-to-r from-emerald-950/60 to-slate-950 border-emerald-500/60 text-emerald-300 ring-1 ring-emerald-500/30 shadow-sm';
+  } else if (score >= 70) {
+    containerClass = 'bg-gradient-to-r from-amber-950/50 to-slate-950 border-amber-500/50 text-amber-300 ring-1 ring-amber-500/20';
+  }
+
+  return (
+    <div className={`px-3.5 py-2.5 rounded-2xl border flex flex-col w-full transition-all ${containerClass}`}>
+      <div className="flex items-center justify-between text-xs font-black whitespace-nowrap w-full">
+        <span className="flex items-center gap-1.5">
+          <span>🎯 買入評分</span>
+          <strong className="text-sm font-black text-white">{score}</strong>
+          <span>分</span>
+        </span>
+        <span className={`text-xs tracking-tight ${badgeGlow}`}>{stars}</span>
+      </div>
+      {breakdown && (
+        <div className="text-[11px] text-slate-400 font-mono mt-1.5 pt-1.5 border-t border-slate-800/80 flex items-center justify-between gap-1 w-full overflow-x-auto whitespace-nowrap">
+          <span>籌碼 <strong className="text-slate-200 font-bold">{breakdown.chip}</strong>/35</span>
+          <span className="text-slate-600">｜</span>
+          <span>技術 <strong className="text-slate-200 font-bold">{breakdown.tech}</strong>/30</span>
+          <span className="text-slate-600">｜</span>
+          <span>安全 <strong className="text-slate-200 font-bold">{breakdown.safety}</strong>/20</span>
+          <span className="text-slate-600">｜</span>
+          <span>動能 <strong className="text-slate-200 font-bold">{breakdown.momentum}</strong>/15</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -818,12 +860,16 @@ export default function App() {
     return () => clearInterval(timer);
   }, [portfolio.length, activeModule, refreshWatchlistQuotes]);
 
-  // 手動輸入台股 4 碼代號新增自選股
-  const handleAddStockBySymbol = async (symbol: string): Promise<boolean> => {
+  // 手動輸入台股代號、中文或常見英文新增自選股
+  const handleAddStockBySymbol = async (inputQuery: string): Promise<boolean> => {
     try {
-      const quotes = await fetchBatchQuotes([symbol]);
-      const q = quotes.find((item) => item.symbol === symbol);
-      if (!q || q.price <= 0) return false;
+      const clean = inputQuery.trim();
+      if (!clean) return false;
+
+      const quotes = await fetchBatchQuotes([clean]);
+      if (quotes.length === 0 || quotes[0].price <= 0) return false;
+      const q = quotes[0];
+      const symbol = q.symbol;
 
       const newItem: PortfolioStockItem = {
         id: `${symbol}-${Date.now()}`,
@@ -869,15 +915,15 @@ export default function App() {
     // 嚴格剔除產業黑名單
     list = list.filter((s) => !isBlacklisted(s.symbol, s.name));
 
-    // 依產業白名單篩選
+    // 修正 3：採用雙層業務特徵詞動態匹配產業白名單（排除記憶體對 CoWoS 的污染）
     if (selectedIndustryFilter !== 'all') {
       list = list.filter((s) => {
         const theme = `${s.industryTheme || ''} ${s.industry || ''} ${s.name}`;
-        if (selectedIndustryFilter === 'ai') return /AI|散熱|機殼|滑軌|電源|伺服器|技嘉|奇鋐|雙鴻|廣達|緯創|健策|勤誠|晟銘電|川湖|台達電|光寶科/.test(theme);
-        if (selectedIndustryFilter === 'cowos') return /CoWoS|半導體|封裝|封測|載板|設備|弘塑|辛耘|萬潤|欣興|矽格|台表科|台燿|京元電|日月光|南電/.test(theme);
-        if (selectedIndustryFilter === 'cpo') return /CPO|矽光子|光通訊|光聖|聯鈞|眾達|波若威|華星光|上詮|聯亞|前鼎|訊芯/.test(theme);
-        if (selectedIndustryFilter === 'power') return /重電|電網|儲能|綠能|風電|變壓器|華城|中興電|士電|東元|上緯|大亞|華新|世紀鋼|雲豹/.test(theme);
-        if (selectedIndustryFilter === 'turnaround') return /轉型|高值化|循環材料|車電|脫離谷底|南亞|台塑|遠東新|仁寶|智易|裕隆|正新|宏碁|美利達|長榮/.test(theme);
+        if (selectedIndustryFilter === 'ai') return /伺服器|散熱|水冷|機殼|滑軌|導軌|伺服器電源|高階交換器|CCL|銅箔基板|AI晶片/i.test(theme);
+        if (selectedIndustryFilter === 'cowos') return /先進封裝|CoWoS|半導體設備|晶圓設備|封裝設備|IC載板|ABF|晶圓測試|探針卡/i.test(theme) && !/記憶體|DRAM|Flash|快閃/i.test(theme);
+        if (selectedIndustryFilter === 'cpo') return /矽光子|CPO|光收發|光通訊|光模組|光纖|雷射晶片|光主動元件/i.test(theme);
+        if (selectedIndustryFilter === 'power') return /重電|變壓器|配電盤|高壓線纜|電線電纜|儲能|綠能|離岸風電|太陽能電廠/i.test(theme);
+        if (selectedIndustryFilter === 'turnaround') return /高值化|循環材料|車用電子轉型|營運轉機|脫離谷底|塑化轉型/i.test(theme);
         return true;
       });
     }
@@ -891,7 +937,8 @@ export default function App() {
           s.industry.toLowerCase().includes(q)
       );
     }
-    return list;
+    // 預設依建議買入評分 (0 ~ 100分) 由大到小排序
+    return [...list].sort((a, b) => (b.buyRatingScore ?? 0) - (a.buyRatingScore ?? 0));
   }, [screenerData, screenerTab, searchQuery, selectedIndustryFilter, isBlacklisted]);
 
   // Filtered Turnaround stocks
@@ -905,15 +952,18 @@ export default function App() {
     // 嚴格剔除產業黑名單
     list = list.filter((s) => !isBlacklisted(s.symbol, s.name));
 
-    // 依產業白名單篩選
+    // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」且 5 日均量需 >= 1000 張
+    list = list.filter((s) => (s.buyRatingScore ?? 0) >= 50 && (s.volumeAvg5d ?? 0) >= 1000);
+
+    // 修正 3：採用雙層業務特徵詞動態匹配產業白名單（排除記憶體對 CoWoS 的污染）
     if (selectedIndustryFilter !== 'all') {
       list = list.filter((s) => {
         const theme = `${s.industryTheme || ''} ${s.industry || ''} ${s.catalyst || ''} ${s.name}`;
-        if (selectedIndustryFilter === 'ai') return /AI|散熱|機殼|滑軌|電源|伺服器|仁寶|宏碁|光寶科|勤誠/.test(theme);
-        if (selectedIndustryFilter === 'cowos') return /CoWoS|半導體|封裝|封測|載板|設備|欣興|南電/.test(theme);
-        if (selectedIndustryFilter === 'cpo') return /CPO|矽光子|光通訊|智易|網通/.test(theme);
-        if (selectedIndustryFilter === 'power') return /重電|電網|儲能|綠能|風電|變壓器|東元|上緯|華新/.test(theme);
-        if (selectedIndustryFilter === 'turnaround') return /轉型|高值化|循環材料|車電|脫離谷底|南亞|遠東新|美利達|正新|裕隆|寶成/.test(theme);
+        if (selectedIndustryFilter === 'ai') return /伺服器|散熱|水冷|機殼|滑軌|導軌|伺服器電源|高階交換器|CCL|銅箔基板|AI晶片/i.test(theme);
+        if (selectedIndustryFilter === 'cowos') return /先進封裝|CoWoS|半導體設備|晶圓設備|封裝設備|IC載板|ABF|晶圓測試|探針卡/i.test(theme) && !/記憶體|DRAM|Flash|快閃/i.test(theme);
+        if (selectedIndustryFilter === 'cpo') return /矽光子|CPO|光收發|光通訊|光模組|光纖|雷射晶片|光主動元件/i.test(theme);
+        if (selectedIndustryFilter === 'power') return /重電|變壓器|配電盤|高壓線纜|電線電纜|儲能|綠能|離岸風電|太陽能電廠/i.test(theme);
+        if (selectedIndustryFilter === 'turnaround') return /高值化|循環材料|車用電子轉型|營運轉機|脫離谷底|塑化轉型/i.test(theme);
         return true;
       });
     }
@@ -928,7 +978,8 @@ export default function App() {
           s.catalyst.toLowerCase().includes(q)
       );
     }
-    return list;
+    // 預設依建議買入評分 (0 ~ 100分) 由大到小排序
+    return [...list].sort((a, b) => (b.buyRatingScore ?? 0) - (a.buyRatingScore ?? 0));
   }, [turnaroundData, screenerTab, searchQuery, selectedIndustryFilter, isBlacklisted]);
 
   // Portfolio items enriched with live current price & 4 health evaluation conditions
@@ -1905,7 +1956,7 @@ export default function App() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {[
-                    { id: 'all', label: '全部白名單標的', icon: Sparkles },
+                    { id: 'all', label: '✨ 全部產業標的 (不限主題)', icon: Sparkles },
                     { id: 'ai', label: 'AI 硬體周邊', icon: Cpu },
                     { id: 'cowos', label: '半導體設備與 CoWoS', icon: Layers },
                     { id: 'cpo', label: 'CPO 矽光子與光通訊', icon: Zap },
@@ -2012,7 +2063,7 @@ export default function App() {
             {strategyMode === 'momentum' && (
               <div>
                 {isScreenerLoading && !screenerData ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 lg:gap-5">
                     {[1, 2, 3, 4].map((i) => (
                       <div
                         key={i}
@@ -2033,7 +2084,7 @@ export default function App() {
                     </p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 lg:gap-5">
                     {displayedMomentumStocks.map((stock) => {
                       const inPortfolio = portfolio.some((p) => p.symbol === stock.symbol);
 
@@ -2049,55 +2100,50 @@ export default function App() {
                           }`}
                         >
                           <div>
-                            {/* Card Header */}
-                            <div className="flex items-start justify-between">
-                              <div>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <button
-                                    onClick={() => handleOpenStockDetail(stock.symbol)}
-                                    className="text-xl font-extrabold text-white hover:text-rose-400 transition cursor-pointer text-left"
-                                    title="查看此股最近 5 日主力分點券商買賣超金額"
-                                  >
-                                    {stock.name}
-                                  </button>
-                                  <button
-                                    onClick={() => handleOpenStockDetail(stock.symbol)}
-                                    className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 transition cursor-pointer"
-                                    title="查看此股最近 5 日主力分點券商買賣超金額"
-                                  >
-                                    {stock.symbol}
-                                  </button>
-                                  {stock.isIntradaySignal ? (
-                                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 font-bold flex items-center gap-1.5 shadow-sm">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                                      🟢 盤中即時進場訊號
-                                    </span>
-                                  ) : stock.isMatched ? (
-                                    <span className="text-xs px-2 py-0.5 rounded bg-rose-500/10 border border-rose-500/30 text-rose-400 font-medium">
-                                      {screenerData?.mode === 'intraday' ? '動能蓄勢' : '🔵 盤後精選觀察'}
-                                    </span>
-                                  ) : (
-                                    <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-medium">
-                                      波段認養池
-                                    </span>
-                                  )}
-                                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-300 font-semibold flex items-center gap-1">
-                                    <Sparkles className="w-3 h-3 text-rose-400" />
-                                    {stock.industryTheme || stock.industry}
+                            {/* Card Header: 3-Tier Vertical Structure */}
+                            {/* Block 1: Basic Identity (Left) & Real-time Price (Right) */}
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 min-w-0">
+                                <button
+                                  onClick={() => handleOpenStockDetail(stock.symbol)}
+                                  className="text-xl font-black text-white hover:text-rose-400 transition cursor-pointer text-left whitespace-nowrap"
+                                  title="查看此股最近 5 日主力分點券商買賣超金額"
+                                >
+                                  {stock.name}
+                                </button>
+                                <button
+                                  onClick={() => handleOpenStockDetail(stock.symbol)}
+                                  className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 transition cursor-pointer flex-shrink-0"
+                                  title="查看此股最近 5 日主力分點券商買賣超金額"
+                                >
+                                  {stock.symbol}
+                                </button>
+                                {stock.isIntradaySignal ? (
+                                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 font-bold flex items-center gap-1.5 shadow-sm whitespace-nowrap flex-shrink-0">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                                    🟢 盤中進場
                                   </span>
-                                </div>
-                                <div className="text-xs text-slate-400 mt-1">
-                                  5MA ${stock.ma5.toFixed(1)} / 10MA ${stock.ma10.toFixed(1)} / 20MA
-                                  ${stock.ma20.toFixed(1)}
-                                </div>
+                                ) : stock.isMatched ? (
+                                  <span className="text-xs px-2 py-0.5 rounded bg-rose-500/10 border border-rose-500/30 text-rose-400 font-medium whitespace-nowrap flex-shrink-0">
+                                    {screenerData?.mode === 'intraday' ? '動能蓄勢' : '🔵 盤後精選'}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-medium whitespace-nowrap flex-shrink-0">
+                                    波段認養池
+                                  </span>
+                                )}
+                                <span className="text-xs px-2.5 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-300 font-semibold flex items-center gap-1 whitespace-nowrap flex-shrink-0">
+                                  <Sparkles className="w-3 h-3 text-rose-400 flex-shrink-0" />
+                                  <span>{stock.industryTheme || stock.industry}</span>
+                                </span>
                               </div>
 
-                              <div className="text-right">
-                                <div className="text-2xl font-black text-white">
+                              <div className="text-right flex-shrink-0 pr-1">
+                                <div className="text-2xl font-black text-white whitespace-nowrap">
                                   ${stock.price.toFixed(2)}
                                 </div>
                                 <div
-                                  className={`text-xs font-bold flex items-center justify-end ${
+                                  className={`text-xs sm:text-sm font-bold flex items-center justify-end whitespace-nowrap ${
                                     stock.change >= 0 ? 'text-rose-400' : 'text-emerald-400'
                                   }`}
                                 >
@@ -2109,8 +2155,18 @@ export default function App() {
                               </div>
                             </div>
 
+                            {/* Block 2: Buy Rating Badge Full Row */}
+                            <div className="mt-3 w-full">
+                              {renderBuyRatingBadge(stock.buyRatingScore, stock.buyRatingStars, stock.buyRatingBreakdown)}
+                            </div>
+
+                            {/* Block 3: Moving Averages Horizontal Display */}
+                            <div className="mt-2 text-xs text-slate-400">
+                              5MA ${stock.ma5.toFixed(1)}  /  10MA ${stock.ma10.toFixed(1)}  /  20MA ${stock.ma20.toFixed(1)}
+                            </div>
+
                             {/* Quant Indicators Row (5 Dimensions) */}
-                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mt-4 text-center">
+                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mt-3.5 text-center">
                               <div
                                 className={`p-2.5 rounded-xl border text-xs ${
                                   stock.isBullishMa
@@ -2120,8 +2176,8 @@ export default function App() {
                                     : 'bg-slate-950 border-slate-800 text-slate-400'
                                 }`}
                               >
-                                <div className="text-[10px] text-slate-500 mb-0.5">均線排列</div>
-                                <div className="font-bold">
+                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">均線排列</div>
+                                <div className="font-bold truncate">
                                   {stock.isBullishMa ? '5>10>20 多頭排列' : '整理未發散'}
                                 </div>
                               </div>
@@ -2135,10 +2191,10 @@ export default function App() {
                                     : 'bg-slate-950 border-slate-800 text-slate-400'
                                 }`}
                               >
-                                <div className="text-[10px] text-slate-500 mb-0.5">
+                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">
                                   {screenerData?.mode === 'intraday' ? '預估全天成交量' : '量能攻擊'}
                                 </div>
-                                <div className="font-bold">
+                                <div className="font-bold truncate">
                                   {screenerData?.mode === 'intraday' && stock.estVolume ? (
                                     <>
                                       {stock.estVolume.toLocaleString()} 張
@@ -2162,14 +2218,14 @@ export default function App() {
                                     : 'bg-slate-950 border-slate-800 text-slate-400'
                                 }`}
                               >
-                                <div className="text-[10px] text-slate-500 mb-0.5">投信籌碼</div>
-                                <div className="font-bold flex items-center justify-between">
-                                  <span>
+                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">投信籌碼</div>
+                                <div className="font-bold flex items-center justify-between truncate">
+                                  <span className="truncate">
                                     {stock.consecutiveTrustDays > 0
                                       ? `連 ${stock.consecutiveTrustDays} 日買超`
                                       : '今日買超'}
                                   </span>
-                                  <span className="font-mono text-rose-400 font-extrabold ml-1">
+                                  <span className="font-mono text-rose-400 font-extrabold ml-1 flex-shrink-0">
                                     {stock.trustNetLots > 0 ? '+' : ''}
                                     {stock.trustNetLots.toLocaleString()} 張
                                   </span>
@@ -2178,19 +2234,21 @@ export default function App() {
 
                               {/* 20日 ATR% 波動度 */}
                               <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
-                                <div className="text-[10px] text-slate-500 mb-0.5">20日 ATR% 波動度</div>
-                                <div className="font-bold text-emerald-400">
+                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">20日 ATR% 波動度</div>
+                                <div className="font-bold text-emerald-400 truncate">
                                   {stock.atrPct ? `${stock.atrPct}%` : '≥2.5%'}
-                                  <span className="text-[10px] text-emerald-500 font-normal ml-1">≥2.5% 達標 (高動能波段股)</span>
+                                  <span className="text-[10px] text-emerald-500 font-normal ml-1">≥2.5% 達標</span>
                                 </div>
                               </div>
 
                               {/* 5日均量流動性 */}
-                              <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300 col-span-2 sm:col-span-1">
-                                <div className="text-[10px] text-slate-500 mb-0.5">5日均量流動性</div>
-                                <div className="font-bold text-sky-400">
-                                  {stock.volumeAvg5d ? `${stock.volumeAvg5d.toLocaleString()} 張` : '>1,000張'}
-                                  <span className="text-[10px] text-sky-500 font-normal ml-1">&gt;1,000張達標</span>
+                              <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
+                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">5日均量流動性</div>
+                                <div className="font-bold text-sky-400 truncate">
+                                  {stock.volumeAvg5d ? `${stock.volumeAvg5d.toLocaleString()} 張` : '-'}
+                                  <span className={`text-[10px] font-normal ml-1 ${(stock.volumeAvg5d ?? 0) >= 1000 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {(stock.volumeAvg5d ?? 0) >= 1000 ? '≥1,000張達標' : '未達標 (不足千張)'}
+                                  </span>
                                 </div>
                               </div>
                             </div>
@@ -2294,18 +2352,33 @@ export default function App() {
                               </div>
                             </div>
 
-                            {/* Quant Anchors */}
+                            {/* Quant Anchors (動態戰術即時進場點) */}
                             <div
-                              className={`mt-3.5 p-3.5 rounded-2xl border space-y-2 ${
+                              className={`mt-3.5 p-3.5 rounded-2xl border space-y-2.5 ${
                                 stock.isIntradaySignal
                                   ? 'bg-slate-950/90 border-emerald-500/40'
                                   : 'bg-slate-950/80 border-slate-800/80'
                               }`}
                             >
-                              <div className="text-[11px] font-semibold flex items-center justify-between">
-                                <span className={stock.isIntradaySignal ? 'text-emerald-300 font-bold' : 'text-slate-400'}>
-                                  {stock.isIntradaySignal ? '🟢 盤中即時進場錨定 (盈虧比 1:2)' : '波段量化錨定 (盈虧比 1:2)'}
-                                </span>
+                              <div className="text-[11px] font-semibold flex flex-wrap items-center justify-between gap-1.5">
+                                <div className="flex items-center gap-2">
+                                  <span className={stock.isIntradaySignal ? 'text-emerald-300 font-bold' : 'text-slate-300 font-bold'}>
+                                    {stock.isIntradaySignal ? '🟢 盤中即時進場錨定' : '波段量化錨定 (盈虧比 1:2)'}
+                                  </span>
+                                  {stock.entryTacticLabel && (
+                                    <span
+                                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                        stock.entryTactic === 'BREAKOUT_BUY'
+                                          ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                                          : stock.entryTactic === 'WAIT_PULLBACK'
+                                          ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                                          : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                                      }`}
+                                    >
+                                      {stock.entryTacticLabel}
+                                    </span>
+                                  )}
+                                </div>
                                 <span className="text-slate-500 font-mono text-[10px]">
                                   當周低點 ${stock.weeklyLow.toFixed(1)}
                                 </span>
@@ -2314,14 +2387,22 @@ export default function App() {
                               <div className="grid grid-cols-3 gap-2 text-center text-xs">
                                 <div
                                   className={`p-2 rounded-xl border ${
-                                    stock.isIntradaySignal
-                                      ? 'bg-emerald-950/50 border-emerald-500/50 text-emerald-200'
-                                      : 'bg-slate-900 border-slate-800 text-slate-200'
+                                    stock.entryTactic === 'BREAKOUT_BUY'
+                                      ? 'bg-rose-950/40 border-rose-500/50 text-rose-200'
+                                      : stock.entryTactic === 'WAIT_PULLBACK'
+                                      ? 'bg-amber-950/40 border-amber-500/50 text-amber-200'
+                                      : 'bg-emerald-950/40 border-emerald-500/50 text-emerald-200'
                                   }`}
                                 >
-                                  <div className="text-[10px] text-emerald-400 font-medium">即時進場點</div>
+                                  <div className="text-[10px] font-medium text-slate-300">
+                                    {stock.entryTactic === 'BREAKOUT_BUY'
+                                      ? '🎯 突破確認價'
+                                      : stock.entryTactic === 'WAIT_PULLBACK'
+                                      ? '⚠️ 建議回檔價 (5MA)'
+                                      : '⏳ 建議低接價 (5MA/20MA)'}
+                                  </div>
                                   <div className="font-extrabold text-base text-white mt-0.5">
-                                    ${stock.suggestedEntryPrice.toFixed(1)}
+                                    ${(stock.suggestedEntryPrice ?? stock.price).toFixed(1)}
                                   </div>
                                 </div>
 
@@ -2332,15 +2413,22 @@ export default function App() {
                                   </div>
                                 </div>
 
-                                <div className="p-2 rounded-xl bg-rose-950/40 border border-rose-900/60">
-                                  <div className="text-[10px] text-rose-400 font-medium">目標獲利價</div>
-                                  <div className="font-extrabold text-base text-rose-300 mt-0.5">
-                                    ${stock.targetPrice.toFixed(1)}
+                                <div className="p-2 rounded-xl bg-purple-950/40 border border-purple-900/60">
+                                  <div className="text-[10px] text-purple-400 font-medium">目標獲利價</div>
+                                  <div className="font-extrabold text-base text-purple-300 mt-0.5">
+                                    ${(stock.targetPrice ?? Number((stock.price * 1.15).toFixed(1))).toFixed(1)}
                                   </div>
                                 </div>
                               </div>
 
-                              <div className="text-[11px] text-slate-400 pt-1 flex items-center justify-between">
+                              {stock.entryActionNote && (
+                                <div className="text-[11px] text-indigo-300/90 bg-indigo-950/30 border border-indigo-900/40 rounded-xl px-2.5 py-1.5 flex items-start gap-1.5">
+                                  <Sparkles className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0 mt-0.5" />
+                                  <span>{stock.entryActionNote}</span>
+                                </div>
+                              )}
+
+                              <div className="text-[11px] text-slate-400 pt-0.5 flex items-center justify-between">
                                 <span>{stock.actionNote}</span>
                               </div>
                             </div>
@@ -2403,7 +2491,7 @@ export default function App() {
             {strategyMode === 'turnaround' && (
               <div>
                 {isTurnaroundLoading && !turnaroundData ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 lg:gap-5">
                     {[1, 2, 3, 4].map((i) => (
                       <div
                         key={i}
@@ -2422,7 +2510,7 @@ export default function App() {
                     </p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 lg:gap-5">
                     {displayedTurnaroundStocks.map((stock) => {
                       const inPortfolio = portfolio.some((p) => p.symbol === stock.symbol);
 
@@ -2436,49 +2524,45 @@ export default function App() {
                           }`}
                         >
                           <div>
-                            {/* Card Header */}
-                            <div className="flex items-start justify-between">
-                              <div>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <button
-                                    onClick={() => handleOpenStockDetail(stock.symbol)}
-                                    className="text-xl font-extrabold text-white hover:text-indigo-400 transition cursor-pointer text-left"
-                                    title="查看此股最近 5 日主力分點券商買賣超金額"
-                                  >
-                                    {stock.name}
-                                  </button>
-                                  <button
-                                    onClick={() => handleOpenStockDetail(stock.symbol)}
-                                    className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 transition cursor-pointer"
-                                    title="查看此股最近 5 日主力分點券商買賣超金額"
-                                  >
-                                    {stock.symbol}
-                                  </button>
-                                  <span className="text-xs px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-medium">
-                                    {stock.industry}
+                            {/* Card Header: 3-Tier Vertical Structure */}
+                            {/* Block 1: Basic Identity (Left) & Real-time Price (Right) */}
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 min-w-0">
+                                <button
+                                  onClick={() => handleOpenStockDetail(stock.symbol)}
+                                  className="text-xl font-black text-white hover:text-indigo-400 transition cursor-pointer text-left whitespace-nowrap"
+                                  title="查看此股最近 5 日主力分點券商買賣超金額"
+                                >
+                                  {stock.name}
+                                </button>
+                                <button
+                                  onClick={() => handleOpenStockDetail(stock.symbol)}
+                                  className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 transition cursor-pointer flex-shrink-0"
+                                  title="查看此股最近 5 日主力分點券商買賣超金額"
+                                >
+                                  {stock.symbol}
+                                </button>
+                                <span className="text-xs px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-medium whitespace-nowrap flex-shrink-0">
+                                  {stock.industry}
+                                </span>
+                                <span className="text-xs px-2.5 py-0.5 rounded-full bg-gradient-to-r from-indigo-500/15 to-purple-500/15 border border-indigo-500/30 text-indigo-200 font-semibold flex items-center gap-1 whitespace-nowrap flex-shrink-0">
+                                  <Sparkles className="w-3 h-3 text-indigo-400 flex-shrink-0" />
+                                  <span>{stock.industryTheme || stock.industry}</span>
+                                </span>
+                                {turnaroundData?.mode === 'intraday' && (
+                                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold flex items-center gap-1 whitespace-nowrap flex-shrink-0">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                                    盤中即時
                                   </span>
-                                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-gradient-to-r from-indigo-500/15 to-purple-500/15 border border-indigo-500/30 text-indigo-200 font-semibold flex items-center gap-1">
-                                    <Sparkles className="w-3 h-3 text-indigo-400" />
-                                    {stock.industryTheme || stock.industry}
-                                  </span>
-                                  {turnaroundData?.mode === 'intraday' && (
-                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold flex items-center gap-1">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                                      盤中即時報價
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-xs text-indigo-400 font-semibold mt-1">
-                                  {stock.positionLabel} (年最低 ${stock.yearLow} ~ 年最高 ${stock.yearHigh})
-                                </div>
+                                )}
                               </div>
 
-                              <div className="text-right">
-                                <div className="text-2xl font-black text-white">
+                              <div className="text-right flex-shrink-0 pr-1">
+                                <div className="text-2xl font-black text-white whitespace-nowrap">
                                   ${stock.price.toFixed(2)}
                                 </div>
                                 <div
-                                  className={`text-xs font-bold flex items-center justify-end ${
+                                  className={`text-xs sm:text-sm font-bold flex items-center justify-end whitespace-nowrap ${
                                     stock.change >= 0 ? 'text-rose-400' : 'text-emerald-400'
                                   }`}
                                 >
@@ -2488,6 +2572,17 @@ export default function App() {
                                   {stock.changePercent.toFixed(2)}%)
                                 </div>
                               </div>
+                            </div>
+
+                            {/* Block 2: Buy Rating Badge Full Row */}
+                            <div className="mt-3 w-full">
+                              {renderBuyRatingBadge(stock.buyRatingScore, stock.buyRatingStars, stock.buyRatingBreakdown)}
+                            </div>
+
+                            {/* Block 3: Moving Averages and Position Display */}
+                            <div className="mt-2 text-xs text-slate-400 flex items-center justify-between flex-wrap gap-2">
+                              <span>20MA防守價 ${stock.stopLossPrice.toFixed(1)}</span>
+                              <span className="text-indigo-400 font-semibold">{stock.positionLabel} (年低 ${stock.yearLow} ~ 年高 ${stock.yearHigh})</span>
                             </div>
 
                             {/* Position Bar */}
@@ -2516,31 +2611,31 @@ export default function App() {
                             {/* Quant Indicators Row (5 Dimensions) */}
                             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mt-3.5 text-center">
                               <div
-                                className={`p-2 rounded-xl border text-xs ${
+                                className={`p-2.5 rounded-xl border text-xs ${
                                   stock.isRevGrowing
                                     ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300'
                                     : 'bg-slate-950 border-slate-800 text-slate-400'
                                 }`}
                               >
-                                <div className="text-[10px] text-slate-500 mb-0.5">
+                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">
                                   最新營收年增率
                                 </div>
-                                <div className="font-bold">
+                                <div className="font-bold truncate">
                                   YoY +{stock.revenueYoY.toFixed(1)}%
                                 </div>
                               </div>
 
                               <div
-                                className={`p-2 rounded-xl border text-xs ${
+                                className={`p-2.5 rounded-xl border text-xs ${
                                   stock.isProfitable
                                     ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
                                     : 'bg-slate-950 border-slate-800 text-slate-400'
                                 }`}
                               >
-                                <div className="text-[10px] text-slate-500 mb-0.5">
+                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">
                                   近四季累計 EPS
                                 </div>
-                                <div className="font-bold">
+                                <div className="font-bold truncate">
                                   {stock.eps4Q !== null && stock.eps4Q !== undefined
                                     ? `$${stock.eps4Q.toFixed(2)} 元`
                                     : '未揭露'}
@@ -2548,7 +2643,7 @@ export default function App() {
                               </div>
 
                               <div
-                                className={`p-2 rounded-xl border text-xs ${
+                                className={`p-2.5 rounded-xl border text-xs ${
                                   stock.isSafeBottom
                                     ? 'bg-purple-500/10 border-purple-500/30 text-purple-300'
                                     : stock.price < stock.stopLossPrice
@@ -2556,10 +2651,10 @@ export default function App() {
                                     : 'bg-slate-950 border-slate-800 text-slate-400'
                                 }`}
                               >
-                                <div className="text-[10px] text-slate-500 mb-0.5">
+                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">
                                   20MA 剛性安全閥
                                 </div>
-                                <div className="font-bold">
+                                <div className="font-bold truncate">
                                   {stock.isSafeBottom
                                     ? '站上20MA微揚'
                                     : stock.price < stock.stopLossPrice
@@ -2569,20 +2664,22 @@ export default function App() {
                               </div>
 
                               {/* 20日 ATR% 波動度 */}
-                              <div className="p-2 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
-                                <div className="text-[10px] text-slate-500 mb-0.5">20日 ATR% 波動度</div>
-                                <div className="font-bold text-emerald-400">
+                              <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
+                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">20日 ATR% 波動度</div>
+                                <div className="font-bold text-emerald-400 truncate">
                                   {stock.atrPct ? `${stock.atrPct}%` : '≥2.2%'}
                                   <span className="text-[10px] text-emerald-500 font-normal ml-1">≥2.2% 達標</span>
                                 </div>
                               </div>
 
                               {/* 5日均量流動性 */}
-                              <div className="p-2 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300 col-span-2 sm:col-span-1">
-                                <div className="text-[10px] text-slate-500 mb-0.5">5日均量流動性</div>
-                                <div className="font-bold text-sky-400">
-                                  {stock.volumeAvg5d ? `${stock.volumeAvg5d.toLocaleString()} 張` : '>1,000張'}
-                                  <span className="text-[10px] text-sky-500 font-normal ml-1">&gt;1,000張達標</span>
+                              <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
+                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">5日均量流動性</div>
+                                <div className="font-bold text-sky-400 truncate">
+                                  {stock.volumeAvg5d ? `${stock.volumeAvg5d.toLocaleString()} 張` : '-'}
+                                  <span className={`text-[10px] font-normal ml-1 ${(stock.volumeAvg5d ?? 0) >= 1000 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {(stock.volumeAvg5d ?? 0) >= 1000 ? '≥1,000張達標' : '未達標 (不足千張)'}
+                                  </span>
                                 </div>
                               </div>
                             </div>
@@ -2598,24 +2695,75 @@ export default function App() {
                               </p>
                             </div>
 
-                            {/* Anchors */}
-                            <div className="mt-3 p-3 rounded-2xl bg-slate-950/80 border border-slate-800/80 flex items-center justify-between text-xs">
-                              <div>
-                                <span className="text-[10px] text-slate-500 block">
-                                  建議防守價 (20MA 停損)
-                                </span>
-                                <span className="font-bold text-emerald-400">
-                                  ${stock.stopLossPrice.toFixed(2)} (跌破 20MA 出場)
+                            {/* Anchors (動態戰術即時進場點) */}
+                            <div className="mt-3.5 p-3.5 rounded-2xl bg-slate-950/90 border border-slate-800/80 space-y-2.5">
+                              <div className="text-[11px] font-semibold flex flex-wrap items-center justify-between gap-1.5">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-indigo-300 font-bold">
+                                    💎 價值轉型低階錨定 (盈虧比 1:2)
+                                  </span>
+                                  {stock.entryTacticLabel && (
+                                    <span
+                                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                        stock.entryTactic === 'BREAKOUT_BUY'
+                                          ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                                          : stock.entryTactic === 'WAIT_PULLBACK'
+                                          ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                                          : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                                      }`}
+                                    >
+                                      {stock.entryTacticLabel}
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-slate-500 font-mono text-[10px]">
+                                  近一年位階 {stock.positionPct}%
                                 </span>
                               </div>
-                              <div className="text-right">
-                                <span className="text-[10px] text-slate-500 block">
-                                  潛在波段獲利目標
-                                </span>
-                                <span className="font-bold text-indigo-300">
-                                  ${(stock.price * 1.35).toFixed(1)} (+35%)
-                                </span>
+
+                              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                                <div
+                                  className={`p-2 rounded-xl border ${
+                                    stock.entryTactic === 'BREAKOUT_BUY'
+                                      ? 'bg-rose-950/40 border-rose-500/50 text-rose-200'
+                                      : stock.entryTactic === 'WAIT_PULLBACK'
+                                      ? 'bg-amber-950/40 border-amber-500/50 text-amber-200'
+                                      : 'bg-emerald-950/40 border-emerald-500/50 text-emerald-200'
+                                  }`}
+                                >
+                                  <div className="text-[10px] font-medium text-slate-300">
+                                    {stock.entryTactic === 'BREAKOUT_BUY'
+                                      ? '🎯 突破確認價'
+                                      : stock.entryTactic === 'WAIT_PULLBACK'
+                                      ? '⚠️ 建議回檔價 (5MA)'
+                                      : '⏳ 建議低接價 (5MA/20MA)'}
+                                  </div>
+                                  <div className="font-extrabold text-base text-white mt-0.5">
+                                    ${(stock.suggestedEntryPrice ?? stock.price).toFixed(1)}
+                                  </div>
+                                </div>
+
+                                <div className="p-2 rounded-xl bg-amber-950/40 border border-amber-900/60">
+                                  <div className="text-[10px] text-amber-400 font-medium">建議防守價 (20MA)</div>
+                                  <div className="font-extrabold text-base text-amber-300 mt-0.5">
+                                    ${stock.stopLossPrice.toFixed(1)}
+                                  </div>
+                                </div>
+
+                                <div className="p-2 rounded-xl bg-purple-950/40 border border-purple-900/60">
+                                  <div className="text-[10px] text-purple-400 font-medium">目標獲利價</div>
+                                  <div className="font-extrabold text-base text-purple-300 mt-0.5">
+                                    ${(stock.targetPrice ?? Number((stock.price * 1.35).toFixed(1))).toFixed(1)}
+                                  </div>
+                                </div>
                               </div>
+
+                              {stock.entryActionNote && (
+                                <div className="text-[11px] text-indigo-300/90 bg-indigo-950/30 border border-indigo-900/40 rounded-xl px-2.5 py-1.5 flex items-start gap-1.5">
+                                  <Sparkles className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0 mt-0.5" />
+                                  <span>{stock.entryActionNote}</span>
+                                </div>
+                              )}
                             </div>
                           </div>
 

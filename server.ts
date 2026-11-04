@@ -147,6 +147,29 @@ export interface ScreenerStockItem {
   targetPrice: number;
   riskRewardRatio: number;
   actionNote: string;
+  // 量化買入評分系統 (0 ~ 100分)
+  buyRatingScore?: number;
+  buyRatingLevel?: 'STRONG_BUY' | 'BUY' | 'ACCUMULATE' | 'HOLD_WATCH';
+  buyRatingLabel?: string;
+  buyRatingStars?: string;
+  buyRatingBreakdown?: BuyRatingBreakdown;
+  // 進場戰術類型與說明
+  entryTactic?: EntryTactic;
+  entryTacticLabel?: string;
+  entryActionNote?: string;
+}
+
+export type EntryTactic = 'PULLBACK_BUY' | 'BREAKOUT_BUY' | 'WAIT_PULLBACK';
+
+export interface BuyRatingBreakdown {
+  chip: number;
+  chipMax: number; // 35
+  tech: number;
+  techMax: number; // 30
+  safety: number;
+  safetyMax: number; // 20
+  momentum: number;
+  momentumMax: number; // 15
 }
 
 export interface ScreenerResponse {
@@ -188,12 +211,24 @@ export interface TurnaroundStockItem {
   isTurnaroundMatched: boolean;
   catalyst: string;
   stopLossPrice: number;
+  targetPrice?: number;
+  suggestedEntryPrice?: number;
   actionNote: string;
   atr20?: number; // 20日平均真實波動度
   atrPct?: number; // 20日 ATR 波動度百分比 % (必須 >= 1.8%)
   volumeAvg5d?: number; // 5日平均成交量 (必須 > 1,000張)
   industryTheme?: string; // 聚焦產業白名單主題
   isPriorityWhiteList?: boolean; // 符合優先聚焦產業白名單
+  // 量化買入評分系統 (0 ~ 100分)
+  buyRatingScore?: number;
+  buyRatingLevel?: 'STRONG_BUY' | 'BUY' | 'ACCUMULATE' | 'HOLD_WATCH';
+  buyRatingLabel?: string;
+  buyRatingStars?: string;
+  buyRatingBreakdown?: BuyRatingBreakdown;
+  // 進場戰術類型與說明
+  entryTactic?: EntryTactic;
+  entryTacticLabel?: string;
+  entryActionNote?: string;
 }
 
 export interface TurnaroundScreenerResponse {
@@ -601,60 +636,171 @@ function isFinancialStock(code: string, name?: string): boolean {
 }
 
 /**
- * 優先聚焦產業白名單分類器（具備動能與轉型爆發力）：
- * 1. AI 硬體周邊（散熱、機殼、滑軌、電源）
- * 2. 半導體設備與 CoWoS 先進封裝
- * 3. CPO 矽光子與高速光通訊
- * 4. 重電電網與儲能綠能
- * 5. 具備低基期轉型爆發之利基型傳產/電子（如 1303 南亞等業績脫離谷底股）
- * 6. 若非白名單，優先依 TaiwanStockInfo 之真實官方產業分類，絕不捏造或誤判
+ * 常見英文台股簡稱與別名映射表
+ */
+const COMMON_ENGLISH_STOCK_MAP: Record<string, string> = {
+  tsmc: '2330',
+  foxconn: '2317',
+  honhai: '2317',
+  'hon hai': '2317',
+  mediatek: '2454',
+  mtk: '2454',
+  delta: '2308',
+  deltaww: '2308',
+  wistron: '3231',
+  quanta: '2382',
+  asus: '2357',
+  asustek: '2357',
+  acer: '2353',
+  adata: '3260',
+  pegatron: '4938',
+  compal: '2324',
+  inventec: '2356',
+  gigabyte: '2376',
+  msi: '2377',
+  largan: '3008',
+  ase: '3711',
+  aseh: '3711',
+  umc: '2303',
+  novatek: '3034',
+  realtek: '2379',
+  winbond: '2344',
+  macronix: '2337',
+  nanya: '2408',
+  nanyatech: '2408',
+  unimicron: '3037',
+  kinsus: '3189',
+  'nan ya pcb': '8046',
+  yageo: '2327',
+  chicony: '2385',
+  liteon: '2301',
+  advantech: '2395',
+  chimei: '3481',
+  innolux: '3481',
+  auo: '2409',
+  cwt: '1519',
+  fortune: '1519',
+  shihlin: '1503',
+  chungshin: '1513',
+  teco: '1504',
+  evergreen: '2603',
+  yangming: '2609',
+  wanhai: '2615',
+  chinaairlines: '2610',
+  evaair: '2618',
+  fpg: '1301',
+  fpc: '1301',
+  npc: '1303',
+  fcfc: '1326',
+  fpcc: '6505',
+  formosa: '1301',
+  nanyaplastics: '1303',
+  farnear: '1402',
+  fenc: '1402',
+  yulon: '2201',
+  cst: '2105',
+  chengshin: '2105',
+  merida: '9914',
+  giant: '9921',
+  pouchen: '9904',
+  cathy: '2882',
+  fubon: '2881',
+  ctbc: '2891',
+  megafinancial: '2886',
+};
+
+/**
+ * 解析台股代號、股票中文名稱或常見英文別名
+ */
+function resolveStockSymbolWithDetails(query: string): { symbol: string; name: string } | null {
+  if (!query || typeof query !== 'string') return null;
+  const clean = query.trim();
+  if (!clean) return null;
+
+  // 1. 若已經是 4 碼純數字 (例如 '2330', '3260', '3596')
+  if (/^[1-9][0-9]{3}$/.test(clean)) {
+    const name = getStockName(clean);
+    return { symbol: clean, name };
+  }
+
+  // 2. 常見英文別名 (TSMC, Foxconn, MediaTek, Quanta, Wistron, ASUS, Acer, Adata...)
+  const lower = clean.toLowerCase();
+  const englishMatch = COMMON_ENGLISH_STOCK_MAP[lower];
+  if (englishMatch) {
+    const name = getStockName(englishMatch);
+    return { symbol: englishMatch, name };
+  }
+
+  // 3. 全台股字典中文名稱精確/模糊查表 (taiwanStockInfoMap)
+  // 3a. 先找完全精確匹配 (例如 name === clean)
+  for (const [code, info] of taiwanStockInfoMap.entries()) {
+    if (info.name === clean) {
+      return { symbol: code, name: info.name };
+    }
+  }
+
+  // 3b. 模糊匹配：名稱包含關鍵字 (例如 "智易" 匹配 "智易", "台積" 匹配 "台積電")
+  for (const [code, info] of taiwanStockInfoMap.entries()) {
+    if (info.name.includes(clean) || clean.includes(info.name)) {
+      return { symbol: code, name: info.name };
+    }
+  }
+
+  // 3c. 若開頭包含 4 碼數字 (例如 "2330台積電")
+  const leadingDigits = clean.match(/^([1-9][0-9]{3})/);
+  if (leadingDigits && leadingDigits[1]) {
+    const code = leadingDigits[1];
+    return { symbol: code, name: getStockName(code) };
+  }
+
+  return null;
+}
+
+function resolveStockSymbol(query: string): string | null {
+  const res = resolveStockSymbolWithDetails(query);
+  return res ? res.symbol : null;
+}
+
+/**
+ * 修正 3：採用「雙層業務特徵詞動態匹配」重構產業白名單（嚴禁寫死股票代號，確保動能自適應）
+ * - 移除寫死股票代號代碼集合（例如 aiHardwareCodes 等，禁止寫死）。
+ * - 移除過於寬鬆的 /半導體/ 泛匹配（避免將記憶體族群如 3260 威剛、南亞科誤判為 CoWoS）。
+ * - 實作「雙層動態特徵詞匹配」：
+ *   1. ai: 伺服器|散熱|水冷|機殼|滑軌|導軌|伺服器電源|高階交換器|CCL|銅箔基板|AI晶片
+ *   2. cowos: 先進封裝|CoWoS|半導體設備|晶圓設備|封裝設備|IC載板|ABF|晶圓測試|探針卡 (排除記憶體|DRAM|Flash|快閃)
+ *   3. cpo: 矽光子|CPO|光收發|光通訊|光模組|光纖|雷射晶片|光主動元件
+ *   4. power: 重電|變壓器|配電盤|高壓線纜|電線電纜|儲能|綠能|離岸風電|太陽能電廠
+ *   5. turnaround: 高值化|循環材料|車用電子轉型|營運轉機|脫離谷底|塑化轉型
+ *   6. Fallback 至 TaiwanStockInfo 的官方產業分類（officialIndustry）
  */
 function getStockIndustryTheme(code: string, rawName?: string): { industryTheme: string; isPriorityWhiteList: boolean } {
   const name = getStockName(code, rawName);
   const officialIndustry = getStockOfficialIndustry(code);
+  const combined = `${name} ${officialIndustry}`;
 
-  // 1. AI 硬體周邊（散熱、機殼、滑軌、電源、AI伺服器）
-  const aiHardwareCodes = new Set([
-    '3017', '3324', '3653', '2421', '3016', '3483', '6230', // 散熱
-    '8210', '3013', '2059', // 機殼滑軌
-    '2308', '2301', '6205', // 電源
-    '2382', '3231', '2376', '2356', '6669', // AI 伺服器
-  ]);
-  if (aiHardwareCodes.has(code) || /散熱|機殼|滑軌|電源|伺服器|技嘉|奇鋐|雙鴻|廣達|緯創|健策|勤誠|晟銘電|川湖|台達電|光寶科/.test(name)) {
+  // 1. AI 硬體周邊 (散熱/機殼/滑軌/電源/高階交換器/CCL)
+  if (/伺服器|散熱|水冷|機殼|滑軌|導軌|伺服器電源|高階交換器|CCL|銅箔基板|AI晶片/.test(combined)) {
     return { industryTheme: 'AI硬體周邊 (散熱/機殼/滑軌/電源)', isPriorityWhiteList: true };
   }
 
-  // 2. 半導體設備與 CoWoS 先進封裝
-  const cowosSemiCodes = new Set([
-    '3131', '3583', '6187', '2467', '6640', '3413', '8027', // 設備/耗材
-    '3037', '8046', '3189', '6257', '2449', '3264', '6278', '6274', // 載板與先進封裝測試
-    '2330', '2303', // 晶圓代工與先進製程
-  ]);
-  if (cowosSemiCodes.has(code) || /先進封裝|CoWoS|半導體設備|封測|載板|弘塑|辛耘|萬潤|欣興|矽格|台表科|台燿|京元電|日月光|南電/.test(name)) {
+  // 2. 半導體設備與 CoWoS 先進封裝 (嚴格排除記憶體: 威剛、南亞科、華邦電等絕不可誤判為 CoWoS)
+  const isMemoryStock = /記憶體|DRAM|Flash|快閃|模組廠/.test(combined);
+  if (!isMemoryStock && /先進封裝|CoWoS|半導體設備|晶圓設備|封裝設備|IC載板|ABF|晶圓測試|探針卡/.test(combined)) {
     return { industryTheme: '半導體設備與 CoWoS 先進封裝', isPriorityWhiteList: true };
   }
 
   // 3. CPO 矽光子與高速光通訊
-  const cpoOpticalCodes = new Set([
-    '3450', '4977', '3163', '4979', '6442', '3363', '3081', '3234', '4908',
-  ]);
-  if (cpoOpticalCodes.has(code) || /矽光子|光通訊|CPO|光聖|聯鈞|眾達|波若威|華星光|上詮|聯亞|前鼎|訊芯/.test(name)) {
+  if (/矽光子|CPO|光收發|光通訊|光模組|光纖|雷射晶片|光主動元件/.test(combined)) {
     return { industryTheme: 'CPO 矽光子與高速光通訊', isPriorityWhiteList: true };
   }
 
   // 4. 重電電網與儲能綠能
-  const powerGridCodes = new Set([
-    '1519', '1513', '1503', '1514', '1504', '1609', '1605', '3708', '6806', '9958',
-  ]);
-  if (powerGridCodes.has(code) || /重電|電網|變壓器|儲能|綠能|離岸風電|太陽能|華城|中興電|士電|東元|上緯|大亞|華新|世紀鋼|雲豹/.test(name)) {
+  if (/重電|變壓器|配電盤|高壓線纜|電線電纜|儲能|綠能|離岸風電|太陽能電廠/.test(combined)) {
     return { industryTheme: '重電電網與儲能綠能', isPriorityWhiteList: true };
   }
 
-  // 5. 具備低基期轉型爆發之利基型傳產/電子（如 1303 南亞等業績脫離谷底股）
-  const turnaroundNicheCodes = new Set([
-    '1303', '1301', '1402', '2324', '3596', '2201', '2105', '2353', '9914', '2603', '1216', '9904',
-  ]);
-  if (turnaroundNicheCodes.has(code) || /南亞|台塑|遠東新|仁寶|智易|裕隆|正新|宏碁|美利達|長榮|高值化|循環材料|車電|脫離谷底|轉型/.test(name)) {
+  // 5. 具備低基期轉型爆發之利基型傳產/電子
+  if (/高值化|循環材料|車用電子轉型|營運轉機|脫離谷底|塑化轉型/.test(combined)) {
     return { industryTheme: '低基期轉型爆發 (利基傳產/電子)', isPriorityWhiteList: true };
   }
 
@@ -682,7 +828,7 @@ function getStockIndustryTheme(code: string, rawName?: string): { industryTheme:
   if (prefix2 === '31' || prefix2 === '35' || prefix2 === '61' || prefix2 === '62') return { industryTheme: '上櫃電子與半導體', isPriorityWhiteList: false };
   if (prefix2 === '80' || prefix2 === '82') return { industryTheme: '資訊服務與電子通路', isPriorityWhiteList: false };
 
-  return { industryTheme: '電子零組件業', isPriorityWhiteList: false };
+  return { industryTheme: '其他電子業', isPriorityWhiteList: false };
 }
 
 /**
@@ -2440,6 +2586,274 @@ function estimateIntradayVolume(curVolumeLots: number, elapsedMinutes: number): 
   return Math.round(rawEst);
 }
 
+export interface BuyRatingResult {
+  score: number;
+  level: 'STRONG_BUY' | 'BUY' | 'ACCUMULATE' | 'HOLD_WATCH';
+  label: string;
+  stars: string;
+  breakdown: BuyRatingBreakdown;
+}
+
+/**
+ * 客觀量化買入評分演算法 (0 ~ 100分，四大維度)
+ */
+function calculateBuyRatingScore(params: {
+  consecutiveTrustDays?: number;
+  foreignNetLots?: number | null;
+  trustNetLots?: number;
+  isMajorLocked?: boolean;
+  majorBrokersNetRatio?: number;
+  isBullishMa?: boolean;
+  priceAboveMa5?: boolean;
+  isMa20FlatOrRising?: boolean;
+  positionPct?: number;
+  bias20ma?: number;
+  atrPct?: number;
+  isVolumeExpanding?: boolean;
+  volumeRatio?: number;
+}): BuyRatingResult {
+  let chipScore = 0;
+  let techScore = 0;
+  let safetyScore = 0;
+  let momentumScore = 0;
+
+  // 維度一：法人與籌碼純度（滿分 35 分）
+  // 1. 投信連續買超天數：>= 3 天給 15 分；1~2 天給 10 分
+  const trustDays = params.consecutiveTrustDays ?? 0;
+  if (trustDays >= 3) {
+    chipScore += 15;
+  } else if (trustDays >= 1) {
+    chipScore += 10;
+  } else if ((params.trustNetLots ?? 0) > 0) {
+    chipScore += 8;
+  }
+
+  // 2. 外資同向買超：外資最新一日淨買超 > 0 給 10 分；若大賣超則得 0 分
+  const foreignLots = params.foreignNetLots;
+  if (foreignLots !== null && foreignLots !== undefined) {
+    if (foreignLots > 0) {
+      chipScore += 10;
+    } else if (foreignLots < -500) {
+      chipScore += 0;
+    } else {
+      chipScore += 4;
+    }
+  } else {
+    chipScore += 5; // 中性無數據
+  }
+
+  // 3. 主力分點買盤：主力買賣超佔比 >= 15% 給 10 分
+  if (params.majorBrokersNetRatio !== undefined && params.majorBrokersNetRatio >= 15) {
+    chipScore += 10;
+  } else if (params.isMajorLocked) {
+    chipScore += 10;
+  } else if ((params.trustNetLots ?? 0) > 500 && (foreignLots ?? 0) >= 0) {
+    chipScore += 9;
+  } else if ((params.trustNetLots ?? 0) > 0) {
+    chipScore += 6;
+  } else {
+    chipScore += 3;
+  }
+  chipScore = Math.min(35, Math.max(0, chipScore));
+
+  // 維度二：均線多頭進攻結構（滿分 30 分）
+  // 1. 5MA > 10MA > 20MA 多頭發散排列：給 15 分
+  if (params.isBullishMa) {
+    techScore += 15;
+  } else if (params.priceAboveMa5) {
+    techScore += 7;
+  } else {
+    techScore += 3;
+  }
+
+  // 2. 現價站穩 5MA 之上（攻擊型）：給 10 分
+  if (params.priceAboveMa5) {
+    techScore += 10;
+  } else {
+    techScore += 0;
+  }
+
+  // 3. 20MA 月線走平或翻揚：給 5 分
+  if (params.isMa20FlatOrRising) {
+    techScore += 5;
+  } else {
+    techScore += 2;
+  }
+  techScore = Math.min(30, Math.max(0, techScore));
+
+  // 維度三：位階與乖離安全防護（滿分 20 分）
+  // 1. 位階安全性：近一年位階 <= 35% 給 15 分；位階 36%~50% 給 8 分
+  const pos = params.positionPct ?? 40;
+  if (pos <= 35) {
+    safetyScore += 15;
+  } else if (pos <= 50) {
+    safetyScore += 8;
+  } else if (pos <= 65) {
+    safetyScore += 4;
+  } else {
+    safetyScore += 0;
+  }
+
+  // 2. 乖離率防追高：20MA 正乖離在 1%~6% 健康黃金進攻區給 5 分；若乖離率 > 10%（過熱）扣 15 分
+  const bias = params.bias20ma ?? 3;
+  if (bias >= 1 && bias <= 6) {
+    safetyScore += 5;
+  } else if (bias > 6 && bias <= 10) {
+    safetyScore += 2;
+  } else if (bias > 10) {
+    safetyScore -= 15; // 扣 15 分
+  } else {
+    safetyScore += 3;
+  }
+  safetyScore = Math.min(20, Math.max(0, safetyScore));
+
+  // 維度四：量能與波動爆發力（滿分 15 分）
+  // 1. ATR% 實質震幅：ATR% >= 3.0% 給 8 分；2.5% <= ATR% < 3.0% 給 5 分
+  const atr = params.atrPct ?? 2.5;
+  if (atr >= 3.0) {
+    momentumScore += 8;
+  } else if (atr >= 2.5) {
+    momentumScore += 5;
+  } else {
+    momentumScore += 2;
+  }
+
+  // 2. 出量突破：成交量（或盤中預估量）>= 5日均量 1.3 倍給 7 分
+  const volRatio = params.volumeRatio ?? 1.0;
+  if (params.isVolumeExpanding || volRatio >= 1.3) {
+    momentumScore += 7;
+  } else if (volRatio >= 1.1) {
+    momentumScore += 4;
+  } else {
+    momentumScore += 1;
+  }
+  momentumScore = Math.min(15, Math.max(0, momentumScore));
+
+  const totalScore = Math.min(100, Math.max(0, chipScore + techScore + safetyScore + momentumScore));
+
+  let level: 'STRONG_BUY' | 'BUY' | 'ACCUMULATE' | 'HOLD_WATCH';
+  let label: string;
+  let stars: string;
+
+  if (totalScore >= 90) {
+    level = 'STRONG_BUY';
+    label = '🏆 強烈建議買入 (Strong Buy)';
+    stars = '⭐⭐⭐';
+  } else if (totalScore >= 80) {
+    level = 'BUY';
+    label = '🟢 建議買入 (Buy)';
+    stars = '⭐⭐';
+  } else if (totalScore >= 70) {
+    level = 'ACCUMULATE';
+    label = '🟡 審慎買入 (Accumulate)';
+    stars = '⭐';
+  } else {
+    level = 'HOLD_WATCH';
+    label = '⚪ 區間觀察 (Hold / Watch)';
+    stars = '☆';
+  }
+
+  return {
+    score: totalScore,
+    level,
+    label,
+    stars,
+    breakdown: {
+      chip: chipScore,
+      chipMax: 35,
+      tech: techScore,
+      techMax: 30,
+      safety: safetyScore,
+      safetyMax: 20,
+      momentum: momentumScore,
+      momentumMax: 15,
+    },
+  };
+}
+
+/**
+ * 徹底重構即時進場點演算法：依據技術結構與均線扣抵計算出「真正安全的進場點與戰術類型」
+ */
+function calculateEntryTactic(params: {
+  price: number;
+  ma5: number;
+  ma10: number;
+  ma20: number;
+  weeklyLow: number;
+  changePercent: number;
+  bias20ma: number;
+  isBullishMa: boolean;
+  isVolumeExpanding: boolean;
+}): {
+  entryTactic: EntryTactic;
+  entryTacticLabel: string;
+  suggestedEntryPrice: number;
+  entryActionNote: string;
+  stopLossPrice: number;
+  targetPrice: number;
+} {
+  const { price, ma5, ma10, ma20, weeklyLow, changePercent, bias20ma, isBullishMa, isVolumeExpanding } = params;
+
+  let entryTactic: EntryTactic;
+  let entryTacticLabel: string;
+  let suggestedEntryPrice: number;
+  let entryActionNote: string;
+
+  // 規則 3：短線正乖離過大（bias20ma > 6%）
+  if (bias20ma > 6.0) {
+    entryTactic = 'WAIT_PULLBACK';
+    entryTacticLabel = '⚠️ 乖離過大・等待拉回';
+    suggestedEntryPrice = Number(ma5.toFixed(1));
+    entryActionNote = `短線漲多正乖離達 +${bias20ma.toFixed(1)}%，嚴禁盲目追高，耐心等待拉回 5MA ($${ma5.toFixed(1)}) 附近再行分批進場`;
+  }
+  // 規則 1：短線急殺或均線尚未發散（當日跌幅 >= 1.5% 或 5MA <= 10MA 或 現價跌破 5MA）
+  else if (changePercent <= -1.5 || ma5 <= ma10 || price < ma5) {
+    entryTactic = 'PULLBACK_BUY';
+    entryTacticLabel = '⏳ 均線回測承接';
+    if (price > ma5) {
+      suggestedEntryPrice = Number(ma5.toFixed(1));
+    } else if (price > ma20) {
+      suggestedEntryPrice = Number(ma20.toFixed(1));
+    } else {
+      suggestedEntryPrice = Number(Math.max(ma5, ma20).toFixed(1));
+    }
+    entryActionNote = `短線回檔整理中，嚴禁半空中追價接刀，建議等待股價回測 5MA/20MA ($${suggestedEntryPrice.toFixed(1)}) 止跌守穩再行佈局`;
+  }
+  // 規則 2：均線多頭發散 (5>10>20) 且當日出量突破（攻擊發動中）
+  else if (isBullishMa && isVolumeExpanding) {
+    entryTactic = 'BREAKOUT_BUY';
+    entryTacticLabel = '🔥 突破發動買點';
+    suggestedEntryPrice = Number(price.toFixed(1));
+    entryActionNote = `帶量突破多頭排列，可於現價 ($${price.toFixed(1)}) 附近或小幅拉回 5MA 處順勢進場`;
+  }
+  // 默認中性均線回測低接
+  else {
+    entryTactic = 'PULLBACK_BUY';
+    entryTacticLabel = '⏳ 均線回測承接';
+    suggestedEntryPrice = Number(Math.min(price, Math.max(ma5, ma20)).toFixed(1));
+    entryActionNote = `均線整理蓄勢中，建議掛單於 5MA ($${ma5.toFixed(1)}) 或 20MA ($${ma20.toFixed(1)}) 支撐位階分批佈局`;
+  }
+
+  // 建議防守價：20MA 或當週低點
+  let stopLossPrice = Number(Math.min(weeklyLow, ma20).toFixed(1));
+  if (stopLossPrice >= suggestedEntryPrice) {
+    stopLossPrice = Number((suggestedEntryPrice * 0.95).toFixed(1));
+  }
+
+  // 1:2 盈虧比目標價
+  const risk = Math.max(1, suggestedEntryPrice - stopLossPrice);
+  const targetPrice = Number((suggestedEntryPrice + risk * 2.0).toFixed(1));
+
+  return {
+    entryTactic,
+    entryTacticLabel,
+    suggestedEntryPrice,
+    entryActionNote,
+    stopLossPrice,
+    targetPrice,
+  };
+}
+
 interface ScanAllResult {
   allStocks: ScreenerStockItem[];
   matchedList: ScreenerStockItem[];
@@ -2512,35 +2926,42 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
       const ma10 = calculateMovingAverage(histCloses, 10, curClose, isIntraday, klines.lastDataDate, todayTaipeiDate);
       const ma20 = calculateMovingAverage(histCloses, 20, curClose, isIntraday, klines.lastDataDate, todayTaipeiDate);
 
+      // 前一日 20MA
+      const hasToday = Boolean(klines.lastDataDate && todayTaipeiDate && klines.lastDataDate === todayTaipeiDate);
+      const prevHistory = hasToday ? histCloses.slice(0, -1) : histCloses;
+      const prevMa20 = calculateMovingAverage(prevHistory, 20, prevHistory[prevHistory.length - 1] || curClose, false);
+      const isMa20FlatOrRising = ma20 >= prevMa20 * 0.995;
+
       const weeklyLow = Math.min(...histCloses.slice(-5), curClose);
       const bias20ma = ma20 > 0 ? Number((((curClose - ma20) / ma20) * 100).toFixed(2)) : 0;
+
+      // 位階估算 (以近 60~250 日高低點)
+      const yearHigh = Math.max(...(klines.highs || histCloses), curClose);
+      const yearLow = Math.min(...(klines.lows || histCloses), curClose);
+      const range = yearHigh - yearLow;
+      const positionPct = range > 0 ? Number((((curClose - yearLow) / range) * 100).toFixed(1)) : 50;
 
       let estVolume = curVolumeLots;
       let estVolumeRatio = 1.0;
       let isVolumeExpanding = false;
       let isIntradaySignal = false;
       let isMatched = false;
-      // 嚴格多頭排列防禦：現價必須站上 5MA 且 站上 20MA，且 5MA > 10MA > 20MA（破 5MA 者嚴禁列入推薦攻擊名單）
+      // 嚴格多頭排列防禦：現價必須站上 5MA 且 站上 20MA，且 5MA > 10MA > 20MA
       const isBullishMa = curClose >= ma5 && curClose > ma20 && ma5 > ma10 && ma10 > ma20;
       const isOverheated = bias20ma > 10;
       let actionNote = '';
 
       if (isIntraday) {
-        // 🟢 盤中即時監控模式：
-        // 早盤 U 型成交量分段權重校正
+        // 🟢 盤中即時監控模式：早盤 U 型成交量分段權重校正
         const elapsed = marketStatus.elapsed;
         estVolume = estimateIntradayVolume(curVolumeLots, elapsed);
         estVolumeRatio = volumeAvg5d > 0 ? Number((estVolume / volumeAvg5d).toFixed(2)) : 1.0;
-
-        // 盤中即時進場條件：
-        // 1. 現價 > 20MA（站上月線）且 5MA > 10MA > 20MA
-        // 2. 預估全日成交量 estVolume > 5日均量 * 1.3 倍（出量攻擊）
         isVolumeExpanding = estVolume > volumeAvg5d * 1.3;
         isIntradaySignal = isBullishMa && isVolumeExpanding;
         isMatched = isIntradaySignal;
 
         if (isOverheated) {
-          actionNote = `🚨短線過熱・切勿追高 (偏離20MA +${bias20ma}%)，預估全日量能 ${estVolume.toLocaleString()} 張 (${estVolumeRatio}x均量)，建議等待拉回 5MA (${ma5}) 再進場`;
+          actionNote = `🚨短線過熱・切勿追高 (偏離20MA +${bias20ma}%)，預估全日量能 ${estVolume.toLocaleString()} 張 (${estVolumeRatio}x均量)，建議等待拉回 5MA (${ma5.toFixed(1)}) 再進場`;
         } else if (isIntradaySignal) {
           actionNote = `🟢 盤中即時進場訊號：站穩20MA、5>10>20多頭排列、預估全日量能達均量 ${estVolumeRatio}x (${estVolume.toLocaleString()}張) 出量突破！[ATR% ${atrPct}%]`;
         } else if (isBullishMa) {
@@ -2549,8 +2970,7 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
           actionNote = `投信波段認養名單（買超 ${c.totalTrustLots} 張），現階段均線打底整理中，列入即時雷達監控 [ATR% ${atrPct}%]`;
         }
       } else {
-        // 🔵 盤後籌碼結算模式：
-        // 呼叫 FinMind / TWSE 取得當日官方正式收盤價與三大法人買賣超正式數據
+        // 🔵 盤後籌碼結算模式
         estVolume = curVolumeLots;
         estVolumeRatio = volumeAvg5d > 0 ? Number((curVolumeLots / volumeAvg5d).toFixed(2)) : 1.0;
         isVolumeExpanding = curVolumeLots > volumeAvg5d * 1.2;
@@ -2563,18 +2983,35 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
         }
       }
 
-      let suggestedEntryPrice = curClose;
-      if (isOverheated) {
-        suggestedEntryPrice = ma5;
-      }
+      // 重構客觀量化買入評分系統 (0 ~ 100分)
+      const buyRating = calculateBuyRatingScore({
+        consecutiveTrustDays: c.consecutiveTrustDays,
+        foreignNetLots: c.foreignNetLots,
+        trustNetLots: c.day2TrustLots,
+        isMajorLocked: (c.foreignNetLots ?? 0) > 0 && c.day2TrustLots > 0,
+        isBullishMa,
+        priceAboveMa5: curClose >= ma5,
+        isMa20FlatOrRising,
+        positionPct,
+        bias20ma,
+        atrPct,
+        isVolumeExpanding,
+        volumeRatio: isIntraday ? estVolumeRatio : Number((curVolumeLots / volumeAvg5d).toFixed(2)),
+      });
 
-      let stopLossPrice = Number(Math.min(weeklyLow, ma20).toFixed(2));
-      if (stopLossPrice >= curClose) {
-        stopLossPrice = Number((curClose * 0.95).toFixed(2));
-      }
+      // 重構即時進場點演算法與戰術標籤 (杜絕無腦現買現套)
+      const entryInfo = calculateEntryTactic({
+        price: curClose,
+        ma5,
+        ma10,
+        ma20,
+        weeklyLow,
+        changePercent,
+        bias20ma,
+        isBullishMa,
+        isVolumeExpanding,
+      });
 
-      const risk = curClose - stopLossPrice;
-      const targetPrice = Number((curClose + risk * 2.0).toFixed(2));
       const riskRewardRatio = 2.0;
 
       const item: ScreenerStockItem = {
@@ -2617,11 +3054,20 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
         atrPct,
         industryTheme,
         isPriorityWhiteList,
-        suggestedEntryPrice,
-        stopLossPrice,
-        targetPrice,
+        suggestedEntryPrice: entryInfo.suggestedEntryPrice,
+        stopLossPrice: entryInfo.stopLossPrice,
+        targetPrice: entryInfo.targetPrice,
         riskRewardRatio,
         actionNote,
+        // 評分與戰術
+        buyRatingScore: buyRating.score,
+        buyRatingLevel: buyRating.level,
+        buyRatingLabel: buyRating.label,
+        buyRatingStars: buyRating.stars,
+        buyRatingBreakdown: buyRating.breakdown,
+        entryTactic: entryInfo.entryTactic,
+        entryTacticLabel: entryInfo.entryTacticLabel,
+        entryActionNote: entryInfo.entryActionNote,
       };
 
       results.push(item);
@@ -2630,8 +3076,10 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
     }
   }
 
-  // 排序：符合進場/精選條件者 (isMatched) 居前，優先聚焦產業白名單 (isPriorityWhiteList) 居前，次依量能倍數排序
+  // 排序：選股清單預設按照 buyRatingScore 由高分到低分降序排列，同分者依 isMatched 與量能排序
   results.sort((a, b) => {
+    const scoreDiff = (b.buyRatingScore ?? 0) - (a.buyRatingScore ?? 0);
+    if (scoreDiff !== 0) return scoreDiff;
     if (a.isMatched && !b.isMatched) return -1;
     if (!a.isMatched && b.isMatched) return 1;
     if (a.isPriorityWhiteList && !b.isPriorityWhiteList) return -1;
@@ -2851,6 +3299,7 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
             const prevCloses = closes.slice(0, -1);
             const prevMa20 = Number((prevCloses.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(2));
             const volumeAvg5d = Math.round(volumes.slice(-5).reduce((a, b) => a + b, 0) / 5) || 0;
+            if (volumeAvg5d < 1000) continue;
 
             const { atr20, atrPct } = calculateATR20Pct(closes, highs, lows, curPrice);
             const name = getStockName(code);
@@ -2951,9 +3400,42 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
       const isAtrPass = item.atrPct >= 2.2;
       const isTurnaroundMatched = isLowBase && item.isSafeBottom && isProfitable && isRevGrowing && isAtrPass;
 
+      const kCloses = item.klines.closes;
+      const ma5 = kCloses.length >= 5 ? Number((kCloses.slice(-5).reduce((a, b) => a + b, 0) / 5).toFixed(2)) : item.curPrice;
+      const ma10 = kCloses.length >= 10 ? Number((kCloses.slice(-10).reduce((a, b) => a + b, 0) / 10).toFixed(2)) : item.curPrice;
+      const bias20ma = item.ma20 > 0 ? Number((((item.curPrice - item.ma20) / item.ma20) * 100).toFixed(1)) : 0;
+      const isBullishMa = ma5 > ma10 && ma10 > item.ma20;
       const change = Number((item.curPrice - item.prevClose).toFixed(2));
       const changePercent = item.prevClose > 0 ? Number(((change / item.prevClose) * 100).toFixed(2)) : 0;
-      const stopLossPrice = Number((item.ma20 * 0.96).toFixed(2));
+      const weeklyLow = item.klines.lows && item.klines.lows.length >= 5 ? Math.min(...item.klines.lows.slice(-5)) : item.curPrice * 0.95;
+      const priceAboveMa5 = item.curPrice >= ma5;
+
+      const buyRating = calculateBuyRatingScore({
+        positionPct: item.positionPct,
+        bias20ma,
+        atrPct: item.atrPct,
+        isBullishMa,
+        priceAboveMa5,
+        isMa20FlatOrRising: item.isMa20FlatOrRising,
+        isVolumeExpanding: false,
+        volumeRatio: 1.0,
+      });
+
+      const tactic = calculateEntryTactic({
+        price: item.curPrice,
+        ma5,
+        ma10,
+        ma20: item.ma20,
+        weeklyLow,
+        changePercent,
+        bias20ma,
+        isBullishMa,
+        isVolumeExpanding: false,
+      });
+
+      const stopLossPrice = tactic.stopLossPrice;
+      const targetPrice = tactic.targetPrice;
+      const suggestedEntryPrice = tactic.suggestedEntryPrice;
       const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(item.code, item.name);
 
       const maStatus = !item.isAboveMa20
@@ -2997,6 +3479,16 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         isTurnaroundMatched,
         catalyst: dynamicCatalyst,
         stopLossPrice,
+        targetPrice,
+        suggestedEntryPrice,
+        entryTactic: tactic.entryTactic,
+        entryTacticLabel: tactic.entryTacticLabel,
+        entryActionNote: tactic.entryActionNote,
+        buyRatingScore: buyRating.score,
+        buyRatingLevel: buyRating.level,
+        buyRatingLabel: buyRating.label,
+        buyRatingStars: buyRating.stars,
+        buyRatingBreakdown: buyRating.breakdown,
         actionNote,
         atr20: item.atr20,
         atrPct: item.atrPct,
@@ -3005,13 +3497,16 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
     })
   );
 
-  results.sort((a, b) => {
+  // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」且 5 日均量需 >= 1000 張
+  const qualifiedResults = results.filter((s) => (s.buyRatingScore ?? 0) >= 50 && (s.volumeAvg5d ?? 0) >= 1000);
+
+  qualifiedResults.sort((a, b) => {
     if (a.isTurnaroundMatched && !b.isTurnaroundMatched) return -1;
     if (!a.isTurnaroundMatched && b.isTurnaroundMatched) return 1;
-    return a.positionPct - b.positionPct;
+    return (b.buyRatingScore ?? 0) - (a.buyRatingScore ?? 0);
   });
 
-  return results;
+  return qualifiedResults;
 }
 
 async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
@@ -3148,7 +3643,12 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
           ? Math.round(histVolumes.slice(-5).reduce((a, b) => a + b, 0) / 5)
           : curVolumeLots > 0
           ? curVolumeLots
-          : 1200;
+          : 0;
+
+      // 剛性流動性防守閥：若 5 日均量 < 1,000 張，直接跳過，絕不加入結果（包括潛在池 allStocks）
+      if (volumeAvg5d < 1000) {
+        continue;
+      }
 
       // 波動度 ATR%
       const { atr20, atrPct } = calculateATR20Pct(cached.closes, cached.highs, cached.lows, curPrice);
@@ -3185,15 +3685,47 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
       // 綜合量化驗證符合標準
       const isTurnaroundMatched = isLowBase && isSafeBottom && isLiquidityPass && isAtrPass && isProfitable && isRevGrowing;
 
-      // 建議防守價：20MA 停損價
-      const stopLossPrice = ma20;
-
-      // 真實產業主題（雙層自動識別架構）
-      const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(item.code, item.name);
+      const ma5 = calculateMovingAverage(cached.closes, 5, curPrice, isIntraday, cached.lastDataDate, todayTaipeiDate);
+      const ma10 = calculateMovingAverage(cached.closes, 10, curPrice, isIntraday, cached.lastDataDate, todayTaipeiDate);
+      const bias20ma = ma20 > 0 ? Number((((curPrice - ma20) / ma20) * 100).toFixed(1)) : 0;
+      const isBullishMa = ma5 > ma10 && ma10 > ma20;
+      const weeklyLow = cached.lows && cached.lows.length >= 5 ? Math.min(...cached.lows.slice(-5)) : curPrice * 0.95;
+      const priceAboveMa5 = curPrice >= ma5;
+      const isVolumeExpanding = volumeAvg5d > 0 && curVolumeLots >= volumeAvg5d * 1.3;
+      const volumeRatio = volumeAvg5d > 0 ? Number((curVolumeLots / volumeAvg5d).toFixed(2)) : 1.0;
 
       const change = Number((curPrice - prevClose).toFixed(2));
       const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
       const updateTime = item.time || marketStatus.timeString;
+
+      const buyRating = calculateBuyRatingScore({
+        positionPct,
+        bias20ma,
+        atrPct,
+        isBullishMa,
+        priceAboveMa5,
+        isMa20FlatOrRising,
+        isVolumeExpanding,
+        volumeRatio,
+      });
+
+      const tactic = calculateEntryTactic({
+        price: curPrice,
+        ma5,
+        ma10,
+        ma20,
+        weeklyLow,
+        changePercent,
+        bias20ma,
+        isBullishMa,
+        isVolumeExpanding,
+      });
+
+      // 建議防守價：20MA 停損價
+      const stopLossPrice = tactic.stopLossPrice;
+
+      // 真實產業主題（雙層自動識別架構）
+      const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(item.code, item.name);
 
       // 【核心修復 2】：動態生成 20MA 均線與打底狀態文案（嚴禁寫死「突破 20MA 打底完成」）
       const maStatus = !isAboveMa20
@@ -3250,7 +3782,17 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
         isSafeBottom,
         isTurnaroundMatched,
         catalyst,
-        stopLossPrice,
+        stopLossPrice: tactic.stopLossPrice,
+        targetPrice: tactic.targetPrice,
+        suggestedEntryPrice: tactic.suggestedEntryPrice,
+        entryTactic: tactic.entryTactic,
+        entryTacticLabel: tactic.entryTacticLabel,
+        entryActionNote: tactic.entryActionNote,
+        buyRatingScore: buyRating.score,
+        buyRatingLevel: buyRating.level,
+        buyRatingLabel: buyRating.label,
+        buyRatingStars: buyRating.stars,
+        buyRatingBreakdown: buyRating.breakdown,
         actionNote,
       };
 
@@ -3261,21 +3803,23 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
   }
 
   // -------------------------------------------------------------------------
-  // 第四階段（輸出結果）：
-  // 呈現動態篩選出的全市場真轉型股（依營收 YoY 排序），並附帶真實的產業類別與 20MA 停損價
   // -------------------------------------------------------------------------
-  results.sort((a, b) => {
+  // 第四階段（輸出結果）：
+  // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」且 5 日均量需 >= 1000 張
+  const qualifiedResults = results.filter((s) => (s.buyRatingScore ?? 0) >= 50 && (s.volumeAvg5d ?? 0) >= 1000);
+
+  qualifiedResults.sort((a, b) => {
     if (a.isTurnaroundMatched && !b.isTurnaroundMatched) return -1;
     if (!a.isTurnaroundMatched && b.isTurnaroundMatched) return 1;
-    return b.revenueYoY - a.revenueYoY;
+    return (b.buyRatingScore ?? 0) - (a.buyRatingScore ?? 0);
   });
 
-  if (results.length === 0) {
+  if (qualifiedResults.length === 0) {
     console.warn('[Turnaround Scanner] 標準掃描無任何符合標的，啟用海外機房備援快篩...');
     return await scanTurnaroundFallback(todayTaipeiDate, marketStatus.isIntradayTrading);
   }
 
-  return results;
+  return qualifiedResults;
 }
 
 // 10. Cache Handlers
@@ -3359,7 +3903,8 @@ async function getTurnaroundData(force = false): Promise<TurnaroundScreenerRespo
   lastTurnaroundRunTime = now;
 
   try {
-    const allStocks = await scanTurnaroundStocks();
+    const rawStocks = await scanTurnaroundStocks();
+    const allStocks = rawStocks.filter((s) => (s.buyRatingScore ?? 0) >= 50 && (s.volumeAvg5d ?? 0) >= 1000);
     const matchedList = allStocks.filter((s) => s.isTurnaroundMatched);
 
     const mode: ScreenerMode = status.isIntradayTrading ? 'intraday' : 'after_hours';
@@ -4436,17 +4981,50 @@ app.post('/api/watchlist/morning-briefing', async (req: Request, res: Response) 
   }
 });
 
-// 批次查詢自選股即時最新報價（即時同步證交所 MIS，支援任意自選股代碼）
+// 股票代號/中文/英文別名動態解析 API
+app.get('/api/stocks/resolve', (req: Request, res: Response) => {
+  const q = String(req.query.q || req.query.query || req.query.symbol || '').trim();
+  if (!q) {
+    return res.status(400).json({ success: false, error: '請提供欲查詢的台股代號、名稱或英文' });
+  }
+
+  const details = resolveStockSymbolWithDetails(q);
+  if (!details) {
+    return res.status(404).json({ success: false, error: `查無對應之台股代號或名稱「${q}」` });
+  }
+
+  const officialIndustry = getStockOfficialIndustry(details.symbol);
+  const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(details.symbol, details.name);
+
+  return res.json({
+    success: true,
+    symbol: details.symbol,
+    name: details.name,
+    officialIndustry,
+    industryTheme,
+    isPriorityWhiteList,
+  });
+});
+
+// 批次查詢自選股即時最新報價（即時同步證交所 MIS，支援代號、中文與英文別名）
 app.get('/api/market/quotes', async (req: Request, res: Response) => {
   const symbolsQuery = String(req.query.symbols || '').trim();
   if (!symbolsQuery) {
     return res.json({ quotes: [] });
   }
 
-  const symbols = symbolsQuery
+  const rawSymbols = symbolsQuery
     .split(',')
     .map((s) => s.trim())
-    .filter((s) => /^[1-9][0-9]{3}$/.test(s));
+    .filter(Boolean);
+
+  const resolvedSymbols: string[] = [];
+  for (const s of rawSymbols) {
+    const sym = resolveStockSymbol(s) || (/^[1-9][0-9]{3}$/.test(s) ? s : null);
+    if (sym) resolvedSymbols.push(sym);
+  }
+
+  const symbols = Array.from(new Set(resolvedSymbols));
 
   if (symbols.length === 0) {
     return res.json({ quotes: [] });
@@ -4998,10 +5576,12 @@ app.post('/api/watchlist/portfolio', async (req: Request, res: Response) => {
 
 // 6. 單一個股詳情：即時報價、均線、法人明細與主力分點籌碼統計
 app.get('/api/stocks/:symbol', async (req: Request, res: Response) => {
-  const symbol = String(req.params.symbol).trim();
-  if (!symbol) {
+  const rawSymbol = String(req.params.symbol).trim();
+  if (!rawSymbol) {
     return res.status(400).json({ error: 'Missing symbol' });
   }
+
+  const symbol = resolveStockSymbol(rawSymbol) || rawSymbol;
 
   const d90 = new Date();
   d90.setDate(d90.getDate() - 90);
@@ -5159,9 +5739,15 @@ async function fetchYahooChart1Y(code: string): Promise<{
 }
 
 app.get('/api/stocks/:symbol/strategy-audit', async (req: Request, res: Response) => {
-  const symbol = String(req.params.symbol).trim();
-  if (!symbol || !/^[1-9][0-9]{3}$/.test(symbol)) {
-    return res.status(400).json({ error: '請輸入有效的 4 碼台股代號' });
+  const rawQuery = String(req.params.symbol).trim();
+  if (!rawQuery) {
+    return res.status(400).json({ error: '請輸入台股代號、股票中文名稱或常見英文' });
+  }
+
+  const resolved = resolveStockSymbolWithDetails(rawQuery);
+  const symbol = resolved ? resolved.symbol : /^[1-9][0-9]{3}$/.test(rawQuery) ? rawQuery : null;
+  if (!symbol) {
+    return res.status(404).json({ error: `查無對應之台股代號或名稱「${rawQuery}」，請確認後重試。` });
   }
 
   const d365 = new Date();
@@ -5225,7 +5811,7 @@ app.get('/api/stocks/:symbol/strategy-audit', async (req: Request, res: Response
       return res.status(404).json({ error: `查無股票 ${symbol} 之歷史與即時報價，請確認代號是否正確。` });
     }
 
-    const name = getStockName(symbol, misQuote?.name);
+    const name = resolved?.name || getStockName(symbol, misQuote?.name);
     let curPrice = misQuote?.price || 0;
     if (curPrice <= 0 && prices.length > 0) {
       curPrice = Number(prices[prices.length - 1].close);

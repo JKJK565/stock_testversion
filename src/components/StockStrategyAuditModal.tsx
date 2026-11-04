@@ -69,7 +69,7 @@ export function StockStrategyAuditModal({
         inputRef.current?.select();
       }, 100);
 
-      if (code && /^[1-9][0-9]{3}$/.test(code)) {
+      if (code) {
         fetchAuditData(code);
       } else {
         setData(null);
@@ -81,26 +81,29 @@ export function StockStrategyAuditModal({
     }
   }, [isOpen, symbol]);
 
-  const fetchAuditData = (targetCode: string) => {
+  const fetchAuditData = (targetQuery: string) => {
+    const clean = targetQuery.trim();
+    if (!clean) return;
     setLoading(true);
     setError(null);
     setAddedSuccess(false);
 
-    fetch(`/api/stocks/${targetCode}/strategy-audit`)
+    fetch(`/api/stocks/${encodeURIComponent(clean)}/strategy-audit`)
       .then(async (res) => {
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || `健檢查詢失敗 (狀態碼 ${res.status})`);
+          throw new Error(errData.error || `查無對應之台股代號或名稱「${clean}」`);
         }
         return res.json();
       })
       .then((resData: StrategyAuditResponse) => {
         setData(resData);
-        setActiveCode(targetCode);
+        setActiveCode(resData.symbol);
+        setSearchInput(`${resData.symbol} ${resData.name}`);
         setLoading(false);
       })
       .catch((err: any) => {
-        setError(err.message || '查詢發生異常');
+        setError(err.message || `查無對應之台股代號或名稱「${clean}」`);
         setLoading(false);
       });
   };
@@ -108,8 +111,8 @@ export function StockStrategyAuditModal({
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const clean = searchInput.trim();
-    if (!/^[1-9][0-9]{3}$/.test(clean)) {
-      setError('請輸入正確的 4 碼台股代號 (如 2330)');
+    if (!clean) {
+      setError('請輸入 4 碼代號、股票中文名稱或英文 (例：2330、台積電、TSMC)');
       return;
     }
     fetchAuditData(clean);
@@ -173,11 +176,10 @@ export function StockStrategyAuditModal({
               ref={inputRef}
               type="text"
               autoFocus
-              maxLength={4}
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="輸入 4 碼台股代號 (例: 2330) 即時透視策略評級與籌碼"
-              className="flex-1 bg-transparent text-sm font-mono text-white placeholder-slate-500 focus:outline-none"
+              placeholder="輸入 4 碼代號、股票中文名稱或常見英文 (例: 2330、台積電、TSMC)..."
+              className="flex-1 bg-transparent text-sm font-sans text-white placeholder-slate-500 focus:outline-none"
             />
             {searchInput && (
               <button
