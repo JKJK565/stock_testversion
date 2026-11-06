@@ -69,6 +69,32 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 
+// 核心供應鏈白名單代號字典（確保產業快篩 100% 精準命中）
+const AI_HARDWARE_SYMBOLS = new Set([
+  '2382', '3231', '2317', '2356', '2376', '2377', '6669', '3017', '3324', '3653',
+  '2421', '3483', '6230', '8210', '3013', '2059', '2308', '2301', '6205', '2368',
+  '6274', '2383', '3665', '3706', '4938'
+]);
+
+const COWOS_EQUIPMENT_SYMBOLS = new Set([
+  '3131', '3583', '6187', '6640', '2467', '3413', '8027', '3037', '8046', '3189',
+  '3711', '2449', '6257', '6278', '6510', '6223', '6515', '3680', '5434', '6196', '6691'
+]);
+
+const MEMORY_EXCLUDE_SYMBOLS = new Set([
+  '3260', '2408', '2344', '2337', '8299', '4967', '3006', '5351'
+]);
+
+const CPO_PHOTONICS_SYMBOLS = new Set([
+  '3450', '4977', '3163', '4979', '6442', '3363', '3081', '3234', '4908', '6451',
+  '3105', '2455', '4906', '2345', '3596', '5388', '6285'
+]);
+
+const POWER_GRID_SYMBOLS = new Set([
+  '1519', '1513', '1503', '1514', '1504', '1609', '1605', '1608', '1612', '3708',
+  '6806', '6869', '6873', '9958'
+]);
+
 /**
  * 輕量優雅的 Markdown 渲染組件 (支援標題、重點、粗體、清單、分隔線)
  */
@@ -915,15 +941,53 @@ export default function App() {
     // 嚴格剔除產業黑名單
     list = list.filter((s) => !isBlacklisted(s.symbol, s.name));
 
-    // 修正 3：採用雙層業務特徵詞動態匹配產業白名單（排除記憶體對 CoWoS 的污染）
+    // 嚴格剔除跌破 20MA (BEARISH_BROKEN) 與評分低於 50 分的弱勢標的
+    list = list.filter((s) => s.entryTactic !== 'BEARISH_BROKEN' && s.price >= s.ma20 && (s.buyRatingScore ?? 0) >= 50);
+
+    // 核心供應鏈白名單與業務特徵詞動態匹配（排除記憶體對 CoWoS 的干擾）
     if (selectedIndustryFilter !== 'all') {
       list = list.filter((s) => {
         const theme = `${s.industryTheme || ''} ${s.industry || ''} ${s.name}`;
-        if (selectedIndustryFilter === 'ai') return /伺服器|散熱|水冷|機殼|滑軌|導軌|伺服器電源|高階交換器|CCL|銅箔基板|AI晶片/i.test(theme);
-        if (selectedIndustryFilter === 'cowos') return /先進封裝|CoWoS|半導體設備|晶圓設備|封裝設備|IC載板|ABF|晶圓測試|探針卡/i.test(theme) && !/記憶體|DRAM|Flash|快閃/i.test(theme);
-        if (selectedIndustryFilter === 'cpo') return /矽光子|CPO|光收發|光通訊|光模組|光纖|雷射晶片|光主動元件/i.test(theme);
-        if (selectedIndustryFilter === 'power') return /重電|變壓器|配電盤|高壓線纜|電線電纜|儲能|綠能|離岸風電|太陽能電廠/i.test(theme);
-        if (selectedIndustryFilter === 'turnaround') return /高值化|循環材料|車用電子轉型|營運轉機|脫離谷底|塑化轉型/i.test(theme);
+        if (selectedIndustryFilter === 'ai') {
+          return (
+            AI_HARDWARE_SYMBOLS.has(s.symbol) ||
+            s.industryTheme?.includes('AI') ||
+            /伺服器|散熱|水冷|機殼|滑軌|導軌|伺服器電源|高階交換器|CCL|銅箔基板|AI晶片|AI/i.test(theme)
+          );
+        }
+        if (selectedIndustryFilter === 'cowos') {
+          return (
+            (COWOS_EQUIPMENT_SYMBOLS.has(s.symbol) ||
+              s.industryTheme?.includes('CoWoS') ||
+              s.industryTheme?.includes('先進封裝') ||
+              /先進封裝|CoWoS|半導體設備|晶圓設備|封裝設備|IC載板|ABF|晶圓測試|探針卡/i.test(theme)) &&
+            !MEMORY_EXCLUDE_SYMBOLS.has(s.symbol) &&
+            !/記憶體|DRAM|Flash|快閃/i.test(theme)
+          );
+        }
+        if (selectedIndustryFilter === 'cpo') {
+          return (
+            CPO_PHOTONICS_SYMBOLS.has(s.symbol) ||
+            s.industryTheme?.includes('CPO') ||
+            s.industryTheme?.includes('矽光子') ||
+            /矽光子|CPO|光收發|光通訊|光模組|光纖|雷射晶片|光主動元件/i.test(theme)
+          );
+        }
+        if (selectedIndustryFilter === 'power') {
+          return (
+            POWER_GRID_SYMBOLS.has(s.symbol) ||
+            s.industryTheme?.includes('重電') ||
+            s.industryTheme?.includes('電網') ||
+            /重電|變壓器|配電盤|高壓線纜|電線電纜|儲能|綠能|離岸風電|太陽能電廠/i.test(theme)
+          );
+        }
+        if (selectedIndustryFilter === 'turnaround') {
+          return (
+            s.industryTheme?.includes('轉型') ||
+            s.industryTheme?.includes('轉機') ||
+            /高值化|循環材料|車用電子轉型|營運轉機|脫離谷底|塑化轉型|轉型/i.test(theme)
+          );
+        }
         return true;
       });
     }
@@ -952,18 +1016,59 @@ export default function App() {
     // 嚴格剔除產業黑名單
     list = list.filter((s) => !isBlacklisted(s.symbol, s.name));
 
-    // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」且 5 日均量需 >= 1000 張
-    list = list.filter((s) => (s.buyRatingScore ?? 0) >= 50 && (s.volumeAvg5d ?? 0) >= 1000);
+    // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」且 5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股
+    list = list.filter(
+      (s) =>
+        s.entryTactic !== 'BEARISH_BROKEN' &&
+        s.price >= (s.ma20 ?? s.stopLossPrice) &&
+        (s.buyRatingScore ?? 0) >= 50 &&
+        (s.volumeAvg5d ?? 0) >= 1000
+    );
 
-    // 修正 3：採用雙層業務特徵詞動態匹配產業白名單（排除記憶體對 CoWoS 的污染）
+    // 核心供應鏈白名單與業務特徵詞動態匹配（排除記憶體對 CoWoS 的干擾）
     if (selectedIndustryFilter !== 'all') {
       list = list.filter((s) => {
         const theme = `${s.industryTheme || ''} ${s.industry || ''} ${s.catalyst || ''} ${s.name}`;
-        if (selectedIndustryFilter === 'ai') return /伺服器|散熱|水冷|機殼|滑軌|導軌|伺服器電源|高階交換器|CCL|銅箔基板|AI晶片/i.test(theme);
-        if (selectedIndustryFilter === 'cowos') return /先進封裝|CoWoS|半導體設備|晶圓設備|封裝設備|IC載板|ABF|晶圓測試|探針卡/i.test(theme) && !/記憶體|DRAM|Flash|快閃/i.test(theme);
-        if (selectedIndustryFilter === 'cpo') return /矽光子|CPO|光收發|光通訊|光模組|光纖|雷射晶片|光主動元件/i.test(theme);
-        if (selectedIndustryFilter === 'power') return /重電|變壓器|配電盤|高壓線纜|電線電纜|儲能|綠能|離岸風電|太陽能電廠/i.test(theme);
-        if (selectedIndustryFilter === 'turnaround') return /高值化|循環材料|車用電子轉型|營運轉機|脫離谷底|塑化轉型/i.test(theme);
+        if (selectedIndustryFilter === 'ai') {
+          return (
+            AI_HARDWARE_SYMBOLS.has(s.symbol) ||
+            s.industryTheme?.includes('AI') ||
+            /伺服器|散熱|水冷|機殼|滑軌|導軌|伺服器電源|高階交換器|CCL|銅箔基板|AI晶片|AI/i.test(theme)
+          );
+        }
+        if (selectedIndustryFilter === 'cowos') {
+          return (
+            (COWOS_EQUIPMENT_SYMBOLS.has(s.symbol) ||
+              s.industryTheme?.includes('CoWoS') ||
+              s.industryTheme?.includes('先進封裝') ||
+              /先進封裝|CoWoS|半導體設備|晶圓設備|封裝設備|IC載板|ABF|晶圓測試|探針卡/i.test(theme)) &&
+            !MEMORY_EXCLUDE_SYMBOLS.has(s.symbol) &&
+            !/記憶體|DRAM|Flash|快閃/i.test(theme)
+          );
+        }
+        if (selectedIndustryFilter === 'cpo') {
+          return (
+            CPO_PHOTONICS_SYMBOLS.has(s.symbol) ||
+            s.industryTheme?.includes('CPO') ||
+            s.industryTheme?.includes('矽光子') ||
+            /矽光子|CPO|光收發|光通訊|光模組|光纖|雷射晶片|光主動元件/i.test(theme)
+          );
+        }
+        if (selectedIndustryFilter === 'power') {
+          return (
+            POWER_GRID_SYMBOLS.has(s.symbol) ||
+            s.industryTheme?.includes('重電') ||
+            s.industryTheme?.includes('電網') ||
+            /重電|變壓器|配電盤|高壓線纜|電線電纜|儲能|綠能|離岸風電|太陽能電廠/i.test(theme)
+          );
+        }
+        if (selectedIndustryFilter === 'turnaround') {
+          return (
+            s.industryTheme?.includes('轉型') ||
+            s.industryTheme?.includes('轉機') ||
+            /高值化|循環材料|車用電子轉型|營運轉機|脫離谷底|塑化轉型|轉型/i.test(theme)
+          );
+        }
         return true;
       });
     }

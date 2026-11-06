@@ -163,6 +163,8 @@ export interface TurnaroundStockItem {
   atr20?: number; // 20日平均真實波動度
   atrPct?: number; // 20日 ATR 波動度百分比 % (必須 >= 1.8%)
   volumeAvg5d?: number; // 5日平均成交量 (必須 > 1,000張)
+  ma20?: number; // 20MA
+  ma5?: number; // 5MA
   industryTheme?: string; // 聚焦產業白名單主題
   isPriorityWhiteList?: boolean; // 符合優先聚焦產業白名單
   // 量化買入評分系統 (0 ~ 100分)

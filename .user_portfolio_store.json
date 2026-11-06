@@ -2,21 +2,21 @@
   "initialCapital": 1000000,
   "portfolio": [
     {
-      "id": "2308-1793344044050",
-      "symbol": "2308",
-      "name": "台達電",
-      "entryPrice": 1335,
-      "sharesLots": 1,
+      "id": "1802-1793767357073",
+      "symbol": "1802",
+      "name": "台玻",
+      "entryPrice": 65.5,
+      "sharesLots": 5,
       "feeDiscount": 60,
-      "stopLossPrice": 1268.25,
-      "targetPrice": 1668.75,
-      "entryDate": "2026-10-30",
+      "stopLossPrice": 62,
+      "targetPrice": 72.5,
+      "entryDate": "2026-11-04",
       "strategyType": "momentum",
-      "notes": "【自選加入】AI硬體周邊 (散熱/機殼/滑軌/電源)",
-      "currentPrice": 1270,
-      "change": -85,
-      "changePercent": -6.27,
-      "updateTime": "13:30:00"
+      "notes": "【強勢動能】投信波段認養名單（買超 17776 張），現階段均線打底整理中，列入即時雷達監控 [ATR% 7.07%]",
+      "currentPrice": 58,
+      "change": -2.1,
+      "changePercent": -3.49,
+      "updateTime": "11:20:00"
     }
   ],
   "tradeHistory": []

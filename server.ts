@@ -217,6 +217,8 @@ export interface TurnaroundStockItem {
   atr20?: number; // 20日平均真實波動度
   atrPct?: number; // 20日 ATR 波動度百分比 % (必須 >= 1.8%)
   volumeAvg5d?: number; // 5日平均成交量 (必須 > 1,000張)
+  ma20?: number; // 20MA
+  ma5?: number; // 5MA
   industryTheme?: string; // 聚焦產業白名單主題
   isPriorityWhiteList?: boolean; // 符合優先聚焦產業白名單
   // 量化買入評分系統 (0 ~ 100分)
@@ -774,34 +776,76 @@ function resolveStockSymbol(query: string): string | null {
  *   5. turnaround: 高值化|循環材料|車用電子轉型|營運轉機|脫離谷底|塑化轉型
  *   6. Fallback 至 TaiwanStockInfo 的官方產業分類（officialIndustry）
  */
+const AI_HARDWARE_SYMBOLS = new Set([
+  '2382', '3231', '2317', '2356', '2376', '2377', '6669', '3017', '3324', '3653',
+  '2421', '3483', '6230', '8210', '3013', '2059', '2308', '2301', '6205', '2368',
+  '6274', '2383', '3665', '3706', '4938',
+]);
+
+const COWOS_EQUIPMENT_SYMBOLS = new Set([
+  '3131', '3583', '6187', '6640', '2467', '3413', '8027', '3037', '8046', '3189',
+  '3711', '2449', '6257', '6278', '6510', '6223', '6515', '3680', '5434', '6196', '6691',
+]);
+
+const MEMORY_EXCLUDE_SYMBOLS = new Set([
+  '3260', '2408', '2344', '2337', '8299', '4967', '3006', '5351',
+]);
+
+const CPO_PHOTONICS_SYMBOLS = new Set([
+  '3450', '4977', '3163', '4979', '6442', '3363', '3081', '3234', '4908', '6451',
+  '3105', '2455', '4906', '2345', '3596', '5388', '6285',
+]);
+
+const POWER_GRID_SYMBOLS = new Set([
+  '1519', '1513', '1503', '1514', '1504', '1609', '1605', '1608', '1612', '3708',
+  '6806', '6869', '6873', '9958',
+]);
+
+/**
+ * 聚焦產業白名單自動判定函數（雙層業務特徵識別架構：台股核心供應鏈字典 + 官方大類特徵雙層映射）
+ */
 function getStockIndustryTheme(code: string, rawName?: string): { industryTheme: string; isPriorityWhiteList: boolean } {
   const name = getStockName(code, rawName);
-  const officialIndustry = getStockOfficialIndustry(code);
+  const officialIndustry = getStockOfficialIndustry(code) || '';
   const combined = `${name} ${officialIndustry}`;
 
-  // 1. AI 硬體周邊 (散熱/機殼/滑軌/電源/高階交換器/CCL)
-  if (/伺服器|散熱|水冷|機殼|滑軌|導軌|伺服器電源|高階交換器|CCL|銅箔基板|AI晶片/.test(combined)) {
+  // 1. AI 伺服器與零組件硬體周邊 (散熱/機殼/滑軌/電源/高階交換器/CCL)
+  if (
+    AI_HARDWARE_SYMBOLS.has(code) ||
+    /伺服器|散熱|水冷|機殼|滑軌|導軌|伺服器電源|高階交換器|CCL|銅箔基板|AI晶片|電源供應器/.test(combined)
+  ) {
     return { industryTheme: 'AI硬體周邊 (散熱/機殼/滑軌/電源)', isPriorityWhiteList: true };
   }
 
-  // 2. 半導體設備與 CoWoS 先進封裝 (嚴格排除記憶體: 威剛、南亞科、華邦電等絕不可誤判為 CoWoS)
-  const isMemoryStock = /記憶體|DRAM|Flash|快閃|模組廠/.test(combined);
-  if (!isMemoryStock && /先進封裝|CoWoS|半導體設備|晶圓設備|封裝設備|IC載板|ABF|晶圓測試|探針卡/.test(combined)) {
+  // 2. 半導體設備與 CoWoS 先進封裝 (嚴格排除記憶體: 威剛、南亞科、華邦電、創見等絕不可誤判)
+  const isMemory = MEMORY_EXCLUDE_SYMBOLS.has(code) || /記憶體|DRAM|Flash|快閃|模組廠/.test(combined);
+  if (
+    !isMemory &&
+    (COWOS_EQUIPMENT_SYMBOLS.has(code) ||
+      /先進封裝|CoWoS|半導體設備|晶圓設備|封裝設備|IC載板|ABF|晶圓測試|探針卡|封測/.test(combined))
+  ) {
     return { industryTheme: '半導體設備與 CoWoS 先進封裝', isPriorityWhiteList: true };
   }
 
   // 3. CPO 矽光子與高速光通訊
-  if (/矽光子|CPO|光收發|光通訊|光模組|光纖|雷射晶片|光主動元件/.test(combined)) {
+  if (
+    CPO_PHOTONICS_SYMBOLS.has(code) ||
+    /矽光子|CPO|光收發|光通訊|光模組|光纖|雷射晶片|光主動元件/.test(combined)
+  ) {
     return { industryTheme: 'CPO 矽光子與高速光通訊', isPriorityWhiteList: true };
   }
 
   // 4. 重電電網與儲能綠能
-  if (/重電|變壓器|配電盤|高壓線纜|電線電纜|儲能|綠能|離岸風電|太陽能電廠/.test(combined)) {
+  if (
+    POWER_GRID_SYMBOLS.has(code) ||
+    /電器電纜|綠能環保/.test(officialIndustry) ||
+    /重電|變壓器|配電盤|高壓線纜|電線電纜|儲能|綠能|離岸風電|太陽能電廠/.test(combined)
+  ) {
     return { industryTheme: '重電電網與儲能綠能', isPriorityWhiteList: true };
   }
 
   // 5. 具備低基期轉型爆發之利基型傳產/電子
-  if (/高值化|循環材料|車用電子轉型|營運轉機|脫離谷底|塑化轉型/.test(combined)) {
+  if (/高值化|循環材料|車用電子轉型|營運轉機|脫離谷底|塑化轉型|轉型/.test(combined)) {
     return { industryTheme: '低基期轉型爆發 (利基傳產/電子)', isPriorityWhiteList: true };
   }
 
@@ -2597,8 +2641,16 @@ export interface BuyRatingResult {
 
 /**
  * 客觀量化買入評分演算法 (0 ~ 100分，四大維度)
+ * 嚴防破線股給高分、動能股依乖離給安全分、轉型股依營收與EPS動態給籌碼分
  */
 function calculateBuyRatingScore(params: {
+  strategyType?: 'momentum' | 'turnaround';
+  curPrice?: number;
+  ma20?: number;
+  changePercent?: number;
+  volumeAvg5d?: number;
+  revenueYoY?: number;
+  eps4Q?: number | null;
   consecutiveTrustDays?: number;
   foreignNetLots?: number | null;
   trustNetLots?: number;
@@ -2613,51 +2665,105 @@ function calculateBuyRatingScore(params: {
   isVolumeExpanding?: boolean;
   volumeRatio?: number;
 }): BuyRatingResult {
+  const isTurnaround = params.strategyType === 'turnaround';
+  const curPrice = params.curPrice ?? 0;
+  const ma20 = params.ma20 ?? 0;
+  const isBroken = params.curPrice !== undefined && params.ma20 !== undefined && curPrice < ma20;
+
   let chipScore = 0;
   let techScore = 0;
   let safetyScore = 0;
   let momentumScore = 0;
 
-  // 維度一：法人與籌碼純度（滿分 35 分）
-  // 1. 投信連續買超天數：>= 3 天給 15 分；1~2 天給 10 分
-  const trustDays = params.consecutiveTrustDays ?? 0;
-  if (trustDays >= 3) {
-    chipScore += 15;
-  } else if (trustDays >= 1) {
-    chipScore += 10;
-  } else if ((params.trustNetLots ?? 0) > 0) {
-    chipScore += 8;
-  }
-
-  // 2. 外資同向買超：外資最新一日淨買超 > 0 給 10 分；若大賣超則得 0 分
-  const foreignLots = params.foreignNetLots;
-  if (foreignLots !== null && foreignLots !== undefined) {
-    if (foreignLots > 0) {
+  // -------------------------------------------------------------
+  // 維度一：法人與籌碼純度 / 基本面轉機籌碼（滿分 35 分）
+  // -------------------------------------------------------------
+  if (isTurnaround) {
+    // 規則 C（低基期轉型策略）：依 revenueYoY 與 eps4Q 計算，不再死板固定 8/35
+    const yoy = params.revenueYoY ?? 0;
+    if (yoy >= 30) {
+      chipScore += 18;
+    } else if (yoy >= 15) {
+      chipScore += 14;
+    } else if (yoy >= 8) {
       chipScore += 10;
-    } else if (foreignLots < -500) {
-      chipScore += 0;
     } else {
+      chipScore += 5;
+    }
+
+    const eps = params.eps4Q;
+    if (eps !== null && eps !== undefined) {
+      if (eps > 2.0) {
+        chipScore += 15;
+      } else if (eps > 0.5) {
+        chipScore += 12;
+      } else if (eps > 0) {
+        chipScore += 8;
+      } else {
+        chipScore += 3;
+      }
+    } else {
+      chipScore += 5;
+    }
+
+    // 若有主力/投信法人同步加碼加分
+    if ((params.trustNetLots ?? 0) > 0 || (params.foreignNetLots ?? 0) > 0) {
       chipScore += 4;
+    } else {
+      chipScore += 2;
     }
   } else {
-    chipScore += 5; // 中性無數據
-  }
+    // 規則 B（動能突破策略）：
+    // 1. 投信連續買超天數：>= 3 天給 15 分；1~2 天給 10 分
+    const trustDays = params.consecutiveTrustDays ?? 0;
+    if (trustDays >= 3) {
+      chipScore += 15;
+    } else if (trustDays >= 1) {
+      chipScore += 10;
+    } else if ((params.trustNetLots ?? 0) > 0) {
+      chipScore += 8;
+    }
 
-  // 3. 主力分點買盤：主力買賣超佔比 >= 15% 給 10 分
-  if (params.majorBrokersNetRatio !== undefined && params.majorBrokersNetRatio >= 15) {
-    chipScore += 10;
-  } else if (params.isMajorLocked) {
-    chipScore += 10;
-  } else if ((params.trustNetLots ?? 0) > 500 && (foreignLots ?? 0) >= 0) {
-    chipScore += 9;
-  } else if ((params.trustNetLots ?? 0) > 0) {
-    chipScore += 6;
-  } else {
-    chipScore += 3;
+    // 2. 外資同向買超：外資最新一日淨買超 > 0 給 10 分；若大賣超則得 0 分
+    const foreignLots = params.foreignNetLots;
+    if (foreignLots !== null && foreignLots !== undefined) {
+      if (foreignLots > 0) {
+        chipScore += 10;
+      } else if (foreignLots < -500) {
+        chipScore += 0;
+      } else {
+        chipScore += 4;
+      }
+    } else {
+      chipScore += 5; // 中性無數據
+    }
+
+    // 3. 主力分點與鎖碼買盤
+    if (params.majorBrokersNetRatio !== undefined && params.majorBrokersNetRatio >= 15) {
+      chipScore += 10;
+    } else if (params.isMajorLocked) {
+      chipScore += 10;
+    } else if ((params.trustNetLots ?? 0) > 500 && (foreignLots ?? 0) >= 0) {
+      chipScore += 9;
+    } else if ((params.trustNetLots ?? 0) > 0) {
+      chipScore += 6;
+    } else {
+      chipScore += 3;
+    }
+
+    // 計算投信買超佔 5 日均量比：若 trustNetLots < 50 且 trustRatio < 0.01（象徵性微買如 +9 張），上限不得超過 18 分
+    const trustLots = params.trustNetLots ?? 0;
+    const avgVol = Math.max(1, params.volumeAvg5d ?? 1000);
+    const trustRatio = trustLots / avgVol;
+    if (trustLots < 50 && trustRatio < 0.01) {
+      chipScore = Math.min(18, chipScore);
+    }
   }
   chipScore = Math.min(35, Math.max(0, chipScore));
 
+  // -------------------------------------------------------------
   // 維度二：均線多頭進攻結構（滿分 30 分）
+  // -------------------------------------------------------------
   // 1. 5MA > 10MA > 20MA 多頭發散排列：給 15 分
   if (params.isBullishMa) {
     techScore += 15;
@@ -2680,63 +2786,117 @@ function calculateBuyRatingScore(params: {
   } else {
     techScore += 2;
   }
-  techScore = Math.min(30, Math.max(0, techScore));
 
+  // 規則 A：若破線（curPrice < ma20），techScore 強制壓在 5 分以下
+  if (isBroken) {
+    techScore = Math.min(5, techScore);
+  } else {
+    techScore = Math.min(30, Math.max(0, techScore));
+  }
+
+  // -------------------------------------------------------------
   // 維度三：位階與乖離安全防護（滿分 20 分）
-  // 1. 位階安全性：近一年位階 <= 35% 給 15 分；位階 36%~50% 給 8 分
-  const pos = params.positionPct ?? 40;
-  if (pos <= 35) {
-    safetyScore += 15;
-  } else if (pos <= 50) {
-    safetyScore += 8;
-  } else if (pos <= 65) {
-    safetyScore += 4;
+  // -------------------------------------------------------------
+  if (isBroken) {
+    // 規則 A：跌破月線毫無安全可言，嚴禁給分！
+    safetyScore = 0;
+  } else if (isTurnaround) {
+    // 規則 C（低基期轉型策略）：在 curPrice >= ma20 前提下，positionPct <= 25 給 15分、<= 35 給 12分，且 bias20ma <= 5 再加 5分
+    const pos = params.positionPct ?? 40;
+    if (pos <= 25) {
+      safetyScore += 15;
+    } else if (pos <= 35) {
+      safetyScore += 12;
+    } else if (pos <= 50) {
+      safetyScore += 6;
+    } else {
+      safetyScore += 2;
+    }
+
+    const bias = params.bias20ma ?? 2;
+    if (bias >= 0 && bias <= 5) {
+      safetyScore += 5;
+    } else if (bias > 5 && bias <= 8) {
+      safetyScore += 2;
+    } else if (bias > 10) {
+      safetyScore -= 10;
+    }
+    safetyScore = Math.min(20, Math.max(0, safetyScore));
   } else {
-    safetyScore += 0;
+    // 規則 B（強勢動能策略）：不看一年低位階（創高股位階必高），改看站穩 20MA 前提下的正乖離率
+    const bias = params.bias20ma ?? 3;
+    if (bias >= 0 && bias <= 5) {
+      safetyScore = 20;
+    } else if (bias > 5 && bias <= 8) {
+      safetyScore = 15;
+    } else if (bias > 8 && bias <= 10) {
+      safetyScore = 10;
+    } else if (bias > 10) {
+      safetyScore = 0; // 乖離過熱
+    } else {
+      safetyScore = 0;
+    }
   }
 
-  // 2. 乖離率防追高：20MA 正乖離在 1%~6% 健康黃金進攻區給 5 分；若乖離率 > 10%（過熱）扣 15 分
-  const bias = params.bias20ma ?? 3;
-  if (bias >= 1 && bias <= 6) {
-    safetyScore += 5;
-  } else if (bias > 6 && bias <= 10) {
-    safetyScore += 2;
-  } else if (bias > 10) {
-    safetyScore -= 15; // 扣 15 分
-  } else {
-    safetyScore += 3;
-  }
-  safetyScore = Math.min(20, Math.max(0, safetyScore));
-
+  // -------------------------------------------------------------
   // 維度四：量能與波動爆發力（滿分 15 分）
+  // -------------------------------------------------------------
   // 1. ATR% 實質震幅：ATR% >= 3.0% 給 8 分；2.5% <= ATR% < 3.0% 給 5 分
   const atr = params.atrPct ?? 2.5;
   if (atr >= 3.0) {
     momentumScore += 8;
   } else if (atr >= 2.5) {
     momentumScore += 5;
+  } else if (atr >= 2.2) {
+    momentumScore += 4;
   } else {
     momentumScore += 2;
   }
 
-  // 2. 出量突破：成交量（或盤中預估量）>= 5日均量 1.3 倍給 7 分
+  // 2. 出量突破（滿分 7 分）：必須滿足 (params.changePercent ?? 0) > -1.0 且 curPrice >= ma20 才給分！
+  const changeP = params.changePercent ?? 0;
   const volRatio = params.volumeRatio ?? 1.0;
-  if (params.isVolumeExpanding || volRatio >= 1.3) {
-    momentumScore += 7;
-  } else if (volRatio >= 1.1) {
-    momentumScore += 4;
+
+  if (changeP <= -1.5) {
+    // 當日收黑下跌 <= -1.5% 且出量（主力爆量下殺出貨），量能項給 0 分！
+    // 不加分
+  } else if (changeP > -1.0 && !isBroken) {
+    if (params.isVolumeExpanding || volRatio >= 1.3) {
+      momentumScore += 7;
+    } else if (volRatio >= 1.1) {
+      momentumScore += 4;
+    } else {
+      momentumScore += 1;
+    }
   } else {
-    momentumScore += 1;
+    // 輕微回檔或弱勢
+    if (volRatio >= 1.1) {
+      momentumScore += 2;
+    } else {
+      momentumScore += 1;
+    }
   }
   momentumScore = Math.min(15, Math.max(0, momentumScore));
 
-  const totalScore = Math.min(100, Math.max(0, chipScore + techScore + safetyScore + momentumScore));
+  // -------------------------------------------------------------
+  // 總分計算與破線強制封頂（規則 A）
+  // -------------------------------------------------------------
+  let totalScore = chipScore + techScore + safetyScore + momentumScore;
+  if (isBroken) {
+    // 破線無買點股總分強制壓在 45 分以下
+    totalScore = Math.min(45, totalScore);
+  }
+  totalScore = Math.min(100, Math.max(0, totalScore));
 
   let level: 'STRONG_BUY' | 'BUY' | 'ACCUMULATE' | 'HOLD_WATCH';
   let label: string;
   let stars: string;
 
-  if (totalScore >= 90) {
+  if (isBroken) {
+    level = 'HOLD_WATCH';
+    label = '⚪ 破線觀望 (Hold / Watch)';
+    stars = '☆';
+  } else if (totalScore >= 90) {
     level = 'STRONG_BUY';
     label = '🏆 強烈建議買入 (Strong Buy)';
     stars = '⭐⭐⭐';
@@ -2908,9 +3068,9 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
   const validCandidates = candidates.filter((c) => {
     if (isFinancialStock(c.code, c.name)) return false;
     // 嚴格確保今日/最新投信持續買超，且連續天數 >= 1
-    if (c.day1TrustLots <= 0 || c.consecutiveTrustDays < 1) return false;
+    if (c.day2TrustLots <= 0 || c.consecutiveTrustDays < 1) return false;
     // 三大法人合計買賣超不得小於 -500 張（防止投信小買、外資自營倒貨巨量之假拉抬股）
-    const totalInstSum = c.day1TrustLots + (c.foreignNetLots || 0) + (c.dealerNetLots || 0);
+    const totalInstSum = c.day2TrustLots + (c.foreignNetLots || 0) + (c.dealerNetLots || 0);
     if (totalInstSum <= -500) return false;
     return true;
   });
@@ -3018,6 +3178,11 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
 
       // 重構客觀量化買入評分系統 (0 ~ 100分)
       const buyRating = calculateBuyRatingScore({
+        strategyType: 'momentum',
+        curPrice: curClose,
+        ma20,
+        changePercent,
+        volumeAvg5d,
         consecutiveTrustDays: c.consecutiveTrustDays,
         foreignNetLots: c.foreignNetLots,
         trustNetLots: c.day2TrustLots,
@@ -3109,8 +3274,13 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
     }
   }
 
+  // 核心安全過濾：剔除跌破 20MA (BEARISH_BROKEN) 與評分低於 50 分的弱勢標的
+  const qualifiedList = results.filter(
+    (s) => s.entryTactic !== 'BEARISH_BROKEN' && s.price >= s.ma20 && (s.buyRatingScore ?? 0) >= 50
+  );
+
   // 排序：選股清單預設按照 buyRatingScore 由高分到低分降序排列，同分者依 isMatched 與量能排序
-  results.sort((a, b) => {
+  qualifiedList.sort((a, b) => {
     const scoreDiff = (b.buyRatingScore ?? 0) - (a.buyRatingScore ?? 0);
     if (scoreDiff !== 0) return scoreDiff;
     if (a.isMatched && !b.isMatched) return -1;
@@ -3120,7 +3290,7 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
     return (b.estVolumeRatio || b.volumeRatio) - (a.estVolumeRatio || a.volumeRatio);
   });
 
-  const matchedList = results.filter((s) => s.isMatched);
+  const matchedList = qualifiedList.filter((s) => s.isMatched);
 
   const mode: ScreenerMode = isIntraday ? 'intraday' : 'after_hours';
   const modeLabel = isIntraday
@@ -3131,7 +3301,7 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
     : `盤後官方結算完成 (15:30 後)・臺灣證交所官方正式收盤價與三大法人籌碼結算定調`;
 
   return {
-    allStocks: results,
+    allStocks: qualifiedList,
     matchedList,
     mode,
     modeLabel,
@@ -3412,9 +3582,27 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         ]);
 
         if (revRes && Array.isArray(revRes.data) && revRes.data.length > 0) {
-          const lastRev = revRes.data[revRes.data.length - 1];
-          revenueYoY = Number(lastRev.revenue_yoy || lastRev.YoY || 0);
-          latestRevMonth = Number(lastRev.revenue_month || 9);
+          const revRows = revRes.data.filter((r: any) => typeof r.revenue === 'number' || !isNaN(Number(r.revenue)));
+          if (revRows.length > 0) {
+            const lastRev = revRows[revRows.length - 1];
+            const curRevVal = Number(lastRev.revenue || 0);
+            latestRevMonth = Number(lastRev.revenue_month || (lastRev.date ? parseInt(String(lastRev.date).slice(5, 7), 10) : 9));
+
+            if (lastRev.revenue_yoy !== undefined || lastRev.YoY !== undefined) {
+              revenueYoY = Number(lastRev.revenue_yoy || lastRev.YoY || 0);
+            } else {
+              const lastDate = String(lastRev.date || '');
+              const lastYear = parseInt(lastDate.slice(0, 4), 10);
+              const lastMo = lastDate.slice(5, 7);
+              const prevYearStr = `${lastYear - 1}-${lastMo}`;
+              const prevRow = revRows.find((r: any) => String(r.date || '').startsWith(prevYearStr)) ||
+                              (revRows.length >= 13 ? revRows[revRows.length - 13] : null);
+              if (prevRow && Number(prevRow.revenue) > 0 && curRevVal > 0) {
+                const prevRevVal = Number(prevRow.revenue);
+                revenueYoY = Number((((curRevVal - prevRevVal) / prevRevVal) * 100).toFixed(1));
+              }
+            }
+          }
         }
 
         if (eRes && Array.isArray(eRes.data)) {
@@ -3444,6 +3632,13 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
       const priceAboveMa5 = item.curPrice >= ma5;
 
       const buyRating = calculateBuyRatingScore({
+        strategyType: 'turnaround',
+        curPrice: item.curPrice,
+        ma20: item.ma20,
+        changePercent,
+        volumeAvg5d: item.volumeAvg5d,
+        revenueYoY,
+        eps4Q: sumEps,
         positionPct: item.positionPct,
         bias20ma,
         atrPct: item.atrPct,
@@ -3526,12 +3721,20 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         atr20: item.atr20,
         atrPct: item.atrPct,
         volumeAvg5d: item.volumeAvg5d,
+        ma20: item.ma20,
+        ma5,
       };
     })
   );
 
-  // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」且 5 日均量需 >= 1000 張
-  const qualifiedResults = results.filter((s) => (s.buyRatingScore ?? 0) >= 50 && (s.volumeAvg5d ?? 0) >= 1000);
+  // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」、5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股
+  const qualifiedResults = results.filter(
+    (s) =>
+      s.entryTactic !== 'BEARISH_BROKEN' &&
+      s.price >= (s.ma20 ?? s.stopLossPrice) &&
+      (s.buyRatingScore ?? 0) >= 50 &&
+      (s.volumeAvg5d ?? 0) >= 1000
+  );
 
   qualifiedResults.sort((a, b) => {
     if (a.isTurnaroundMatched && !b.isTurnaroundMatched) return -1;
@@ -3732,6 +3935,13 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
       const updateTime = item.time || marketStatus.timeString;
 
       const buyRating = calculateBuyRatingScore({
+        strategyType: 'turnaround',
+        curPrice,
+        ma20,
+        changePercent,
+        volumeAvg5d,
+        revenueYoY: cached.revenueYoY,
+        eps4Q: cached.sumEps,
         positionPct,
         bias20ma,
         atrPct,
@@ -3799,6 +4009,8 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
         prevClose,
         volume: curVolumeLots,
         volumeAvg5d,
+        ma20,
+        ma5,
         atr20,
         atrPct,
         updateTime,
@@ -3838,8 +4050,14 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
   // -------------------------------------------------------------------------
   // -------------------------------------------------------------------------
   // 第四階段（輸出結果）：
-  // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」且 5 日均量需 >= 1000 張
-  const qualifiedResults = results.filter((s) => (s.buyRatingScore ?? 0) >= 50 && (s.volumeAvg5d ?? 0) >= 1000);
+  // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」、5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股
+  const qualifiedResults = results.filter(
+    (s) =>
+      s.entryTactic !== 'BEARISH_BROKEN' &&
+      s.price >= (s.ma20 ?? s.stopLossPrice) &&
+      (s.buyRatingScore ?? 0) >= 50 &&
+      (s.volumeAvg5d ?? 0) >= 1000
+  );
 
   qualifiedResults.sort((a, b) => {
     if (a.isTurnaroundMatched && !b.isTurnaroundMatched) return -1;
