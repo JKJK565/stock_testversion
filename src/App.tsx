@@ -1295,25 +1295,25 @@ export default function App() {
                 <div className="flex items-center gap-3">
                   <h2 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
                     <Activity className="w-5 h-5 text-rose-400" />
-                    大盤核心即時三大指數
+                    大盤核心指數
                   </h2>
                   <button
                     onClick={handleRefreshMarket}
                     disabled={isMarketRefreshing}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 hover:border-slate-600 text-xs font-semibold text-slate-200 hover:text-white transition disabled:opacity-50 shadow-sm cursor-pointer"
-                    title="點擊立即重新整理大盤核心三大指數最新撮合行情"
+                    title="重新整理指數行情"
                   >
                     <RefreshCw
                       className={`w-3.5 h-3.5 ${
                         isMarketRefreshing ? 'animate-spin text-rose-400' : 'text-slate-400'
                       }`}
                     />
-                    <span>{isMarketRefreshing ? '即時更新中...' : '重新整理指數'}</span>
+                    <span>{isMarketRefreshing ? '更新中...' : '重新整理'}</span>
                   </button>
                 </div>
                 <div className="flex items-center gap-2 text-xs text-slate-400">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                  <span>臺灣證交所 MIS &amp; Yahoo 全時直連</span>
+                  <span>即時連線</span>
                 </div>
               </div>
 
@@ -1481,14 +1481,14 @@ export default function App() {
               )}
             </div>
 
-            {/* 2. 美股四大指標橫幅 (真實數據前日昨收對比) */}
+            {/* 2. 美股四大指標橫幅 */}
             <div className="rounded-2xl bg-slate-900 border border-slate-800 p-4">
               <div className="text-xs font-semibold text-slate-400 mb-3 flex items-center justify-between">
                 <span className="flex items-center gap-2">
                   <Globe2 className="w-4 h-4 text-indigo-400" />
-                  美股四大關鍵連動指標（100% 精確前日昨收對比真實數據）
+                  美股四大指標
                 </span>
-                <span className="text-[11px] text-slate-500">Yahoo Finance 即時連線</span>
+                <span className="text-[11px] text-slate-500">即時連線</span>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 {/* 費半 */}
@@ -1618,26 +1618,26 @@ export default function App() {
                   </div>
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-lg font-bold text-white">每日深度操盤早報</h3>
+                      <h3 className="text-lg font-bold text-white">每日操盤早報</h3>
                       {morningBriefing?.isGenerated && morningBriefing.markdown ? (
                         <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold flex items-center gap-1.5">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                          ✅ 08:30 今日晨會作戰定稿（已鎖定）
+                          ✅ 09:00 今日開盤定稿
                         </span>
                       ) : (
                         <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-300 font-semibold flex items-center gap-1.5">
-                          ⏳ 今日早報預計於 08:30 自動產出定稿
+                          ⏳ 每日 09:00 開盤定稿
                         </span>
                       )}
                       <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-mono flex items-center gap-1">
                         <Sparkles className="w-3 h-3 text-indigo-400" />
                         {morningBriefing?.model && morningBriefing.isGenerated !== false
-                          ? `${morningBriefing.model} 旗艦推理`
-                          : 'Gemini 2.5 Pro 旗艦推理'}
+                          ? morningBriefing.model
+                          : 'AI 操盤推理'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-400 mt-0.5">
-                      美股四大指標 + 台指期夜盤 + 外資期貨淨留倉與三大法人籌碼深層因果推演
+                      國際盤勢、08:45 台指期開盤與三大法人籌碼推演
                     </p>
                   </div>
                 </div>
@@ -1647,14 +1647,14 @@ export default function App() {
                     onClick={() => loadBriefing(true, true)}
                     disabled={isBriefingGenerating}
                     className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer shadow-sm"
-                    title="緊急手動重新生成當日早報定稿 (?force=true)"
+                    title="重新生成早報"
                   >
                     <RefreshCw
                       className={`w-3.5 h-3.5 ${
                         isBriefingGenerating ? 'animate-spin text-amber-400' : 'text-slate-400'
                       }`}
                     />
-                    <span>{isBriefingGenerating ? '深度推演中...' : '🔄 手動刷新'}</span>
+                    <span>{isBriefingGenerating ? '推演中...' : '手動刷新'}</span>
                   </button>
 
                   <button
@@ -1694,10 +1694,10 @@ export default function App() {
                   <div>
                     <h4 className="text-base sm:text-lg font-bold text-white flex items-center justify-center gap-2">
                       <Sparkles className="w-5 h-5 text-amber-400" />
-                      Gemini 2.5 Pro 深度推演中...
+                      操盤早報推演中...
                     </h4>
                     <p className="text-xs sm:text-sm text-slate-400 mt-1 max-w-md">
-                      正在全維度推演昨夜費半、台積電 ADR、台指期夜盤及外資期貨淨留倉對今日開盤之衝擊影響...
+                      正在整合昨夜美股、台積電 ADR、08:45 台指期開盤點位與法人籌碼動向...
                     </p>
                   </div>
                   <div className="w-48 h-1.5 bg-slate-800 rounded-full overflow-hidden">
@@ -1710,10 +1710,10 @@ export default function App() {
                     ☕
                   </div>
                   <h4 className="text-lg sm:text-xl font-bold text-white tracking-wide">
-                    ⏳ 今日早報預計於 08:30 自動產出定稿
+                    ⏳ 今日早報預計於 09:00 開盤定稿
                   </h4>
                   <p className="text-xs sm:text-sm text-slate-400 mt-2 max-w-md leading-relaxed">
-                    系統於每個交易日 08:30 自動分析昨夜美股與法人籌碼，並將定稿永久存入雲端資料庫；您亦可隨時點擊下方按鈕手動緊急生成。
+                    每個交易日 09:00 依據國際盤勢與 08:45 台指期開盤自動定稿，亦可點擊下方按鈕手動生成。
                   </p>
                   <button
                     onClick={() => loadBriefing(true, true)}
@@ -1721,7 +1721,7 @@ export default function App() {
                     className="mt-5 px-6 py-3 rounded-2xl bg-gradient-to-r from-amber-500 via-rose-500 to-indigo-600 hover:from-amber-400 hover:via-rose-400 hover:to-indigo-500 text-white font-bold text-sm sm:text-base shadow-lg shadow-rose-950/60 hover:shadow-rose-900/80 transition-all flex items-center gap-2.5 transform active:scale-95 cursor-pointer disabled:opacity-50"
                   >
                     <Sparkles className="w-5 h-5 text-amber-200" />
-                    <span>⚡ 立即產出今日操盤戰報 (Gemini 2.5 Pro)</span>
+                    <span>⚡ 立即產出操盤戰報</span>
                   </button>
                 </div>
               ) : morningBriefing && isBriefingExpanded ? (
@@ -1730,7 +1730,7 @@ export default function App() {
                   <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-[11px] text-slate-500">
                     <span className="flex items-center gap-1.5 text-emerald-400/90 font-medium">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                      ✅ 08:30 今日晨會作戰定稿（已鎖定・Supabase 雲端持久化・0秒秒開）
+                      ✅ 09:00 今日開盤定稿（已鎖定）
                     </span>
                     <button
                       onClick={() => loadBriefing(true, true)}
@@ -1792,9 +1792,7 @@ export default function App() {
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 className="text-base sm:text-lg font-black text-white tracking-tight">
-                          {activeMode === 'intraday'
-                            ? '🟢 盤中即時雷達監控中（臺灣證交所官方直連撮合）'
-                            : '🔵 盤後官方籌碼正式結算完成'}
+                          {activeMode === 'intraday' ? '🟢 盤中即時監控' : '🔵 盤後籌碼結算'}
                         </h3>
                         <span
                           className={`text-[11px] font-mono px-2.5 py-0.5 rounded-full border font-semibold ${
@@ -1803,17 +1801,13 @@ export default function App() {
                               : 'bg-blue-500/15 border-blue-500/40 text-blue-300'
                           }`}
                         >
-                          {activeMode === 'intraday'
-                            ? '09:00~13:30 MIS 即時撮合'
-                            : '15:30後 官方正式結算'}
+                          {activeMode === 'intraday' ? '09:00~13:30 盤中撮合' : '15:30後 盤後結算'}
                         </span>
                       </div>
                       <p className="text-xs text-slate-300 mt-1 leading-relaxed">
                         {activeMode === 'intraday'
-                          ? strategyMode === 'momentum'
-                            ? '直接介接臺灣證交所 MIS 撮合成交價與累計成交量，依「開盤分鐘數」預估全日量能，嚴禁消耗 FinMind 額度。'
-                            : '直接介接臺灣證交所 MIS 撮合成交價與累計張數，盤中 100% 直連更新且不消耗 FinMind 額度。'
-                          : '整合臺灣證交所與 FinMind 正式收盤價與三大法人買賣超正式數據，驗證投信大買，產出明日精選名單。'}
+                          ? '即時追蹤盤中量能與均線突破攻擊訊號。'
+                          : '結算三大法人買賣超與最新收盤價，精選波段強勢標的。'}
                       </p>
                     </div>
                   </div>
@@ -1821,7 +1815,7 @@ export default function App() {
                   <div className="flex items-center gap-2.5 w-full md:w-auto justify-between md:justify-end border-t md:border-t-0 pt-3 md:pt-0 border-slate-800">
                     {activeUpdated && (
                       <div className="text-left md:text-right">
-                        <div className="text-[10px] text-slate-400">撮合更新時間</div>
+                        <div className="text-[10px] text-slate-400">更新時間</div>
                         <div className="text-xs font-mono font-bold text-slate-200">
                           {activeUpdated}
                         </div>
@@ -1836,10 +1830,10 @@ export default function App() {
                           ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/40'
                           : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/40'
                       }`}
-                      title="點擊立即獲取臺灣證交所最新撮合行情"
+                      title="重新整理行情"
                     >
                       <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-                      <span>{isRefreshing ? '撮合更新中...' : '重新整理行情'}</span>
+                      <span>{isRefreshing ? '更新中...' : '重新整理'}</span>
                     </button>
                   </div>
                 </div>
@@ -1886,64 +1880,57 @@ export default function App() {
 
               <div className="text-xs text-slate-400 px-3 py-1 flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                <span>
-                  雙重過濾機制：全面排除電信三雄、金融保險、油電燃氣牛皮股，鎖定動能突破 ≥ 2.5%、價值轉型 ≥ 2.2%與五大爆發白名單
-                </span>
+                <span>排除低波動存股，鎖定動能突破與產業白名單</span>
               </div>
             </div>
 
-            {/* ========================================================================= */}
-            {/* 【四、 產業屬性與客觀量化波動度雙重過濾機制（嚴禁牛皮存股與電信業）】PANEL */}
-            {/* ========================================================================= */}
-            {/* ========================================================================= */}
-            {/* 【四、 產業屬性與客觀量化波動度雙重過濾機制】極簡精緻面板 */}
-            {/* ========================================================================= */}
+            {/* 產業屬性與客觀量化波動度雙重過濾機制 */}
             <div className="p-3.5 sm:p-4 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-sm space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/60 pb-2">
                 <div className="flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-rose-400 flex-shrink-0" />
-                  <span className="text-xs sm:text-sm font-bold text-white">選股雙重過濾與產業聚焦</span>
+                  <span className="text-xs sm:text-sm font-bold text-white">選股防護與產業</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
                     量化防護
                   </span>
                 </div>
                 <div className="text-[11px] text-slate-400">
-                  剔除牛皮存股，鎖定具爆發空間之強勢與轉型標的
+                  排除牛皮存股，聚焦主流板塊
                 </div>
               </div>
 
               {/* 三大機制簡約卡片 */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
-                {/* 1. 產業黑名單 */}
+                {/* 1. 排除牛皮股 */}
                 <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80 space-y-1">
                   <div className="flex items-center gap-1.5 font-bold text-rose-300 text-xs">
                     <Ban className="w-3.5 h-3.5 text-rose-400 flex-shrink-0" />
-                    <span>1. 產業黑名單（全數剔除）</span>
+                    <span>1. 排除牛皮股</span>
                   </div>
                   <p className="text-slate-300 text-[11px] leading-relaxed">
-                    剔除<strong className="text-white">電信三雄</strong>、<strong className="text-white">金融保險</strong>、<strong className="text-white">公用事業與油電燃氣</strong>等低波動牛皮存股。
+                    剔除<strong className="text-white">電信三雄</strong>、<strong className="text-white">金融保險</strong>、<strong className="text-white">公用事業</strong>等低波動牛皮存股。
                   </p>
                 </div>
 
-                {/* 2. 客觀量化雙濾網 */}
+                {/* 2. 波動度與量能 */}
                 <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80 space-y-1">
                   <div className="flex items-center gap-1.5 font-bold text-amber-300 text-xs">
                     <Zap className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
-                    <span>2. 客觀量化雙濾網</span>
+                    <span>2. 波動度與量能</span>
                   </div>
                   <p className="text-slate-300 text-[11px] leading-relaxed">
-                    20日 ATR 波動度 <strong className="text-white">≥ 2.5%</strong>（低基期 <strong className="text-white">≥ 2.2%</strong>）、5日均量 <strong className="text-white">&gt; 1,000 張</strong>、股價 <strong className="text-white">15 ~ 500 元</strong>。
+                    20日 ATR 波動度 <strong className="text-white">≥ 2.5%</strong>、5日均量 <strong className="text-white">&gt; 1,000 張</strong>、股價 <strong className="text-white">15 ~ 500 元</strong>。
                   </p>
                 </div>
 
-                {/* 3. 優先聚焦五大產業白名單 */}
+                {/* 3. 五大主流產業 */}
                 <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80 space-y-1">
                   <div className="flex items-center gap-1.5 font-bold text-emerald-300 text-xs">
                     <Sparkles className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                    <span>3. 聚焦五大產業白名單</span>
+                    <span>3. 五大主流產業</span>
                   </div>
                   <p className="text-slate-300 text-[11px] leading-relaxed">
-                    聚焦 <strong className="text-white">AI 硬體周邊</strong>、<strong className="text-white">CoWoS/半導體設備</strong>、<strong className="text-white">CPO 矽光子</strong>、<strong className="text-white">重電儲能</strong>、<strong className="text-white">低基期轉型</strong>。
+                    聚焦 <strong className="text-white">AI 硬體</strong>、<strong className="text-white">設備與 CoWoS</strong>、<strong className="text-white">CPO 矽光子</strong>、<strong className="text-white">重電儲能</strong>、<strong className="text-white">低基期轉型</strong>。
                   </p>
                 </div>
               </div>
@@ -1952,16 +1939,16 @@ export default function App() {
               <div className="pt-2 border-t border-slate-800/80">
                 <div className="text-xs font-semibold text-slate-300 mb-2 flex items-center gap-2">
                   <SlidersHorizontal className="w-3.5 h-3.5 text-slate-400" />
-                  <span>產業白名單即時快篩：</span>
+                  <span>產業快篩：</span>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {[
-                    { id: 'all', label: '✨ 全部產業標的 (不限主題)', icon: Sparkles },
+                    { id: 'all', label: '全部產業', icon: Sparkles },
                     { id: 'ai', label: 'AI 硬體周邊', icon: Cpu },
-                    { id: 'cowos', label: '半導體設備與 CoWoS', icon: Layers },
-                    { id: 'cpo', label: 'CPO 矽光子與光通訊', icon: Zap },
-                    { id: 'power', label: '重電電網與儲能', icon: Flame },
-                    { id: 'turnaround', label: '低基期轉型爆發 (利基傳產/電子)', icon: Compass },
+                    { id: 'cowos', label: '設備與 CoWoS', icon: Layers },
+                    { id: 'cpo', label: 'CPO 矽光子', icon: Zap },
+                    { id: 'power', label: '重電儲能', icon: Flame },
+                    { id: 'turnaround', label: '低基期轉型', icon: Compass },
                   ].map((filter) => {
                     const Icon = filter.icon;
                     const isSelected = selectedIndustryFilter === filter.id;
@@ -2368,7 +2355,9 @@ export default function App() {
                                   {stock.entryTacticLabel && (
                                     <span
                                       className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                                        stock.entryTactic === 'BREAKOUT_BUY'
+                                        stock.entryTactic === 'BEARISH_BROKEN'
+                                          ? 'bg-rose-500/20 border-rose-500/50 text-rose-300'
+                                          : stock.entryTactic === 'BREAKOUT_BUY'
                                           ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
                                           : stock.entryTactic === 'WAIT_PULLBACK'
                                           ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
@@ -2387,7 +2376,9 @@ export default function App() {
                               <div className="grid grid-cols-3 gap-2 text-center text-xs">
                                 <div
                                   className={`p-2 rounded-xl border ${
-                                    stock.entryTactic === 'BREAKOUT_BUY'
+                                    stock.entryTactic === 'BEARISH_BROKEN'
+                                      ? 'bg-rose-950/40 border-rose-500/50 text-rose-200'
+                                      : stock.entryTactic === 'BREAKOUT_BUY'
                                       ? 'bg-rose-950/40 border-rose-500/50 text-rose-200'
                                       : stock.entryTactic === 'WAIT_PULLBACK'
                                       ? 'bg-amber-950/40 border-amber-500/50 text-amber-200'
@@ -2395,26 +2386,36 @@ export default function App() {
                                   }`}
                                 >
                                   <div className="text-[10px] font-medium text-slate-300">
-                                    {stock.entryTactic === 'BREAKOUT_BUY'
+                                    {stock.entryTactic === 'BEARISH_BROKEN'
+                                      ? '🚫 無安全買點 (破線)'
+                                      : stock.entryTactic === 'BREAKOUT_BUY'
                                       ? '🎯 突破確認價'
                                       : stock.entryTactic === 'WAIT_PULLBACK'
                                       ? '⚠️ 建議回檔價 (5MA)'
                                       : '⏳ 建議低接價 (5MA/20MA)'}
                                   </div>
-                                  <div className="font-extrabold text-base text-white mt-0.5">
-                                    ${(stock.suggestedEntryPrice ?? stock.price).toFixed(1)}
+                                  <div className={`font-extrabold mt-0.5 ${
+                                    stock.entryTactic === 'BEARISH_BROKEN' ? 'text-rose-400 text-xs sm:text-sm' : 'text-white text-base'
+                                  }`}>
+                                    {stock.entryTactic === 'BEARISH_BROKEN'
+                                      ? '觀望無買點'
+                                      : `$${(stock.suggestedEntryPrice ?? stock.price).toFixed(1)}`}
                                   </div>
                                 </div>
 
                                 <div className="p-2 rounded-xl bg-amber-950/40 border border-amber-900/60">
-                                  <div className="text-[10px] text-amber-400 font-medium">建議防守價 (20MA)</div>
+                                  <div className="text-[10px] text-amber-400 font-medium">
+                                    {stock.entryTactic === 'BEARISH_BROKEN' ? '建議防守價 (當周低)' : '建議防守價 (20MA)'}
+                                  </div>
                                   <div className="font-extrabold text-base text-amber-300 mt-0.5">
                                     ${stock.stopLossPrice.toFixed(1)}
                                   </div>
                                 </div>
 
                                 <div className="p-2 rounded-xl bg-purple-950/40 border border-purple-900/60">
-                                  <div className="text-[10px] text-purple-400 font-medium">目標獲利價</div>
+                                  <div className="text-[10px] text-purple-400 font-medium">
+                                    {stock.entryTactic === 'BEARISH_BROKEN' ? '反彈壓力價 (20MA)' : '目標獲利價'}
+                                  </div>
                                   <div className="font-extrabold text-base text-purple-300 mt-0.5">
                                     ${(stock.targetPrice ?? Number((stock.price * 1.15).toFixed(1))).toFixed(1)}
                                   </div>
@@ -2705,7 +2706,9 @@ export default function App() {
                                   {stock.entryTacticLabel && (
                                     <span
                                       className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                                        stock.entryTactic === 'BREAKOUT_BUY'
+                                        stock.entryTactic === 'BEARISH_BROKEN'
+                                          ? 'bg-rose-500/20 border-rose-500/50 text-rose-300'
+                                          : stock.entryTactic === 'BREAKOUT_BUY'
                                           ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
                                           : stock.entryTactic === 'WAIT_PULLBACK'
                                           ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
@@ -2724,7 +2727,9 @@ export default function App() {
                               <div className="grid grid-cols-3 gap-2 text-center text-xs">
                                 <div
                                   className={`p-2 rounded-xl border ${
-                                    stock.entryTactic === 'BREAKOUT_BUY'
+                                    stock.entryTactic === 'BEARISH_BROKEN'
+                                      ? 'bg-rose-950/40 border-rose-500/50 text-rose-200'
+                                      : stock.entryTactic === 'BREAKOUT_BUY'
                                       ? 'bg-rose-950/40 border-rose-500/50 text-rose-200'
                                       : stock.entryTactic === 'WAIT_PULLBACK'
                                       ? 'bg-amber-950/40 border-amber-500/50 text-amber-200'
@@ -2732,26 +2737,36 @@ export default function App() {
                                   }`}
                                 >
                                   <div className="text-[10px] font-medium text-slate-300">
-                                    {stock.entryTactic === 'BREAKOUT_BUY'
+                                    {stock.entryTactic === 'BEARISH_BROKEN'
+                                      ? '🚫 無安全買點 (破線)'
+                                      : stock.entryTactic === 'BREAKOUT_BUY'
                                       ? '🎯 突破確認價'
                                       : stock.entryTactic === 'WAIT_PULLBACK'
                                       ? '⚠️ 建議回檔價 (5MA)'
                                       : '⏳ 建議低接價 (5MA/20MA)'}
                                   </div>
-                                  <div className="font-extrabold text-base text-white mt-0.5">
-                                    ${(stock.suggestedEntryPrice ?? stock.price).toFixed(1)}
+                                  <div className={`font-extrabold mt-0.5 ${
+                                    stock.entryTactic === 'BEARISH_BROKEN' ? 'text-rose-400 text-xs sm:text-sm' : 'text-white text-base'
+                                  }`}>
+                                    {stock.entryTactic === 'BEARISH_BROKEN'
+                                      ? '觀望無買點'
+                                      : `$${(stock.suggestedEntryPrice ?? stock.price).toFixed(1)}`}
                                   </div>
                                 </div>
 
                                 <div className="p-2 rounded-xl bg-amber-950/40 border border-amber-900/60">
-                                  <div className="text-[10px] text-amber-400 font-medium">建議防守價 (20MA)</div>
+                                  <div className="text-[10px] text-amber-400 font-medium">
+                                    {stock.entryTactic === 'BEARISH_BROKEN' ? '建議防守價 (當周低)' : '建議防守價 (20MA)'}
+                                  </div>
                                   <div className="font-extrabold text-base text-amber-300 mt-0.5">
                                     ${stock.stopLossPrice.toFixed(1)}
                                   </div>
                                 </div>
 
                                 <div className="p-2 rounded-xl bg-purple-950/40 border border-purple-900/60">
-                                  <div className="text-[10px] text-purple-400 font-medium">目標獲利價</div>
+                                  <div className="text-[10px] text-purple-400 font-medium">
+                                    {stock.entryTactic === 'BEARISH_BROKEN' ? '反彈壓力價 (20MA)' : '目標獲利價'}
+                                  </div>
                                   <div className="font-extrabold text-base text-purple-300 mt-0.5">
                                     ${(stock.targetPrice ?? Number((stock.price * 1.35).toFixed(1))).toFixed(1)}
                                   </div>

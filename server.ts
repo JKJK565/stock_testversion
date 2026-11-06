@@ -159,7 +159,7 @@ export interface ScreenerStockItem {
   entryActionNote?: string;
 }
 
-export type EntryTactic = 'PULLBACK_BUY' | 'BREAKOUT_BUY' | 'WAIT_PULLBACK';
+export type EntryTactic = 'PULLBACK_BUY' | 'BREAKOUT_BUY' | 'WAIT_PULLBACK' | 'BEARISH_BROKEN';
 
 export interface BuyRatingBreakdown {
   chip: number;
@@ -259,6 +259,7 @@ export interface MorningBriefingResponse {
   status?: 'COMPLETED' | 'PENDING';
   statusMessage?: string;
   isPast830?: boolean;
+  isPast900?: boolean;
   source?: string;
 }
 
@@ -1793,15 +1794,15 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
 
   const prompt = `你是一位擁有 20 年實戰經驗的頂尖機構量化操盤手與總經首席分析師。你的文風鏗鏘有力、直指核心、充滿戰鬥紀律與量化依據，嚴禁任何空洞八股文或模稜兩可的官腔廢話！
 
-請根據以下【100% 真實即時市場大數據】，為機構操盤室撰寫今日（${todayTaipeiDate} ${todayWeekday}）開盤前的【每日深度操盤早報】。
+請根據以下【100% 真實即時市場大數據】，為機構操盤室撰寫今日（${todayTaipeiDate} ${todayWeekday}）09:00 現貨開盤前的【每日深度操盤早報】（特別納入 08:45 台指期開盤撮合表現）。
 
 ═════════════════════════════════════════════════════════════════
 【全市場深度量化大數據 (真實即時)】
 ═════════════════════════════════════════════════════════════════
-1. 核心即時指數與期貨夜盤：
+1. 核心即時指數與 08:45 台指期開盤：
    - 臺灣加權指數 (TAIEX)：${taiexPrice} 點 (昨收變動: ${(market.taiex?.change ?? 0) > 0 ? '+' : ''}${market.taiex?.change ?? 0} 點, ${(market.taiex?.changePercent ?? 0) > 0 ? '+' : ''}${market.taiex?.changePercent ?? 0}%)
    - 櫃買指數 (TPEx)：${market.tpex?.price ?? 0} 點 (${(market.tpex?.changePercent ?? 0) > 0 ? '+' : ''}${market.tpex?.changePercent ?? 0}%)
-   - 台指期全時盤 (WTX&)：${wtxPrice} 點 (${(market.wtx?.change ?? 0) > 0 ? '+' : ''}${market.wtx?.change ?? 0} 點, ${(market.wtx?.changePercent ?? 0) > 0 ? '+' : ''}${market.wtx?.changePercent ?? 0}%)，與加權現貨呈【${basisText}】
+   - 台指期 (WTX&，08:45已開盤)：${wtxPrice} 點 (${(market.wtx?.change ?? 0) > 0 ? '+' : ''}${market.wtx?.change ?? 0} 點, ${(market.wtx?.changePercent ?? 0) > 0 ? '+' : ''}${market.wtx?.changePercent ?? 0}%)，與加權現貨呈【${basisText}】
    - 昨夜美股費半 (^SOX)：${market.usIndices.sox?.price ?? 0} 點 (${(market.usIndices.sox?.changePercent ?? 0) > 0 ? '+' : ''}${market.usIndices.sox?.changePercent ?? 0}%)
    - 昨夜台積電 ADR (TSM)：${market.usIndices.tsm?.price ?? 0} 美元 (${(market.usIndices.tsm?.changePercent ?? 0) > 0 ? '+' : ''}${market.usIndices.tsm?.changePercent ?? 0}%)
    - 昨夜美股道瓊 (^DJI)：${market.usIndices.dow?.price ?? 0} 點 (${(market.usIndices.dow?.changePercent ?? 0) > 0 ? '+' : ''}${market.usIndices.dow?.changePercent ?? 0}%)
@@ -1843,8 +1844,8 @@ ${topForeignStr}
 
 # 🎯 今日開盤戰略與大盤全解析
 
-### 1. 昨夜美股傳導與台指期夜盤定調
-- 深入推演費半（${market.usIndices.sox?.changePercent ?? 0}%）、台積電 ADR（${market.usIndices.tsm?.changePercent ?? 0}%）與台指期夜盤（${wtxPrice}點，呈${basisText}）對今日台股開盤的第一波衝擊。
+### 1. 昨夜美股傳導與 08:45 台指期開盤定調
+- 深入推演費半（${market.usIndices.sox?.changePercent ?? 0}%）、台積電 ADR（${market.usIndices.tsm?.changePercent ?? 0}%）與 08:45 台指期開盤點位（${wtxPrice}點，呈${basisText}）對今日 09:00 台股開盤的第一波衝擊。
 - 明確給出今日開盤定調（如：跳空開高強攻、平低盤洗盤、弱勢回測防守）與前 15 分鐘多空對撞焦點。
 
 ### 2. 籌碼大對帳：法人鎖碼 vs 散戶融資浮額
@@ -2773,6 +2774,7 @@ function calculateBuyRatingScore(params: {
 
 /**
  * 徹底重構即時進場點演算法：依據技術結構與均線扣抵計算出「真正安全的進場點與戰術類型」
+ * 嚴防均線反壓誤判為低接支撐、嚴禁停損價大於或等於現價
  */
 function calculateEntryTactic(params: {
   price: number;
@@ -2796,53 +2798,84 @@ function calculateEntryTactic(params: {
 
   let entryTactic: EntryTactic;
   let entryTacticLabel: string;
-  let suggestedEntryPrice: number;
-  let entryActionNote: string;
+  let suggestedEntryPrice = price;
+  let entryActionNote = '';
 
-  // 規則 3：短線正乖離過大（bias20ma > 6%）
-  if (bias20ma > 6.0) {
+  // 情況 1：破線走弱 (現價已跌破 20MA) - 絕對禁止將上方 5MA / 20MA 反壓誤判為低接支撐！
+  if (price < ma20) {
+    entryTactic = 'BEARISH_BROKEN';
+    entryTacticLabel = '🚫 破線走弱・觀望嚴禁接刀';
+    suggestedEntryPrice = Number(price.toFixed(1));
+    entryActionNote = `⚠️ 現價 ($${price.toFixed(1)}) 已跌破 20MA ($${ma20.toFixed(1)}) 空頭整理，上方均線重重反壓，嚴禁逆勢摸底接刀，等待均線打底站回再行評估。`;
+  }
+  // 情況 2：短線正乖離過大（bias20ma > 6%）且守在 20MA 之上
+  else if (bias20ma > 6.0) {
     entryTactic = 'WAIT_PULLBACK';
     entryTacticLabel = '⚠️ 乖離過大・等待拉回';
-    suggestedEntryPrice = Number(ma5.toFixed(1));
-    entryActionNote = `短線漲多正乖離達 +${bias20ma.toFixed(1)}%，嚴禁盲目追高，耐心等待拉回 5MA ($${ma5.toFixed(1)}) 附近再行分批進場`;
+    suggestedEntryPrice = Number(Math.min(price, ma5).toFixed(1));
+    entryActionNote = `短線漲多正乖離達 +${bias20ma.toFixed(1)}%，嚴禁盲目追高，耐心等待拉回 5MA ($${ma5.toFixed(1)}) 附近再行分批進場。`;
   }
-  // 規則 1：短線急殺或均線尚未發散（當日跌幅 >= 1.5% 或 5MA <= 10MA 或 現價跌破 5MA）
+  // 情況 3：均線回測承接（現價跌破 5MA 但守在 20MA 之上，或均線整理）
   else if (changePercent <= -1.5 || ma5 <= ma10 || price < ma5) {
     entryTactic = 'PULLBACK_BUY';
     entryTacticLabel = '⏳ 均線回測承接';
-    if (price > ma5) {
+    if (price >= ma5) {
       suggestedEntryPrice = Number(ma5.toFixed(1));
-    } else if (price > ma20) {
-      suggestedEntryPrice = Number(ma20.toFixed(1));
     } else {
-      suggestedEntryPrice = Number(Math.max(ma5, ma20).toFixed(1));
+      // price < ma5 且 price >= ma20：低接價為 20MA
+      suggestedEntryPrice = Number(ma20.toFixed(1));
     }
-    entryActionNote = `短線回檔整理中，嚴禁半空中追價接刀，建議等待股價回測 5MA/20MA ($${suggestedEntryPrice.toFixed(1)}) 止跌守穩再行佈局`;
+    // 嚴格確保 suggestedEntryPrice 不得大於現價
+    if (suggestedEntryPrice > price) {
+      suggestedEntryPrice = Number(price.toFixed(1));
+    }
+    entryActionNote = `守穩 20MA ($${ma20.toFixed(1)}) 多頭防守線，短線回測換手中，建議於 20MA 守穩不破時逢低分批承接。`;
   }
-  // 規則 2：均線多頭發散 (5>10>20) 且當日出量突破（攻擊發動中）
+  // 情況 4：均線多頭發散 (5>10>20) 且帶量突破（攻擊發動中）
   else if (isBullishMa && isVolumeExpanding) {
     entryTactic = 'BREAKOUT_BUY';
     entryTacticLabel = '🔥 突破發動買點';
     suggestedEntryPrice = Number(price.toFixed(1));
-    entryActionNote = `帶量突破多頭排列，可於現價 ($${price.toFixed(1)}) 附近或小幅拉回 5MA 處順勢進場`;
+    entryActionNote = `均線多頭發散且帶量突破，可於現價 ($${price.toFixed(1)}) 附近順勢進場，以 20MA ($${ma20.toFixed(1)}) 為剛性防守線。`;
   }
-  // 默認中性均線回測低接
+  // 情況 5：其餘中性格局（守在 20MA 之上）
   else {
     entryTactic = 'PULLBACK_BUY';
     entryTacticLabel = '⏳ 均線回測承接';
-    suggestedEntryPrice = Number(Math.min(price, Math.max(ma5, ma20)).toFixed(1));
-    entryActionNote = `均線整理蓄勢中，建議掛單於 5MA ($${ma5.toFixed(1)}) 或 20MA ($${ma20.toFixed(1)}) 支撐位階分批佈局`;
+    suggestedEntryPrice = Number(Math.min(price, Math.max(ma20, ma5)).toFixed(1));
+    entryActionNote = `均線區間整理蓄勢中，建議於 20MA ($${ma20.toFixed(1)}) 附近支撐位階分批佈局。`;
   }
 
-  // 建議防守價：20MA 或當週低點
-  let stopLossPrice = Number(Math.min(weeklyLow, ma20).toFixed(1));
-  if (stopLossPrice >= suggestedEntryPrice) {
-    stopLossPrice = Number((suggestedEntryPrice * 0.95).toFixed(1));
-  }
+  // 建議防守價 stopLossPrice：
+  // 1. 若破 20MA (BEARISH_BROKEN)，防守點取當週低點（且必須嚴格小於現價），若當週低點無效則取現價 * 0.95
+  // 2. 若多頭守在 20MA 之上，防守點取 20MA 或當週低點較小者
+  let stopLossPrice: number;
+  let targetPrice: number;
 
-  // 1:2 盈虧比目標價
-  const risk = Math.max(1, suggestedEntryPrice - stopLossPrice);
-  const targetPrice = Number((suggestedEntryPrice + risk * 2.0).toFixed(1));
+  if (entryTactic === 'BEARISH_BROKEN') {
+    // 破線股：防守價必須嚴格小於現價
+    if (weeklyLow > 0 && weeklyLow < price * 0.99) {
+      stopLossPrice = Number(weeklyLow.toFixed(1));
+    } else {
+      stopLossPrice = Number((price * 0.95).toFixed(1));
+    }
+    if (stopLossPrice >= price) {
+      stopLossPrice = Number((price * 0.95).toFixed(1));
+    }
+    // 反彈目標價：上方 20MA 沉重反壓，反彈即減碼解套
+    targetPrice = Number(Math.max(ma20, price * 1.05).toFixed(1));
+  } else {
+    // 正常守在 20MA 之上的個股
+    const candidateStop = weeklyLow > 0 && weeklyLow < price ? Math.min(weeklyLow, ma20) : ma20;
+    stopLossPrice = Number(candidateStop.toFixed(1));
+    // 嚴格確保 stopLossPrice 必須小於現價與進場價
+    if (stopLossPrice >= price) {
+      stopLossPrice = Number((price * 0.95).toFixed(1));
+    }
+    // 1:2 盈虧比目標價
+    const risk = Math.max(1, suggestedEntryPrice - stopLossPrice);
+    targetPrice = Number((suggestedEntryPrice + risk * 2.0).toFixed(1));
+  }
 
   return {
     entryTactic,
@@ -3962,12 +3995,12 @@ const handleMarketOverview = async (req: Request, res: Response) => {
 app.get('/api/market', handleMarketOverview);
 app.get('/api/market/overview', handleMarketOverview);
 
-// 2. 旗艦版每日深度操盤早報 (08:30 自動排程定稿 + Supabase 雲端持久化 + 0秒秒開)
+// 2. 旗艦版每日深度操盤早報 (09:00 自動排程定稿 + Supabase 雲端持久化 + 0秒秒開)
 app.get('/api/market/morning-briefing', async (req: Request, res: Response) => {
   try {
     const todayTaipeiDate = getTaipeiDateString();
     const marketStatus = getTaipeiMarketStatus();
-    const isPast830 = marketStatus.timeInMinutes >= 510; // 08:30 in Taipei
+    const isPast900 = marketStatus.timeInMinutes >= 540; // 09:00 in Taipei (8:45 台指期已開盤)
     const force = req.query.force === 'true';
     const shouldGenerate = req.query.generate === 'true' || force;
 
@@ -3978,9 +4011,9 @@ app.get('/api/market/morning-briefing', async (req: Request, res: Response) => {
       if (cached && cached.markdown) {
         return res.json({
           ...cached,
-          isPast830,
+          isPast900,
           status: 'COMPLETED',
-          statusMessage: isPast830 ? '✅ 08:30 今日晨會作戰定稿（已鎖定）' : '⏳ 今日早報預計於 08:30 自動產出定稿',
+          statusMessage: isPast900 ? '✅ 09:00 今日開盤定稿（已鎖定）' : '⏳ 今日早報預計於 09:00 自動產出定稿',
         });
       }
 
@@ -3998,8 +4031,8 @@ app.get('/api/market/morning-briefing', async (req: Request, res: Response) => {
           dailyDate: sbBriefing.date,
           expiresInSeconds: getSecondsUntilMidnightTaipei(),
           status: 'COMPLETED',
-          statusMessage: isPast830 ? '✅ 08:30 今日晨會作戰定稿（已鎖定）' : '⏳ 今日早報預計於 08:30 自動產出定稿',
-          isPast830,
+          statusMessage: isPast900 ? '✅ 09:00 今日開盤定稿（已鎖定）' : '⏳ 今日早報預計於 09:00 自動產出定稿',
+          isPast900,
           source: 'supabase',
         };
 
@@ -4020,20 +4053,20 @@ app.get('/api/market/morning-briefing', async (req: Request, res: Response) => {
         return res.json({
           isGenerated: false,
           date: todayTaipeiDate,
-          isPast830,
+          isPast900,
           status: 'PENDING',
-          statusMessage: isPast830 ? '⏳ 08:30 早報準備中或可點擊手動產出' : '⏳ 今日早報預計於 08:30 自動產出定稿',
+          statusMessage: isPast900 ? '⏳ 09:00 早報準備中或可點擊手動產出' : '⏳ 今日早報預計於 09:00 自動產出定稿',
         });
       }
     }
 
-    // 當收到 ?generate=true 或 ?force=true，正式啟動 Gemini 2.5 Pro 進行深度推演並存入 Supabase
+    // 當收到 ?generate=true 或 ?force=true，正式啟動 Gemini 進行深度推演並存入 Supabase
     const briefing = await generateGeminiDeepMorningBriefing(true);
     return res.json({
       ...briefing,
-      isPast830,
+      isPast900,
       status: 'COMPLETED',
-      statusMessage: '✅ 08:30 今日晨會作戰定稿（已鎖定）',
+      statusMessage: '✅ 09:00 今日開盤定稿（已鎖定）',
     });
   } catch (e: any) {
     console.error('Morning briefing error:', e);
@@ -6135,16 +6168,16 @@ app.get('/api/health', (_req: Request, res: Response) => {
 function setupQuantCronSchedulers() {
   console.log('[Cron] Initializing Taiwan Quant Scheduled Jobs (Asia/Taipei)...');
 
-  // 1. 大盤深度早報：每個交易日（週一至週五）早上 08:30 (30 8 * * 1-5)
+  // 1. 大盤深度早報：每個交易日（週一至週五）早上 09:00 (0 9 * * 1-5)，納入 08:45 台指期開盤行情
   cron.schedule(
-    '30 8 * * 1-5',
+    '0 9 * * 1-5',
     async () => {
-      console.log('[Cron Scheduler 08:30] ⏰ 觸發交易日大盤深度操盤早報自動產出與鎖定...');
+      console.log('[Cron Scheduler 09:00] ⏰ 觸發交易日大盤深度操盤早報自動產出與鎖定 (納入 08:45 台指期開盤行情)...');
       try {
         const result = await generateGeminiDeepMorningBriefing(true);
-        console.log(`[Cron Scheduler 08:30] ✅ 大盤深度早報已產出定稿並鎖定：${result.date} (${result.model})`);
+        console.log(`[Cron Scheduler 09:00] ✅ 大盤深度早報已產出定稿並鎖定：${result.date} (${result.model})`);
       } catch (err: any) {
-        console.error('[Cron Scheduler 08:30] ❌ 產出大盤深度早報失敗:', err?.message || err);
+        console.error('[Cron Scheduler 09:00] ❌ 產出大盤深度早報失敗:', err?.message || err);
       }
     },
     {
@@ -6200,7 +6233,7 @@ function setupQuantCronSchedulers() {
     }
   );
 
-  console.log('[Cron] ✅ Quant scheduled jobs registered for 08:30 (Market) and 21:30 (Watchlist) Asia/Taipei.');
+  console.log('[Cron] ✅ Quant scheduled jobs registered for 09:00 (Market) and 21:30 (Watchlist) Asia/Taipei.');
 }
 
 // Start Server and Mount Vite
@@ -6208,7 +6241,7 @@ async function startServer() {
   // 啟動時一次性健全全台股字典映射（上市與上櫃股票中文名稱與真實產業類別）
   initTaiwanStockInfo().catch((e) => console.error('[StockInfo] Init error:', e));
 
-  // 啟動定時自動排程 (08:30 大盤操盤早報、21:30 自選深層籌碼健診戰報)
+  // 啟動定時自動排程 (09:00 大盤操盤早報、21:30 自選深層籌碼健診戰報)
   setupQuantCronSchedulers();
 
   // 啟動時驗證 Supabase 資料庫連線狀態

@@ -103,7 +103,7 @@ export interface ScreenerStockItem {
   entryActionNote?: string;
 }
 
-export type EntryTactic = 'PULLBACK_BUY' | 'BREAKOUT_BUY' | 'WAIT_PULLBACK';
+export type EntryTactic = 'PULLBACK_BUY' | 'BREAKOUT_BUY' | 'WAIT_PULLBACK' | 'BEARISH_BROKEN';
 
 export interface BuyRatingBreakdown {
   chip: number;
@@ -205,6 +205,7 @@ export interface MorningBriefingResponse {
   status?: 'COMPLETED' | 'PENDING';
   statusMessage?: string;
   isPast830?: boolean;
+  isPast900?: boolean;
   source?: string;
 }
 

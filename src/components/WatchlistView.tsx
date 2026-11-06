@@ -449,9 +449,9 @@ export function WatchlistView({
             </div>
           </div>
 
-          {/* 指標 3: 累計已實現損益 (平倉戰績) */}
+          {/* 指標 3: 累計已實現損益 */}
           <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 flex flex-col justify-between">
-            <div className="text-xs text-slate-400">累計已實現損益 (平倉累積)</div>
+            <div className="text-xs text-slate-400">累計已實現損益</div>
             <div className="mt-2">
               <div
                 className={`text-xl sm:text-2xl font-black font-mono ${
@@ -466,10 +466,10 @@ export function WatchlistView({
             </div>
           </div>
 
-          {/* 指標 4: 生涯勝率與獲利因子 */}
+          {/* 指標 4: 生涯勝率 */}
           <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 flex flex-col justify-between">
             <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>歷史勝率戰績</span>
+              <span>歷史勝率</span>
               <Trophy className="w-3.5 h-3.5 text-amber-400" />
             </div>
             <div className="mt-2">
@@ -485,7 +485,7 @@ export function WatchlistView({
       </section>
 
       {/* ========================================================================= */}
-      {/* 1. 📊 GEMINI 2.5 PRO 自選持股深層籌碼健診戰報 (21:30 自動定稿 + Supabase 持久化) */}
+      {/* 1. 📊 自選持股籌碼健診戰報 */}
       {/* ========================================================================= */}
       {(() => {
         const isPast2130Taipei = (() => {
@@ -507,32 +507,32 @@ export function WatchlistView({
                 </div>
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-base sm:text-lg font-bold text-white">自選持股深層籌碼健診戰報</h2>
+                    <h2 className="text-base sm:text-lg font-bold text-white">自選籌碼健診戰報</h2>
                     {isNoStocks ? (
                       <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-400 font-semibold">
-                        自選清單尚無標的，未觸發夜盤體檢
+                        自選尚無標的
                       </span>
                     ) : watchlistBriefing?.isGenerated && watchlistBriefing.markdown ? (
                       <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                        🛡️ 21:30 全日籌碼結算定稿
+                        🛡️ 21:30 籌碼結算定稿
                       </span>
                     ) : !isPast2130Taipei ? (
                       <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-300 font-semibold">
-                        ⏳ 今日自選籌碼健檢將於 21:30 融資券結算後自動產出
+                        ⏳ 21:30 融資券結算後定稿
                       </span>
                     ) : (
                       <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/40 text-indigo-300 font-semibold">
-                        ⏳ 21:30 籌碼健檢整理中或點擊手動刷新
+                        ⏳ 籌碼健檢整理中
                       </span>
                     )}
                     <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-mono flex items-center gap-1">
                       <Sparkles className="w-3 h-3 text-indigo-400" />
-                      {watchlistBriefing?.model || 'Gemini 2.5 Pro 旗艦推理'}
+                      {watchlistBriefing?.model || 'AI 籌碼推理'}
                     </span>
                   </div>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    專屬體檢 {portfolio.length} 檔持股：防主力甩轎、昨日法人融資消長與 20MA 防守點
+                    分析持股籌碼消長與關鍵均線防守
                   </p>
                 </div>
               </div>
@@ -542,10 +542,10 @@ export function WatchlistView({
                   onClick={() => onGenerateBriefing?.(true)}
                   disabled={isBriefingGenerating || portfolio.length === 0}
                   className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer shadow-sm"
-                  title="緊急手動重新生成自選持股健診戰報 (?force=true)"
+                  title="重新生成戰報"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isBriefingGenerating ? 'animate-spin text-amber-400' : 'text-slate-400'}`} />
-                  <span>{isBriefingGenerating ? '體檢中...' : '🔄 手動刷新'}</span>
+                  <span>{isBriefingGenerating ? '體檢中...' : '手動刷新'}</span>
                 </button>
 
                 <button

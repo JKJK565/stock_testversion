@@ -55,15 +55,9 @@ export function Navbar({
                   <span className="sm:hidden">台股雷達</span>
                 </span>
                 <span className="text-[9px] sm:text-[10px] font-mono px-1 sm:px-1.5 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 font-bold flex-shrink-0">
-                  v2.9.4
-                </span>
-                <span className="hidden xl:inline-block text-[10px] px-2 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 font-semibold whitespace-nowrap">
-                  全市場投信連買 × 價值轉型
+                  v2.9.6
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 hidden md:block">
-                大盤總覽 × 每日深度早報 × 投信連買掃描 × 自選健康警報
-              </p>
             </div>
           </div>
 
@@ -130,7 +124,7 @@ export function Navbar({
             <button
               onClick={onOpenStrategyAudit}
               className="p-2 sm:px-3.5 sm:py-2 rounded-xl bg-indigo-600/25 hover:bg-indigo-600 border border-indigo-500/40 text-indigo-300 hover:text-white text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
-              title="輸入台股代號、股票中文或英文進行策略健檢"
+              title="個股策略健檢"
             >
               <Search className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span className="hidden sm:inline">個股健檢</span>
@@ -146,7 +140,7 @@ export function Navbar({
                   ? 'bg-slate-800 border-rose-500/40 text-slate-200 hover:border-rose-400'
                   : 'bg-slate-800/80 border-slate-700 text-slate-400 hover:text-white hover:border-slate-600'
               }`}
-              title="通知中心 (波段健康警報與早報)"
+              title="通知中心"
             >
               <Bell className={`w-5 h-5 ${unreadAlertCount > 0 ? 'text-rose-400' : ''}`} />
               {unreadAlertCount > 0 && (
