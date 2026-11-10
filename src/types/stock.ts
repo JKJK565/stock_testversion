@@ -97,6 +97,14 @@ export interface ScreenerStockItem {
   buyRatingLabel?: string;
   buyRatingStars?: string;
   buyRatingBreakdown?: BuyRatingBreakdown;
+  alphaToday?: number; // 相對大盤超額報酬 % (changePercent - taiexChangePercent)
+  // RSI(14) + ADX(14) (+DI > -DI) + 1年 Beta 指標
+  rsi14?: number;
+  adx14?: number;
+  plusDI?: number;
+  minusDI?: number;
+  beta1Y?: number;
+  isGoldenBreakout?: boolean; // 黃金起漲訊號 (45<=rsi<=65, 20<=adx<=30, +DI>-DI, price>=20MA, vol>=1.5x)
   // 進場戰術類型與說明
   entryTactic?: EntryTactic;
   entryTacticLabel?: string;
@@ -173,6 +181,14 @@ export interface TurnaroundStockItem {
   buyRatingLabel?: string;
   buyRatingStars?: string;
   buyRatingBreakdown?: BuyRatingBreakdown;
+  alphaToday?: number; // 相對大盤超額報酬 % (changePercent - taiexChangePercent)
+  // RSI(14) + ADX(14) (+DI > -DI) + 1年 Beta 指標
+  rsi14?: number;
+  adx14?: number;
+  plusDI?: number;
+  minusDI?: number;
+  beta1Y?: number;
+  isGoldenBreakout?: boolean;
   // 進場戰術類型與說明
   entryTactic?: EntryTactic;
   entryTacticLabel?: string;

@@ -28,6 +28,7 @@ import {
   X,
   Target,
   FileSpreadsheet,
+  Plus,
 } from 'lucide-react';
 import {
   PortfolioStockItem,
@@ -107,6 +108,41 @@ export function WatchlistView({
   const [closePrice, setClosePrice] = useState<number>(0);
   const [closeLots, setCloseLots] = useState<number>(1);
   const [closeNote, setCloseNote] = useState<string>('');
+
+  // Add Position (加碼買進) Modal State
+  const [addingStock, setAddingStock] = useState<PortfolioStockItem | null>(null);
+  const [addPrice, setAddPrice] = useState<number>(0);
+  const [addLots, setAddLots] = useState<number>(1);
+  const [addNote, setAddNote] = useState<string>('');
+
+  const handleOpenAddPositionModal = (stock: PortfolioStockItem) => {
+    setAddingStock(stock);
+    setAddPrice(stock.currentPrice ?? stock.entryPrice);
+    setAddLots(1);
+    setAddNote('');
+  };
+
+  const handleConfirmAddPosition = () => {
+    if (!addingStock || addLots <= 0 || addPrice <= 0) return;
+    const oldShares = addingStock.sharesLots;
+    const oldEntryPrice = addingStock.entryPrice;
+    const newShares = oldShares + addLots;
+    const newEntryPrice = Number(
+      ((oldEntryPrice * oldShares + addPrice * addLots) / newShares).toFixed(2)
+    );
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const addLog = `[加碼 ${todayStr}: +${addLots}張 @$${addPrice.toFixed(2)}${addNote ? ` (${addNote})` : ''}]`;
+    const newNotes = addingStock.notes ? `${addingStock.notes} ${addLog}` : addLog;
+
+    onUpdateItem(addingStock.id, {
+      sharesLots: newShares,
+      entryPrice: newEntryPrice,
+      notes: newNotes,
+    });
+
+    setAddingStock(null);
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -636,10 +672,16 @@ export function WatchlistView({
           <div className="mt-3 space-y-2.5">
             {alertStocks.map((stock) => {
               const curPrice = stock.currentPrice ?? stock.entryPrice;
+              const isTrulyBroken =
+                stock.decisionRating === 'CONFIRMED_STOP_LOSS' ||
+                stock.decisionRating === 'SELL' ||
+                curPrice < stock.stopLossPrice;
               return (
                 <div
                   key={`alert-${stock.id}`}
-                  className="rounded-xl bg-slate-950/90 border border-rose-500/40 p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3"
+                  className={`rounded-xl bg-slate-950/90 border p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 ${
+                    isTrulyBroken ? 'border-rose-500/40' : 'border-amber-500/40'
+                  }`}
                 >
                   <div className="space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -647,24 +689,34 @@ export function WatchlistView({
                       <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
                         {stock.symbol}
                       </span>
-                      <span className="text-xs px-2 py-0.5 rounded bg-rose-600 text-white font-bold">
-                        {stock.decisionRating === 'CONFIRMED_STOP_LOSS' ? '🚨 破線出貨・執行停損' : '🔴 破線警戒'}
-                      </span>
+                      {isTrulyBroken ? (
+                        <span className="text-xs px-2 py-0.5 rounded bg-rose-600 text-white font-bold">
+                          {stock.decisionRating === 'CONFIRMED_STOP_LOSS' ? '🚨 破線出貨・執行停損' : '🔴 破線警戒'}
+                        </span>
+                      ) : (
+                        <span className="text-xs px-2 py-0.5 rounded bg-amber-600 text-white font-bold">
+                          🟠 籌碼調節留意
+                        </span>
+                      )}
                       <span className="text-xs text-slate-400">
                         現價 <strong className="text-white">${curPrice.toFixed(2)}</strong> / 停損價 <strong className="text-rose-400">${stock.stopLossPrice.toFixed(2)}</strong>
                       </span>
                     </div>
                     {stock.diagnosticNote && (
-                      <p className="text-xs text-rose-200/90">{stock.diagnosticNote}</p>
+                      <p className={`text-xs ${isTrulyBroken ? 'text-rose-200/90' : 'text-amber-200/90'}`}>
+                        {stock.diagnosticNote}
+                      </p>
                     )}
                   </div>
 
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => handleOpenCloseModal(stock, 'STOP_LOSS')}
-                      className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1 shadow"
+                      className={`px-3 py-1.5 rounded-xl text-white text-xs font-bold transition cursor-pointer flex items-center gap-1 shadow ${
+                        isTrulyBroken ? 'bg-rose-600 hover:bg-rose-500' : 'bg-amber-600 hover:bg-amber-500'
+                      }`}
                     >
-                      <span>🛑 紀律停損平倉</span>
+                      <span>{isTrulyBroken ? '🛑 紀律停損平倉' : '✂️ 評估分批調節'}</span>
                     </button>
                   </div>
                 </div>

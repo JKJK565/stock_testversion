@@ -815,9 +815,14 @@ export default function App() {
   };
 
   const handleUpdatePortfolioItem = (id: string, updates: Partial<PortfolioStockItem>) => {
-    setPortfolio((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, ...updates } : item))
-    );
+    setPortfolio((prev) => {
+      const next = prev.map((item) => (item.id === id ? { ...item, ...updates } : item));
+      try {
+        localStorage.setItem('tw_swing_portfolio', JSON.stringify(next));
+      } catch {}
+      syncUserPortfolioToServer(next, initialCapital);
+      return next;
+    });
   };
 
   const handleRemovePortfolioItem = (id: string) => {
@@ -1149,8 +1154,9 @@ export default function App() {
       // Check if price breaks 20MA or stop loss price
       const isBelow20MA = ma20 !== undefined ? curPrice < ma20 : false;
 
-      // 2. 均線走空 (5MA、10MA、20MA 轉為空頭排列: 5MA < 10MA < 20MA)
+      // 2. 均線走空 (必須同時滿足現價在 20MA 之下，且 5MA < 10MA < 20MA 空頭排列)
       const isMaBearish =
+        curPrice < (ma20 ?? 0) &&
         ma5 !== undefined &&
         ma10 !== undefined &&
         ma20 !== undefined &&
@@ -1160,18 +1166,22 @@ export default function App() {
         healthAlerts.push({
           type: 'MA_BEARISH',
           title: '均線轉為空頭排列',
-          description: `短中天期均線轉為空頭發散 (5MA $${ma5.toFixed(1)} < 10MA $${ma10.toFixed(1)} < 20MA $${ma20.toFixed(1)})，趨勢結構破壞。`,
+          description: `現價在月線之下且短中天期均線轉為空頭發散 (5MA $${ma5.toFixed(1)} < 10MA $${ma10.toFixed(1)} < 20MA $${ma20.toFixed(1)})，趨勢結構破壞。`,
           severity: 'danger',
         });
       }
 
-      // 3. 法人轉賣 (投信由買超轉為連續賣超)
-      const isTrustSelling = diag?.trustNetLots !== undefined ? diag.trustNetLots < 0 : trustDays <= 0;
+      // 3. 法人轉賣 (僅在動能股且投信明顯賣超 < -50 張時提醒，轉型股不因未買超而跳警訊)
+      const isTrustSelling =
+        (item.strategyType === 'momentum' || !item.strategyType) &&
+        diag?.trustNetLots !== undefined
+          ? diag.trustNetLots < -50
+          : false;
       if (isTrustSelling) {
         healthAlerts.push({
           type: 'TRUST_SELLING',
           title: '法人由買轉賣出脫',
-          description: `投信由連續買超轉為賣超，法人籌碼認養力道減弱，留意籌碼調節賣壓。`,
+          description: `投信轉為明顯賣超 (${diag?.trustNetLots} 張)，法人籌碼認養力道減弱，留意籌碼調節賣壓。`,
           severity: 'warning',
         });
       }
@@ -2244,17 +2254,56 @@ export default function App() {
                                   {stock.changePercent > 0 ? '+' : ''}
                                   {stock.changePercent.toFixed(2)}%)
                                 </div>
+                                {stock.alphaToday !== undefined && stock.alphaToday >= 1.0 && (
+                                  <div className="mt-1 flex items-center justify-end">
+                                    <span className="px-1.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] sm:text-xs font-bold whitespace-nowrap">
+                                      🔥 強於大盤 +{stock.alphaToday.toFixed(1)}%
+                                    </span>
+                                  </div>
+                                )}
                               </div>
                             </div>
 
                             {/* Block 2: Buy Rating Badge Full Row */}
-                            <div className="mt-3 w-full">
+                            <div className="mt-3 w-full space-y-1.5">
                               {renderBuyRatingBadge(stock.buyRatingScore, stock.buyRatingStars, stock.buyRatingBreakdown)}
+                              {stock.isGoldenBreakout && (
+                                <div className="flex items-center gap-2">
+                                  <span className="px-2.5 py-1 rounded-xl bg-gradient-to-r from-amber-500/20 to-rose-500/20 border border-amber-500/40 text-amber-300 text-xs font-black flex items-center gap-1.5 shadow-sm">
+                                    <span>🔥 黃金起漲訊號 (RSI {stock.rsi14 ?? 50} / ADX {stock.adx14 ?? 25})</span>
+                                  </span>
+                                </div>
+                              )}
                             </div>
 
-                            {/* Block 3: Moving Averages Horizontal Display */}
-                            <div className="mt-2 text-xs text-slate-400">
-                              5MA ${stock.ma5.toFixed(1)}  /  10MA ${stock.ma10.toFixed(1)}  /  20MA ${stock.ma20.toFixed(1)}
+                            {/* Block 3: Moving Averages & Advanced Indicators Display */}
+                            <div className="mt-2 text-xs text-slate-400 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                              <div>5MA ${stock.ma5.toFixed(1)} / 10MA ${stock.ma10.toFixed(1)} / 20MA ${stock.ma20.toFixed(1)}</div>
+                              <div className="flex items-center gap-1.5 text-[11px] font-mono">
+                                {stock.rsi14 !== undefined && (
+                                  <span className={`px-1.5 py-0.5 rounded border ${
+                                    stock.rsi14 >= 45 && stock.rsi14 <= 65
+                                      ? 'bg-amber-500/15 border-amber-500/30 text-amber-300 font-bold'
+                                      : 'bg-slate-800 border-slate-700 text-slate-300'
+                                  }`} title="14日 RSI 相對強弱指標 (45~65 為黃金起漲區)">
+                                    RSI: {stock.rsi14}
+                                  </span>
+                                )}
+                                {stock.adx14 !== undefined && (
+                                  <span className={`px-1.5 py-0.5 rounded border ${
+                                    stock.plusDI !== undefined && stock.minusDI !== undefined && stock.plusDI > stock.minusDI
+                                      ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300 font-bold'
+                                      : 'bg-slate-800 border-slate-700 text-slate-300'
+                                  }`} title={`ADX 趨向指標: ${stock.adx14} (+DI: ${stock.plusDI ?? '--'} / -DI: ${stock.minusDI ?? '--'})`}>
+                                    ADX: {stock.adx14}
+                                  </span>
+                                )}
+                                {stock.beta1Y !== undefined && (
+                                  <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300" title="相對於加權指數之 1 年 Beta 值">
+                                    Beta: {stock.beta1Y}
+                                  </span>
+                                )}
+                              </div>
                             </div>
 
                             {/* Quant Indicators Row (5 Dimensions) */}
@@ -2677,17 +2726,47 @@ export default function App() {
                                   {stock.changePercent > 0 ? '+' : ''}
                                   {stock.changePercent.toFixed(2)}%)
                                 </div>
+                                {stock.alphaToday !== undefined && stock.alphaToday >= 1.0 && (
+                                  <div className="mt-1 flex items-center justify-end">
+                                    <span className="px-1.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] sm:text-xs font-bold whitespace-nowrap">
+                                      🔥 強於大盤 +{stock.alphaToday.toFixed(1)}%
+                                    </span>
+                                  </div>
+                                )}
                               </div>
                             </div>
 
                             {/* Block 2: Buy Rating Badge Full Row */}
-                            <div className="mt-3 w-full">
+                            <div className="mt-3 w-full space-y-1.5">
                               {renderBuyRatingBadge(stock.buyRatingScore, stock.buyRatingStars, stock.buyRatingBreakdown)}
+                              {stock.isGoldenBreakout && (
+                                <div className="flex items-center gap-2">
+                                  <span className="px-2.5 py-1 rounded-xl bg-gradient-to-r from-amber-500/20 to-rose-500/20 border border-amber-500/40 text-amber-300 text-xs font-black flex items-center gap-1.5 shadow-sm">
+                                    <span>🔥 黃金起漲訊號 (RSI {stock.rsi14 ?? 50} / ADX {stock.adx14 ?? 25})</span>
+                                  </span>
+                                </div>
+                              )}
                             </div>
 
-                            {/* Block 3: Moving Averages and Position Display */}
+                            {/* Block 3: Moving Averages, Indicators and Position Display */}
                             <div className="mt-2 text-xs text-slate-400 flex items-center justify-between flex-wrap gap-2">
-                              <span>20MA防守價 ${stock.stopLossPrice.toFixed(1)}</span>
+                              <div className="flex items-center gap-2">
+                                <span>20MA防守價 ${stock.stopLossPrice.toFixed(1)}</span>
+                                {stock.rsi14 !== undefined && (
+                                  <span className={`px-1.5 py-0.5 rounded border text-[11px] font-mono ${
+                                    stock.rsi14 >= 45 && stock.rsi14 <= 65
+                                      ? 'bg-amber-500/15 border-amber-500/30 text-amber-300 font-bold'
+                                      : 'bg-slate-800 border-slate-700 text-slate-300'
+                                  }`} title="14日 RSI 相對強弱指標">
+                                    RSI: {stock.rsi14}
+                                  </span>
+                                )}
+                                {stock.adx14 !== undefined && (
+                                  <span className="px-1.5 py-0.5 rounded border border-slate-700 bg-slate-800 text-slate-300 text-[11px] font-mono" title={`ADX 趨向指標: ${stock.adx14}`}>
+                                    ADX: {stock.adx14}
+                                  </span>
+                                )}
+                              </div>
                               <span className="text-indigo-400 font-semibold">{stock.positionLabel} (年低 ${stock.yearLow} ~ 年高 ${stock.yearHigh})</span>
                             </div>
 
