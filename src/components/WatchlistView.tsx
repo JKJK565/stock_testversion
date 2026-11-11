@@ -1008,6 +1008,15 @@ export function WatchlistView({
                     <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <button
+                          onClick={() => handleOpenAddPositionModal(item)}
+                          className="px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600 border border-indigo-500/40 text-indigo-300 hover:text-white text-xs font-bold transition cursor-pointer flex items-center gap-1 shadow-sm"
+                          title="逢回加碼買進，自動加權重算平均成本與稅費"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>➕ 加碼買進</span>
+                        </button>
+
+                        <button
                           onClick={() => handleOpenCloseModal(item, 'TAKE_PROFIT')}
                           className="px-3 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/40 text-emerald-300 hover:text-white text-xs font-bold transition cursor-pointer flex items-center gap-1 shadow-sm"
                           title="獲利達標，記錄平倉至交易日記"
@@ -1286,17 +1295,31 @@ export function WatchlistView({
 
               <div>
                 <label className="text-xs text-slate-400 block mb-1">
-                  平倉賣出張數 (張)
+                  平倉賣出張數 (張，最大 {closingStock.sharesLots} 張)
                 </label>
                 <input
                   type="number"
-                  step="1"
-                  min="1"
+                  step="0.1"
+                  min="0.1"
                   max={closingStock.sharesLots}
                   value={closeLots}
-                  onChange={(e) => setCloseLots(parseInt(e.target.value, 10) || 1)}
+                  onChange={(e) => {
+                    const rawVal = parseFloat(e.target.value);
+                    if (isNaN(rawVal)) {
+                      setCloseLots(0);
+                    } else if (rawVal > closingStock.sharesLots) {
+                      setCloseLots(closingStock.sharesLots);
+                    } else {
+                      setCloseLots(Math.max(0, rawVal));
+                    }
+                  }}
                   className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono font-bold focus:border-indigo-500 focus:outline-none"
                 />
+                {closeLots > 0 && closeLots < closingStock.sharesLots && (
+                  <p className="text-[11px] text-amber-300 mt-1 font-mono">
+                    💡 分批平倉：平倉 {closeLots} 張，剩餘 {(closingStock.sharesLots - closeLots).toFixed(1)} 張繼續保留於自選持股中。
+                  </p>
+                )}
               </div>
 
               <div>
@@ -1366,7 +1389,144 @@ export function WatchlistView({
                     : 'bg-rose-600 hover:bg-rose-500'
                 }`}
               >
-                確認平倉並存入交易日記
+                {closeLots > 0 && closeLots < closingStock.sharesLots
+                  ? `確認分批平倉 ${closeLots} 張（剩餘 ${(closingStock.sharesLots - closeLots).toFixed(1)} 張）`
+                  : '確認平倉並存入交易日記'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 7. MODAL: ➕ 加碼買進對話框 (Add Position Modal)                          */}
+      {/* ========================================================================= */}
+      {addingStock && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-md rounded-3xl bg-slate-900 border border-indigo-500/40 p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <Plus className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-base font-bold text-white">
+                  ➕ 持股加碼買進確認
+                </h3>
+              </div>
+              <button
+                onClick={() => setAddingStock(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-2 text-xs font-mono">
+              <div className="flex justify-between">
+                <span className="text-slate-400">股票標的</span>
+                <span className="text-white font-bold">{addingStock.name} ({addingStock.symbol})</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">目前持股部位</span>
+                <span className="text-slate-200 font-bold">{addingStock.sharesLots} 張 @ ${addingStock.entryPrice.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">最新即時現價</span>
+                <span className="text-indigo-300 font-bold">${(addingStock.currentPrice ?? addingStock.entryPrice).toFixed(2)}</span>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">
+                  加碼買進價格 (TWD)
+                </label>
+                <input
+                  type="number"
+                  step="0.05"
+                  value={addPrice}
+                  onChange={(e) => setAddPrice(parseFloat(e.target.value) || 0)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono font-bold focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">
+                  加碼買進張數 (張)
+                </label>
+                <input
+                  type="number"
+                  step="1"
+                  min="1"
+                  value={addLots}
+                  onChange={(e) => setAddLots(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono font-bold focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">
+                  加碼備註 (選填)
+                </label>
+                <input
+                  type="text"
+                  value={addNote}
+                  onChange={(e) => setAddNote(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+                  placeholder="例: 回測5MA加碼 / 突破爆量加碼"
+                />
+              </div>
+
+              {/* 即時試算加權平均成本與交割金額 */}
+              {(() => {
+                const oldShares = addingStock.sharesLots;
+                const oldEntryPrice = addingStock.entryPrice;
+                const newShares = oldShares + addLots;
+                const newEntryPrice = Number(
+                  ((oldEntryPrice * oldShares + addPrice * addLots) / newShares).toFixed(2)
+                );
+                const addCostAmt = addPrice * addLots * 1000;
+                const feeDiscount =
+                  typeof addingStock.feeDiscount === 'number' && !isNaN(addingStock.feeDiscount)
+                    ? addingStock.feeDiscount
+                    : 60;
+                const discountRatio = feeDiscount / 100;
+                const buyFee = Math.max(20, Math.round(addCostAmt * 0.001425 * discountRatio));
+                const totalSettlement = addCostAmt + buyFee;
+
+                return (
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">加碼後總持股：</span>
+                      <span className="text-white font-bold">{newShares} 張 (原 {oldShares} + 加碼 {addLots})</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">加碼後平均成本：</span>
+                      <span className="text-indigo-400 font-black text-sm">
+                        ${newEntryPrice.toFixed(2)} TWD
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 flex items-center justify-between border-t border-slate-900 pt-1">
+                      <span>預估交割扣款: ${Math.round(totalSettlement).toLocaleString()}</span>
+                      <span>含手續費: ${buyFee} ({feeDiscount}折)</span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setAddingStock(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition cursor-pointer"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmAddPosition}
+                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition cursor-pointer shadow-md"
+              >
+                確認加碼買進
               </button>
             </div>
           </div>

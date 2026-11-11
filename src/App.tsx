@@ -471,7 +471,26 @@ export default function App() {
         return updated;
       });
 
-      const nextPortfolio = portfolio.filter((p) => p.id !== removePortfolioId);
+      // 取得該檔持股原本的 sharesLots，比對本次賣出的 tradeData.sharesLots
+      const targetStock = portfolio.find((p) => p.id === removePortfolioId);
+      let nextPortfolio: PortfolioStockItem[];
+
+      if (targetStock && targetStock.sharesLots > tradeData.sharesLots) {
+        // 情況 A（部分平倉 / 分批賣出）：保留該檔股票在 portfolio 中，張數扣減為剩餘張數，並於 notes 附加平倉紀錄
+        const remainingLots = Number((targetStock.sharesLots - tradeData.sharesLots).toFixed(2));
+        const closeLog = `[分批平倉 ${tradeData.exitDate}: -${tradeData.sharesLots}張 @$${tradeData.exitPrice}]`;
+        const updatedNotes = targetStock.notes ? `${targetStock.notes} ${closeLog}` : closeLog;
+
+        nextPortfolio = portfolio.map((p) =>
+          p.id === removePortfolioId
+            ? { ...p, sharesLots: remainingLots, notes: updatedNotes }
+            : p
+        );
+      } else {
+        // 情況 B（全數平倉）：item.sharesLots <= tradeData.sharesLots，從持股中移除
+        nextPortfolio = portfolio.filter((p) => p.id !== removePortfolioId);
+      }
+
       setPortfolio(nextPortfolio);
       try {
         localStorage.setItem('tw_swing_portfolio', JSON.stringify(nextPortfolio));
