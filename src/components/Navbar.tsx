@@ -55,7 +55,7 @@ export function Navbar({
                   <span className="sm:hidden">台股雷達</span>
                 </span>
                 <span className="text-[9px] sm:text-[10px] font-mono px-1 sm:px-1.5 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 font-bold flex-shrink-0">
-                  v3.3.1
+                  v3.3.2
                 </span>
               </div>
             </div>

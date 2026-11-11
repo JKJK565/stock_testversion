@@ -962,12 +962,14 @@ export default function App() {
   };
 
 
-  // 產業黑名單防護驗證 (電信三雄、金融保險、公用事業油電燃氣)
+  // 產業黑名單防護驗證 (電信三雄、金融證券期貨保險、公用事業油電燃氣、建商營造與入帳扭曲資產股)
   const isBlacklisted = useCallback((symbol: string, name: string) => {
-    if (['2412', '3045', '4904'].includes(symbol)) return true;
-    if (symbol.startsWith('28') || symbol.startsWith('58')) return true;
-    if (['9908', '8926', '9918', '9926', '9931', '9937', '8931', '6505', '9933'].includes(symbol)) return true;
-    if (/電信|金控|銀行|證券|保險|瓦斯|天然氣|汽電/.test(name)) return true;
+    if (['2412', '3045', '4904', '3682', '4906', '6145', '8171'].includes(symbol)) return true;
+    if (symbol.startsWith('28') || symbol.startsWith('58') || symbol.startsWith('60')) return true;
+    if (symbol === '2101' || symbol.startsWith('25')) return true;
+    if (['9908', '8926', '9918', '9926', '9931', '9937', '8931', '6505', '9933', '8924', '9934', '9941', '9942'].includes(symbol)) return true;
+    if (/金控|銀行|證券|人壽|產險|保險|期貨|票券|產物|金融|證$|期$/.test(name)) return true;
+    if (/電信|電訊|遠傳|台灣大|中華電|瓦斯|天然氣|電力|汽電|油電|公用事業|自來水|水資源|建設|營造|地產/.test(name)) return true;
     return false;
   }, []);
 
@@ -979,11 +981,12 @@ export default function App() {
     // 嚴格剔除產業黑名單
     list = list.filter((s) => !isBlacklisted(s.symbol, s.name));
 
-    // 嚴格剔除跌破 20MA (BEARISH_BROKEN) 與評分低於 50 分的弱勢標的（保留 EARLY_REBOUND 早期反彈觀察）
+    // 嚴格剔除跌破 20MA (BEARISH_BROKEN)、評分低於 50 分及 Beta < 0.5 死水股（保留 EARLY_REBOUND 早期反彈觀察）
     list = list.filter(
       (s) =>
         (s.entryTactic === 'EARLY_REBOUND' || (s.entryTactic !== 'BEARISH_BROKEN' && s.price >= s.ma20)) &&
-        (s.buyRatingScore ?? 0) >= 50
+        (s.buyRatingScore ?? 0) >= 50 &&
+        !(s.beta1Y !== undefined && s.beta1Y < 0.5)
     );
 
     // 核心供應鏈白名單與業務特徵詞動態匹配（排除記憶體對 CoWoS 的干擾）
@@ -1058,12 +1061,13 @@ export default function App() {
     // 嚴格剔除產業黑名單
     list = list.filter((s) => !isBlacklisted(s.symbol, s.name));
 
-    // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」且 5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股（保留 EARLY_REBOUND 早期反彈觀察）
+    // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」且 5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股及 Beta < 0.5 死水股（保留 EARLY_REBOUND 早期反彈觀察）
     list = list.filter(
       (s) =>
         (s.entryTactic === 'EARLY_REBOUND' || (s.entryTactic !== 'BEARISH_BROKEN' && s.price >= (s.ma20 ?? s.stopLossPrice))) &&
         (s.buyRatingScore ?? 0) >= 50 &&
-        (s.volumeAvg5d ?? 0) >= 1000
+        (s.volumeAvg5d ?? 0) >= 1000 &&
+        !(s.beta1Y !== undefined && s.beta1Y < 0.5)
     );
 
     // 核心供應鏈白名單與業務特徵詞動態匹配（排除記憶體對 CoWoS 的干擾）
@@ -1949,9 +1953,7 @@ export default function App() {
                           </span>
                         </div>
                         <h2 className="text-sm sm:text-base font-black text-white mt-1 tracking-tight">
-                          {isBullish
-                            ? `🟢 大盤多頭格局（加權 ${taiexPrice} 站穩月線 ${taiexMa20}，乖離 +${biasPct}%）：${suggestionText}`
-                            : `🔴 大盤偏空防守（加權 ${taiexPrice} 低於月線 ${taiexMa20}，乖離 ${biasPct}%）：${suggestionText}`}
+                          {suggestionText}
                         </h2>
                       </div>
                     </div>
@@ -2862,7 +2864,7 @@ export default function App() {
                             {/* Block 3: Moving Averages, Indicators and Position Display */}
                             <div className="mt-2 text-xs text-slate-400 flex items-center justify-between flex-wrap gap-2">
                               <div className="flex items-center gap-2">
-                                <span>20MA防守價 ${stock.stopLossPrice.toFixed(1)}</span>
+                                <span>5MA ${(stock.ma5 ?? stock.price).toFixed(1)} / 20MA ${(stock.ma20 ?? stock.stopLossPrice).toFixed(1)}</span>
                                 {stock.rsi14 !== undefined && (
                                   <span className={`px-1.5 py-0.5 rounded border text-[11px] font-mono ${
                                     stock.rsi14 >= 45 && stock.rsi14 <= 65

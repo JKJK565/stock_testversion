@@ -664,10 +664,10 @@ function isBlacklistedStock(code: string, rawName?: string): boolean {
   if (telecomCodes.has(code)) return true;
   if (/電信|電訊|遠傳|台灣大|中華電|網路服務|數位匯流/.test(name)) return true;
 
-  // 2. 🚫 嚴禁出現金融保險業（28xx、58xx 及相關金控/銀行/證券/人壽/產險/保險/期貨/票券）
-  if (code.startsWith('28') || code.startsWith('58')) return true;
-  if (/金控|銀行|證券|人壽|產險|保險|期貨|票券|產物|金融/.test(name)) return true;
-  if (/金融保險業/.test(officialIndustry)) return true;
+  // 2. 🚫 嚴禁出現金融保險與證券期貨業（28xx、58xx、60xx、金控/銀行/證券/人壽/產險/保險/期貨/票券/證$/期$）
+  if (code.startsWith('28') || code.startsWith('58') || code.startsWith('60')) return true;
+  if (/金控|銀行|證券|人壽|產險|保險|期貨|票券|產物|金融|證$|期$/.test(name)) return true;
+  if (/金融|保險/.test(officialIndustry)) return true;
 
   // 3. 🚫 嚴禁出現公用事業、油電燃氣（如 9908 大台北、8926 台汽電等低波動防守型定存股）
   const utilityCodes = new Set([
@@ -677,7 +677,8 @@ function isBlacklistedStock(code: string, rawName?: string): boolean {
   if (/瓦斯|天然氣|電力|汽電|油電|公用事業|自來水|加油站|電廠|水資源|環保處理/.test(name)) return true;
   if (/油電燃氣業|公用事業/.test(officialIndustry)) return true;
 
-  // 4. 🚫 嚴禁出現營建建材與地產開發商（建商完工交屋入帳單月營收暴衝非本業轉型）
+  // 4. 🚫 嚴禁出現營建建材與地產開發商（建商完工交屋入帳單月營收暴衝非本業轉型）及大型入帳扭曲資產股（如 2101 南港）
+  if (code === '2101') return true;
   if (code.startsWith('25')) return true;
   if (/建材營造/.test(officialIndustry)) return true;
   if (/建設|營造|地產|雋揚|潤隆|興富發|遠雄|冠德|華固|長虹|皇翔|基泰|達麗|欣陸|總太|櫻花建|國建|海悅/.test(name)) return true;
@@ -1952,23 +1953,28 @@ async function fetchTaiexKeyLevels(): Promise<{
           }
         }
         if (bars.length >= 20) {
-          const closes = bars.map((b) => b.close);
-          const ma5 = Number((closes.slice(-5).reduce((a, b) => a + b, 0) / 5).toFixed(1));
-          const ma10 = Number((closes.slice(-10).reduce((a, b) => a + b, 0) / 10).toFixed(1));
-          const ma20 = Number((closes.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(1));
+          const metaPrice = result?.meta?.regularMarketPrice;
+          const validMetaPrice = typeof metaPrice === 'number' && !isNaN(metaPrice) && metaPrice > 0 ? Number(metaPrice.toFixed(1)) : undefined;
 
           const lastBar = bars[bars.length - 1];
           // 比對最後一根 K 線日期與今日台北日期：
           // 若最後一根日期 === todayTaipeiDate（表示今日日 K 已建立）：取 length - 2（昨日正式 K 線）
           // 若最後一根日期 < todayTaipeiDate（表示今日日 K 尚未建立，最後一根就是昨日收盤）：必須取 length - 1！
           const isTodayCandlePresent = Boolean(lastBar.dateStr && lastBar.dateStr === todayTaipeiDate);
+
+          // 計算均線：若 metaPrice 存在且今日日 K 尚未進入 bars，計算 ma5 / ma10 / ma20 時應將今日最新價納入計算！
+          const maCloses = (!isTodayCandlePresent && validMetaPrice) ? [...bars.map((b) => b.close), validMetaPrice] : bars.map((b) => b.close);
+          const ma5 = Number((maCloses.slice(-5).reduce((a, b) => a + b, 0) / 5).toFixed(1));
+          const ma10 = Number((maCloses.slice(-10).reduce((a, b) => a + b, 0) / 10).toFixed(1));
+          const ma20 = Number((maCloses.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(1));
+
           const prevIdx = isTodayCandlePresent ? Math.max(0, bars.length - 2) : bars.length - 1;
           const prevBar = bars[prevIdx];
 
           const prevHigh = Number(prevBar.high.toFixed(1));
           const prevLow = Number(prevBar.low.toFixed(1));
           const prevClose = Number(prevBar.close.toFixed(1));
-          const latestClose = Number(lastBar.close.toFixed(1));
+          const latestClose = validMetaPrice ?? Number(lastBar.close.toFixed(1));
           return { ma5, ma10, ma20, prevHigh, prevLow, prevClose, latestClose };
         }
       }
@@ -1984,8 +1990,22 @@ async function fetchTaiexKeyLevels(): Promise<{
  * 比對加權現價與 20MA (月線)：站穩則為多頭 (水位 60%~80%)，跌破則偏空防守 (水位 20%~30%)
  */
 async function getMarketRegime(currentPrice?: number): Promise<MarketRegime> {
+  let livePrice = currentPrice && currentPrice > 0 ? Number(currentPrice.toFixed(1)) : undefined;
+  if (!livePrice) {
+    if (marketCache?.data?.taiex?.price && marketCache.data.taiex.price > 0) {
+      livePrice = Number(marketCache.data.taiex.price.toFixed(1));
+    } else {
+      try {
+        const rt = await fetchRealtimeTWSEIndices();
+        if (rt?.taiex?.price && rt.taiex.price > 0) {
+          livePrice = Number(rt.taiex.price.toFixed(1));
+        }
+      } catch {}
+    }
+  }
+
   const levels = await fetchTaiexKeyLevels();
-  const taiexPrice = currentPrice && currentPrice > 0 ? Number(currentPrice.toFixed(1)) : levels.latestClose;
+  const taiexPrice = livePrice ?? levels.latestClose;
   const taiexMa20 = levels.ma20;
   const isBullish = taiexPrice >= taiexMa20;
   const biasPct = Number((((taiexPrice - taiexMa20) / taiexMa20) * 100).toFixed(2));
@@ -3599,8 +3619,10 @@ function calculateBuyRatingScore(params: {
     techScore += 2;
   }
 
-  // 規則 A：若破線（curPrice < ma20），techScore 強制壓在 5 分以下
-  if (isBroken) {
+  // 規則 A：若破線（curPrice < ma20），techScore 強制壓在 5 分以下（但若符合早期反彈 isEarlyRebound，已站上 5MA，給予實質反彈分 12 分）
+  if (params.isEarlyRebound) {
+    techScore = 12;
+  } else if (isBroken) {
     techScore = Math.min(5, techScore);
   } else {
     techScore = Math.min(30, Math.max(0, techScore));
@@ -3609,7 +3631,10 @@ function calculateBuyRatingScore(params: {
   // -------------------------------------------------------------
   // 維度三：位階與乖離安全防護（滿分 20 分）
   // -------------------------------------------------------------
-  if (isBroken) {
+  if (params.isEarlyRebound) {
+    // 早期反彈股：距 20MA 僅 <= 6% 且站上 5MA，給予合理的實質安全分 8 分
+    safetyScore = 8;
+  } else if (isBroken) {
     // 規則 A：跌破月線毫無安全可言，嚴禁給分！
     safetyScore = 0;
   } else if (isTurnaround) {
@@ -3665,14 +3690,14 @@ function calculateBuyRatingScore(params: {
     momentumScore += 2;
   }
 
-  // 2. 出量突破（滿分 7 分）：必須滿足 (params.changePercent ?? 0) > -1.0 且 curPrice >= ma20 才給分！
+  // 2. 出量突破（滿分 7 分）：必須滿足 (params.changePercent ?? 0) > -1.0 且 curPrice >= ma20 才給分！（早期反彈且站上 5MA 亦給分）
   const changeP = params.changePercent ?? 0;
   const volRatio = params.volumeRatio ?? 1.0;
 
   if (changeP <= -1.5) {
     // 當日收黑下跌 <= -1.5% 且出量（主力爆量下殺出貨），量能項給 0 分！
     // 不加分
-  } else if (changeP > -1.0 && !isBroken) {
+  } else if (changeP > -1.0 && (!isBroken || params.isEarlyRebound)) {
     if (params.isVolumeExpanding || volRatio >= 1.3) {
       momentumScore += 7;
     } else if (volRatio >= 1.1) {
@@ -3701,12 +3726,10 @@ function calculateBuyRatingScore(params: {
   momentumScore = Math.min(15, Math.max(0, momentumScore));
 
   // -------------------------------------------------------------
-  // 總分計算與破線強制封頂（規則 A）
+  // 總分計算與破線強制封頂（規則 A）：真實加總，嚴禁強行灌水保送 50 分
   // -------------------------------------------------------------
   let totalScore = chipScore + techScore + safetyScore + momentumScore;
-  if (params.isEarlyRebound) {
-    totalScore = Math.min(59, Math.max(50, totalScore));
-  } else if (isBroken) {
+  if (isBroken && !params.isEarlyRebound) {
     // 破線無買點股總分強制壓在 45 分以下
     totalScore = Math.min(45, totalScore);
   }
@@ -3717,9 +3740,15 @@ function calculateBuyRatingScore(params: {
   let stars: string;
 
   if (params.isEarlyRebound) {
-    level = 'ACCUMULATE';
-    label = '🌱 早期反彈觀察 (Early Rebound)';
-    stars = '★☆☆';
+    if (totalScore >= 50) {
+      level = 'ACCUMULATE';
+      label = '🌱 早期反彈觀察 (Early Rebound)';
+      stars = '★☆☆';
+    } else {
+      level = 'HOLD_WATCH';
+      label = '⚪ 早期反彈分過低・淘汰觀望';
+      stars = '☆';
+    }
   } else if (isBroken) {
     level = 'HOLD_WATCH';
     label = '⚪ 破線觀望 (Hold / Watch)';
@@ -3795,16 +3824,16 @@ function calculateEntryTactic(params: {
   const isEarlyReboundCandidate =
     price < ma20 &&
     price >= ma5 &&
-    changePercent > 0 &&
-    distToMa20 <= 0.08 &&
-    ((params.trustNetLots ?? 0) > 0 || (params.revenueYoY ?? 0) >= 8.0);
+    changePercent >= 1.5 &&
+    distToMa20 <= 0.06 &&
+    ((params.trustNetLots ?? 0) >= 100 || (params.revenueYoY ?? 0) >= 15.0);
 
-  // 情況 0：早期反彈觀察 (price < 20MA 但已站上 5MA 且收紅，法人買超或營收成長，距 20MA <= 8%)
+  // 情況 0：早期反彈觀察 (price < 20MA 但已站上 5MA 且漲幅 >= 1.5%，法人買超>=100張或營收YoY>=15%，距 20MA <= 6%)
   if (isEarlyReboundCandidate) {
     entryTactic = 'EARLY_REBOUND';
     entryTacticLabel = '🌱 早期反彈觀察 (已站5MA・待挑戰20MA)';
     suggestedEntryPrice = Number(Math.min(price, ma5).toFixed(1));
-    entryActionNote = `已站上短期 5MA ($${ma5.toFixed(1)}) 展開超跌反彈，即將挑戰上方月線 20MA ($${ma20.toFixed(1)}) 反壓，屬早期築底試單觀察標的。`;
+    entryActionNote = `已站上短期 5MA ($${ma5.toFixed(1)}) 且實質強彈 +${changePercent.toFixed(1)}%，即將挑戰上方月線 20MA ($${ma20.toFixed(1)}) 反壓，屬早期築底試單觀察標的。`;
   }
   // 情況 1：破線走弱 (現價已跌破 20MA) - 絕對禁止將上方 5MA / 20MA 反壓誤判為低接支撐！
   else if (price < ma20) {
@@ -4039,6 +4068,8 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
       const rsi14 = calculateRSI14(histCloses, curClose);
       const { adx14, plusDI, minusDI } = calculateADX14(klines.highs, klines.lows, histCloses, curClose);
       const beta1Y = calculateBeta1Y(histCloses, taiex1YCloses);
+      // 排除 beta1Y < 0.5 的極低波動牛皮股
+      if (beta1Y !== undefined && beta1Y < 0.5) continue;
       const volRatioVal = isIntraday ? estVolumeRatio : Number((curVolumeLots / volumeAvg5d).toFixed(2));
       const isGoldenBreakout =
         rsi14 >= 45 &&
@@ -4459,7 +4490,7 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
   const start14m = d14m.toISOString().split('T')[0];
 
   // 針對前 15 檔低基期股票並行查詢 FinMind 營收與近四季 EPS 驗證轉型條件
-  const results: TurnaroundStockItem[] = await Promise.all(
+  const rawResults = await Promise.all(
     targetCandidates.map(async (item) => {
       let revenueYoY = 0;
       let latestRevMonth = 9;
@@ -4532,6 +4563,8 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
       const rsi14 = calculateRSI14(kCloses, item.curPrice);
       const { adx14, plusDI, minusDI } = calculateADX14(item.klines.highs, item.klines.lows, kCloses, item.curPrice);
       const beta1Y = calculateBeta1Y(kCloses, taiex1YCloses);
+      // 排除 beta1Y < 0.5 的極低波動牛皮股
+      if (beta1Y !== undefined && beta1Y < 0.5) return null;
       const isGoldenBreakout =
         rsi14 >= 45 &&
         rsi14 <= 65 &&
@@ -4646,6 +4679,8 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
       };
     })
   );
+
+  const results = rawResults.filter((s): s is NonNullable<typeof s> => s !== null) as TurnaroundStockItem[];
 
   // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」、5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股（保留 EARLY_REBOUND 早期反彈觀察標的）
   const qualifiedResults = results.filter(
@@ -4860,6 +4895,8 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
       const rsi14 = calculateRSI14(cached.closes, curPrice);
       const { adx14, plusDI, minusDI } = calculateADX14(cached.highs, cached.lows, cached.closes, curPrice);
       const beta1Y = calculateBeta1Y(cached.closes, taiex1YCloses);
+      // 排除 beta1Y < 0.5 的極低波動牛皮股
+      if (beta1Y !== undefined && beta1Y < 0.5) continue;
       const isGoldenBreakout =
         rsi14 >= 45 &&
         rsi14 <= 65 &&
@@ -5045,7 +5082,7 @@ async function getScreenerData(force = false): Promise<ScreenerResponse> {
   try {
     const [scanResult, marketRegime] = await Promise.all([
       scanAllMarketTrustBuys(),
-      getMarketRegime().catch(() => undefined),
+      getMarketRegime(marketCache?.data?.taiex?.price).catch(() => undefined),
     ]);
 
     const responseData: ScreenerResponse = {
@@ -5103,7 +5140,7 @@ async function getTurnaroundData(force = false): Promise<TurnaroundScreenerRespo
   try {
     const [rawStocks, marketRegime] = await Promise.all([
       scanTurnaroundStocks(),
-      getMarketRegime().catch(() => undefined),
+      getMarketRegime(marketCache?.data?.taiex?.price).catch(() => undefined),
     ]);
     const allStocks = rawStocks.filter((s) => (s.buyRatingScore ?? 0) >= 50 && (s.volumeAvg5d ?? 0) >= 1000);
     const matchedList = allStocks.filter((s) => s.isTurnaroundMatched);
