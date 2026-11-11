@@ -593,17 +593,14 @@ export default function App() {
     return [];
   });
 
-  // Save portfolio to localStorage & sync to server (only after initial load has finished)
+  // Save portfolio to localStorage only (Supabase sync decoupled from quote refresh)
   useEffect(() => {
     try {
       localStorage.setItem('tw_swing_portfolio', JSON.stringify(portfolio));
     } catch (e) {
       console.error('Failed to save portfolio to localStorage:', e);
     }
-    if (hasInitialSyncedRef.current) {
-      syncUserPortfolioToServer(portfolio, initialCapital);
-    }
-  }, [portfolio, initialCapital, syncUserPortfolioToServer]);
+  }, [portfolio]);
 
   // Save notifications to localStorage
   useEffect(() => {
@@ -783,8 +780,9 @@ export default function App() {
   const handleToggleMomentumPortfolio = (stock: ScreenerStockItem) => {
     setPortfolio((prev) => {
       const exists = prev.some((p) => p.symbol === stock.symbol);
+      let next: PortfolioStockItem[];
       if (exists) {
-        return prev.filter((p) => p.symbol !== stock.symbol);
+        next = prev.filter((p) => p.symbol !== stock.symbol);
       } else {
         const newItem: PortfolioStockItem = {
           id: `${stock.symbol}-${Date.now()}`,
@@ -803,8 +801,13 @@ export default function App() {
           trustNetBuyDays: stock.consecutiveTrustDays,
           trustNetBuyLots: stock.trustNetLots,
         };
-        return [newItem, ...prev];
+        next = [newItem, ...prev];
       }
+      try {
+        localStorage.setItem('tw_swing_portfolio', JSON.stringify(next));
+      } catch {}
+      syncUserPortfolioToServer(next, initialCapital);
+      return next;
     });
   };
 
@@ -812,8 +815,9 @@ export default function App() {
   const handleToggleTurnaroundPortfolio = (stock: TurnaroundStockItem) => {
     setPortfolio((prev) => {
       const exists = prev.some((p) => p.symbol === stock.symbol);
+      let next: PortfolioStockItem[];
       if (exists) {
-        return prev.filter((p) => p.symbol !== stock.symbol);
+        next = prev.filter((p) => p.symbol !== stock.symbol);
       } else {
         const targetPrice = Number((stock.price * 1.35).toFixed(1)); // 35% 轉型爆發目標
         const newItem: PortfolioStockItem = {
@@ -828,8 +832,13 @@ export default function App() {
           notes: `【價值轉型】${stock.positionLabel}，${stock.catalyst}`,
           strategyType: 'turnaround',
         };
-        return [newItem, ...prev];
+        next = [newItem, ...prev];
       }
+      try {
+        localStorage.setItem('tw_swing_portfolio', JSON.stringify(next));
+      } catch {}
+      syncUserPortfolioToServer(next, initialCapital);
+      return next;
     });
   };
 
@@ -845,14 +854,28 @@ export default function App() {
   };
 
   const handleRemovePortfolioItem = (id: string) => {
-    setPortfolio((prev) => prev.filter((item) => item.id !== id));
+    setPortfolio((prev) => {
+      const next = prev.filter((item) => item.id !== id);
+      try {
+        localStorage.setItem('tw_swing_portfolio', JSON.stringify(next));
+      } catch {}
+      syncUserPortfolioToServer(next, initialCapital);
+      return next;
+    });
   };
 
   const handleRemovePortfolioItemBySymbol = (symbol: string) => {
-    setPortfolio((prev) => prev.filter((item) => item.symbol !== symbol));
+    setPortfolio((prev) => {
+      const next = prev.filter((item) => item.symbol !== symbol);
+      try {
+        localStorage.setItem('tw_swing_portfolio', JSON.stringify(next));
+      } catch {}
+      syncUserPortfolioToServer(next, initialCapital);
+      return next;
+    });
   };
 
-  // 批次即時刷新自選股最新撮合報價（直連證交所 MIS，解決固定價格問題）
+  // 批次即時刷新自選股最新撮合報價（解耦 Supabase 同步，僅更新 watchlistQuotes 與顯示）
   const refreshWatchlistQuotes = useCallback(async () => {
     if (portfolio.length === 0) return;
     const symbols = Array.from(new Set(portfolio.map((p) => p.symbol)));
@@ -867,23 +890,6 @@ export default function App() {
         setWatchlistQuotes((prev) => ({ ...prev, ...quoteMap }));
         setLastWatchlistQuotesUpdatedAt(
           new Date().toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' })
-        );
-
-        // 同步更新自選股列表之 currentPrice / change / updateTime 並寫入 localStorage，確保價格永久即時更新
-        setPortfolio((prev) =>
-          prev.map((item) => {
-            const q = quoteMap[item.symbol];
-            if (q && q.price > 0) {
-              return {
-                ...item,
-                currentPrice: q.price,
-                change: q.change,
-                changePercent: q.changePercent,
-                updateTime: q.updateTime,
-              };
-            }
-            return item;
-          })
         );
       }
     } catch (e) {
@@ -938,8 +944,13 @@ export default function App() {
         strategyType: 'momentum',
       };
 
-      setPortfolio((prev) => [newItem, ...prev.filter((p) => p.symbol !== symbol)]);
+      const next = [newItem, ...portfolio.filter((p) => p.symbol !== symbol)];
+      setPortfolio(next);
       setWatchlistQuotes((prev) => ({ ...prev, [symbol]: q }));
+      try {
+        localStorage.setItem('tw_swing_portfolio', JSON.stringify(next));
+      } catch {}
+      syncUserPortfolioToServer(next, initialCapital);
       return true;
     } catch (e) {
       console.error('Failed to add stock by symbol:', e);
@@ -3083,7 +3094,7 @@ export default function App() {
           onTogglePortfolio={(stk) => {
             const exists = portfolio.some((p) => p.symbol === stk.symbol);
             if (exists) {
-              setPortfolio((prev) => prev.filter((p) => p.symbol !== stk.symbol));
+              handleRemovePortfolioItemBySymbol(stk.symbol);
             } else {
               handleAddStockBySymbol(stk.symbol);
             }

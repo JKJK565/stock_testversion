@@ -2,6 +2,23 @@
   "initialCapital": 1000000,
   "portfolio": [
     {
+      "id": "1802-1794363384508",
+      "symbol": "1802",
+      "name": "台玻",
+      "entryPrice": 65.5,
+      "sharesLots": 3,
+      "feeDiscount": 60,
+      "stopLossPrice": 72.86,
+      "targetPrice": 95.88,
+      "entryDate": "2026-11-11",
+      "strategyType": "momentum",
+      "notes": "【自選加入】玻璃陶瓷",
+      "currentPrice": 76.7,
+      "change": 6.9,
+      "changePercent": 9.89,
+      "updateTime": "07:05:50"
+    },
+    {
       "id": "1477-1793951225695",
       "symbol": "1477",
       "name": "聚陽",
@@ -13,27 +30,10 @@
       "entryDate": "2026-11-06",
       "strategyType": "turnaround",
       "notes": "【價值轉型】處於近一年 15.8% 低檔區，紡織纖維，最新單月營收年增達 +15.1%，近一年處於 15.8% 低檔基期，現價(213元)站上 20MA(207.55元)打底成型且均線走平翻揚。",
-      "currentPrice": 215.5,
-      "change": -0.5,
-      "changePercent": -0.23,
-      "updateTime": "13:30:00"
-    },
-    {
-      "id": "1802-1793767357073",
-      "symbol": "1802",
-      "name": "台玻",
-      "entryPrice": 65.5,
-      "sharesLots": 5,
-      "feeDiscount": 60,
-      "stopLossPrice": 62,
-      "targetPrice": 72.5,
-      "entryDate": "2026-11-04",
-      "strategyType": "momentum",
-      "notes": "【強勢動能】投信波段認養名單（買超 17776 張），現階段均線打底整理中，列入即時雷達監控 [ATR% 7.07%]",
-      "currentPrice": 69.8,
-      "change": 6.3,
-      "changePercent": 9.92,
-      "updateTime": "13:30:00"
+      "currentPrice": 213,
+      "change": -2.5,
+      "changePercent": -1.16,
+      "updateTime": "06:35:46"
     }
   ],
   "tradeHistory": []
