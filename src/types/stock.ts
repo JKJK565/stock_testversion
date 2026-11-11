@@ -35,6 +35,14 @@ export interface MorningReport {
   };
 }
 
+export interface MarketRegime {
+  isBullish: boolean;
+  taiexPrice: number;
+  taiexMa20: number;
+  biasPct: number;
+  suggestionText: string;
+}
+
 export interface MarketOverviewResponse {
   taiex: MarketIndexItem | null;
   tpex: MarketIndexItem | null;
@@ -46,6 +54,7 @@ export interface MarketOverviewResponse {
     tsm: USMarketItem | null;
   };
   morningReport: MorningReport | null;
+  marketRegime?: MarketRegime;
   timestamp: string;
 }
 
@@ -111,7 +120,7 @@ export interface ScreenerStockItem {
   entryActionNote?: string;
 }
 
-export type EntryTactic = 'PULLBACK_BUY' | 'BREAKOUT_BUY' | 'WAIT_PULLBACK' | 'BEARISH_BROKEN';
+export type EntryTactic = 'PULLBACK_BUY' | 'BREAKOUT_BUY' | 'WAIT_PULLBACK' | 'BEARISH_BROKEN' | 'EARLY_REBOUND';
 
 export interface BuyRatingBreakdown {
   chip: number;
@@ -137,6 +146,7 @@ export interface ScreenerResponse {
   modeLabel: string;
   isMarketOpen: boolean;
   marketStatusText: string;
+  marketRegime?: MarketRegime;
   lastUpdated?: string;
 }
 
@@ -208,6 +218,7 @@ export interface TurnaroundScreenerResponse {
   modeLabel?: string;
   isMarketOpen?: boolean;
   marketStatusText?: string;
+  marketRegime?: MarketRegime;
 }
 
 export interface MorningBriefingResponse {

@@ -109,6 +109,14 @@ export interface MorningReport {
   };
 }
 
+export interface MarketRegime {
+  isBullish: boolean;
+  taiexPrice: number;
+  taiexMa20: number;
+  biasPct: number;
+  suggestionText: string;
+}
+
 export interface MarketOverviewResponse {
   taiex: MarketIndexItem | null;
   tpex: MarketIndexItem | null;
@@ -120,6 +128,7 @@ export interface MarketOverviewResponse {
     tsm: USMarketItem | null;
   };
   morningReport: MorningReport | null;
+  marketRegime?: MarketRegime;
   timestamp: string;
 }
 
@@ -187,7 +196,7 @@ export interface ScreenerStockItem {
   entryActionNote?: string;
 }
 
-export type EntryTactic = 'PULLBACK_BUY' | 'BREAKOUT_BUY' | 'WAIT_PULLBACK' | 'BEARISH_BROKEN';
+export type EntryTactic = 'PULLBACK_BUY' | 'BREAKOUT_BUY' | 'WAIT_PULLBACK' | 'BEARISH_BROKEN' | 'EARLY_REBOUND';
 
 export interface BuyRatingBreakdown {
   chip: number;
@@ -211,6 +220,7 @@ export interface ScreenerResponse {
   modeLabel: string;
   isMarketOpen: boolean;
   marketStatusText: string;
+  marketRegime?: MarketRegime;
   lastUpdated?: string;
 }
 
@@ -282,6 +292,7 @@ export interface TurnaroundScreenerResponse {
   modeLabel?: string;
   isMarketOpen?: boolean;
   marketStatusText?: string;
+  marketRegime?: MarketRegime;
 }
 
 export interface MorningBriefingResponse {
@@ -1800,12 +1811,15 @@ async function getMarketOverview(force = false): Promise<MarketOverviewResponse>
     usIndices.nasdaq
   );
 
+  const marketRegime = await getMarketRegime(taiex?.price).catch(() => undefined);
+
   const overview: MarketOverviewResponse = {
     taiex,
     tpex,
     wtx,
     usIndices,
     morningReport,
+    marketRegime,
     timestamp: new Date().toISOString(),
   };
 
@@ -1963,6 +1977,28 @@ async function fetchTaiexKeyLevels(): Promise<{
     console.warn('[TaiexLevels] Failed to fetch TAIEX klines:', e?.message || e);
   }
   return { ma5: 27180, ma10: 27050, ma20: 26890, prevHigh: 27350, prevLow: 27120, prevClose: 27245, latestClose: 27245 };
+}
+
+/**
+ * 輔助 1-1：大盤多空位階總開關 (Market Regime Filter)
+ * 比對加權現價與 20MA (月線)：站穩則為多頭 (水位 60%~80%)，跌破則偏空防守 (水位 20%~30%)
+ */
+async function getMarketRegime(currentPrice?: number): Promise<MarketRegime> {
+  const levels = await fetchTaiexKeyLevels();
+  const taiexPrice = currentPrice && currentPrice > 0 ? Number(currentPrice.toFixed(1)) : levels.latestClose;
+  const taiexMa20 = levels.ma20;
+  const isBullish = taiexPrice >= taiexMa20;
+  const biasPct = Number((((taiexPrice - taiexMa20) / taiexMa20) * 100).toFixed(2));
+  const suggestionText = isBullish
+    ? `🟢 大盤多頭格局（站穩月線 ${taiexMa20}）：建議總資金水位 60%~80%，正常執行波段操作`
+    : `🔴 大盤偏空防守（跌破月線 ${taiexMa20}）：建議總資金水位壓低至 20%~30% 試單，嚴格縮小停損`;
+  return {
+    isBullish,
+    taiexPrice,
+    taiexMa20,
+    biasPct,
+    suggestionText,
+  };
 }
 
 /**
@@ -2767,6 +2803,7 @@ async function fetchYahooStockKlines(code: string): Promise<{
         const result = d?.chart?.result?.[0];
         const timestamps: number[] = result?.timestamp || [];
         const quote = result?.indicators?.quote?.[0];
+        const adjcloseArr = result?.indicators?.adjclose?.[0]?.adjclose;
         const meta = result?.meta;
         if (quote && Array.isArray(quote.close) && quote.close.length >= 20) {
           const closes: number[] = [];
@@ -2778,7 +2815,11 @@ async function fetchYahooStockKlines(code: string): Promise<{
           for (let i = 0; i < quote.close.length; i++) {
             const c = quote.close[i];
             if (typeof c === 'number' && !isNaN(c) && c > 0) {
-              closes.push(c);
+              const adj =
+                adjcloseArr && typeof adjcloseArr[i] === 'number' && !isNaN(adjcloseArr[i]) && adjcloseArr[i] > 0
+                  ? adjcloseArr[i]
+                  : null;
+              closes.push(adj !== null ? adj : c);
               highs.push(typeof quote.high?.[i] === 'number' ? quote.high[i] : c);
               lows.push(typeof quote.low?.[i] === 'number' ? quote.low[i] : c);
               volumes.push(
@@ -3016,7 +3057,7 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
         }
 
         candidates.sort((a, b) => b.totalTrustLots - a.totalTrustLots);
-        const topCandidates = candidates.slice(0, 35);
+        const topCandidates = candidates.slice(0, 50);
 
         if (topCandidates.length > 0) {
           try {
@@ -3118,7 +3159,7 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
 
     if (fallbackCandidates.length > 0) {
       fallbackCandidates.sort((a, b) => b.totalTrustLots - a.totalTrustLots);
-      const topFallback = fallbackCandidates.slice(0, 35);
+      const topFallback = fallbackCandidates.slice(0, 50);
       try {
         fs.writeFileSync(
           TRUST_BUYS_CACHE_FILE,
@@ -3425,6 +3466,7 @@ function calculateBuyRatingScore(params: {
   isVolumeExpanding?: boolean;
   volumeRatio?: number;
   isGoldenBreakout?: boolean;
+  isEarlyRebound?: boolean;
 }): BuyRatingResult {
   const isTurnaround = params.strategyType === 'turnaround';
   const curPrice = params.curPrice ?? 0;
@@ -3653,7 +3695,9 @@ function calculateBuyRatingScore(params: {
   // 總分計算與破線強制封頂（規則 A）
   // -------------------------------------------------------------
   let totalScore = chipScore + techScore + safetyScore + momentumScore;
-  if (isBroken) {
+  if (params.isEarlyRebound) {
+    totalScore = Math.min(59, Math.max(50, totalScore));
+  } else if (isBroken) {
     // 破線無買點股總分強制壓在 45 分以下
     totalScore = Math.min(45, totalScore);
   }
@@ -3663,7 +3707,11 @@ function calculateBuyRatingScore(params: {
   let label: string;
   let stars: string;
 
-  if (isBroken) {
+  if (params.isEarlyRebound) {
+    level = 'ACCUMULATE';
+    label = '🌱 早期反彈觀察 (Early Rebound)';
+    stars = '★☆☆';
+  } else if (isBroken) {
     level = 'HOLD_WATCH';
     label = '⚪ 破線觀望 (Hold / Watch)';
     stars = '☆';
@@ -3717,6 +3765,8 @@ function calculateEntryTactic(params: {
   bias20ma: number;
   isBullishMa: boolean;
   isVolumeExpanding: boolean;
+  trustNetLots?: number;
+  revenueYoY?: number;
 }): {
   entryTactic: EntryTactic;
   entryTacticLabel: string;
@@ -3732,8 +3782,23 @@ function calculateEntryTactic(params: {
   let suggestedEntryPrice = price;
   let entryActionNote = '';
 
+  const distToMa20 = ma20 > 0 ? (ma20 - price) / ma20 : 1;
+  const isEarlyReboundCandidate =
+    price < ma20 &&
+    price >= ma5 &&
+    changePercent > 0 &&
+    distToMa20 <= 0.08 &&
+    ((params.trustNetLots ?? 0) > 0 || (params.revenueYoY ?? 0) >= 8.0);
+
+  // 情況 0：早期反彈觀察 (price < 20MA 但已站上 5MA 且收紅，法人買超或營收成長，距 20MA <= 8%)
+  if (isEarlyReboundCandidate) {
+    entryTactic = 'EARLY_REBOUND';
+    entryTacticLabel = '🌱 早期反彈觀察 (已站5MA・待挑戰20MA)';
+    suggestedEntryPrice = Number(Math.min(price, ma5).toFixed(1));
+    entryActionNote = `已站上短期 5MA ($${ma5.toFixed(1)}) 展開超跌反彈，即將挑戰上方月線 20MA ($${ma20.toFixed(1)}) 反壓，屬早期築底試單觀察標的。`;
+  }
   // 情況 1：破線走弱 (現價已跌破 20MA) - 絕對禁止將上方 5MA / 20MA 反壓誤判為低接支撐！
-  if (price < ma20) {
+  else if (price < ma20) {
     entryTactic = 'BEARISH_BROKEN';
     entryTacticLabel = '🚫 破線走弱・觀望嚴禁接刀';
     suggestedEntryPrice = Number(price.toFixed(1));
@@ -3778,12 +3843,23 @@ function calculateEntryTactic(params: {
   }
 
   // 建議防守價 stopLossPrice：
-  // 1. 若破 20MA (BEARISH_BROKEN)，防守點取當週低點（且必須嚴格小於現價），若當週低點無效則取現價 * 0.95
-  // 2. 若多頭守在 20MA 之上，防守點取 20MA 或當週低點較小者
+  // 1. 若為 EARLY_REBOUND，防守點取當週低點或現價 * 0.95，目標價取上方 20MA
+  // 2. 若破 20MA (BEARISH_BROKEN)，防守點取當週低點（且必須嚴格小於現價），若當週低點無效則取現價 * 0.95
+  // 3. 若多頭守在 20MA 之上，防守點取 20MA 或當週低點較小者
   let stopLossPrice: number;
   let targetPrice: number;
 
-  if (entryTactic === 'BEARISH_BROKEN') {
+  if (entryTactic === 'EARLY_REBOUND') {
+    if (weeklyLow > 0 && weeklyLow < price * 0.99) {
+      stopLossPrice = Number(weeklyLow.toFixed(1));
+    } else {
+      stopLossPrice = Number((price * 0.95).toFixed(1));
+    }
+    if (stopLossPrice >= price) {
+      stopLossPrice = Number((price * 0.95).toFixed(1));
+    }
+    targetPrice = Number(ma20.toFixed(1));
+  } else if (entryTactic === 'BEARISH_BROKEN') {
     // 破線股：防守價必須嚴格小於現價
     if (weeklyLow > 0 && weeklyLow < price * 0.99) {
       stopLossPrice = Number(weeklyLow.toFixed(1));
@@ -3964,6 +4040,20 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
         curClose >= ma20 &&
         (isVolumeExpanding || volRatioVal >= 1.5);
 
+      // 重構即時進場點演算法與戰術標籤 (杜絕無腦現買現套，支援早期反彈觀察)
+      const entryInfo = calculateEntryTactic({
+        price: curClose,
+        ma5,
+        ma10,
+        ma20,
+        weeklyLow,
+        changePercent,
+        bias20ma,
+        isBullishMa,
+        isVolumeExpanding,
+        trustNetLots: c.day2TrustLots,
+      });
+
       // 重構客觀量化買入評分系統 (0 ~ 100分)
       const buyRating = calculateBuyRatingScore({
         strategyType: 'momentum',
@@ -3985,19 +4075,7 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
         isVolumeExpanding,
         volumeRatio: volRatioVal,
         isGoldenBreakout,
-      });
-
-      // 重構即時進場點演算法與戰術標籤 (杜絕無腦現買現套)
-      const entryInfo = calculateEntryTactic({
-        price: curClose,
-        ma5,
-        ma10,
-        ma20,
-        weeklyLow,
-        changePercent,
-        bias20ma,
-        isBullishMa,
-        isVolumeExpanding,
+        isEarlyRebound: entryInfo.entryTactic === 'EARLY_REBOUND',
       });
 
       const riskRewardRatio = 2.0;
@@ -4071,9 +4149,11 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
     }
   }
 
-  // 核心安全過濾：剔除跌破 20MA (BEARISH_BROKEN) 與評分低於 50 分的弱勢標的
+  // 核心安全過濾：剔除跌破 20MA (BEARISH_BROKEN) 與評分低於 50 分的弱勢標的（保留 EARLY_REBOUND 早期反彈觀察標的）
   const qualifiedList = results.filter(
-    (s) => s.entryTactic !== 'BEARISH_BROKEN' && s.price >= s.ma20 && (s.buyRatingScore ?? 0) >= 50
+    (s) =>
+      (s.entryTactic === 'EARLY_REBOUND' || (s.entryTactic !== 'BEARISH_BROKEN' && s.price >= s.ma20)) &&
+      (s.buyRatingScore ?? 0) >= 50
   );
 
   // 排序：選股清單預設按照 buyRatingScore 由高分到低分降序排列，同分者依 isMatched 與量能排序
@@ -4270,6 +4350,7 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
             const d = await safeParseJsonResponse(res, `Yahoo-Chart1Y-${code}${ext}`);
             const result = d?.chart?.result?.[0];
             const quote = result?.indicators?.quote?.[0];
+            const adjcloseArr = result?.indicators?.adjclose?.[0]?.adjclose;
             if (!quote || !quote.close) continue;
 
             const closes: number[] = [];
@@ -4280,7 +4361,11 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
             for (let i = 0; i < quote.close.length; i++) {
               const c = quote.close[i];
               if (typeof c === 'number' && !isNaN(c) && c > 0) {
-                closes.push(c);
+                const adj =
+                  adjcloseArr && typeof adjcloseArr[i] === 'number' && !isNaN(adjcloseArr[i]) && adjcloseArr[i] > 0
+                    ? adjcloseArr[i]
+                    : null;
+                closes.push(adj !== null ? adj : c);
                 highs.push(typeof quote.high?.[i] === 'number' ? quote.high[i] : c);
                 lows.push(typeof quote.low?.[i] === 'number' ? quote.low[i] : c);
                 volumes.push(
@@ -4297,6 +4382,7 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
             const yearLow = Math.min(...lows, curPrice);
             const range = yearHigh - yearLow;
             const positionPct = range > 0 ? Number((((curPrice - yearLow) / range) * 100).toFixed(1)) : 50;
+            const ma5 = Number((closes.slice(-5).reduce((a, b) => a + b, 0) / 5).toFixed(2));
             const ma20 = Number((closes.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(2));
             const prevCloses = closes.slice(0, -1);
             const prevMa20 = Number((prevCloses.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(2));
@@ -4309,9 +4395,11 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
             if (isBlacklistedStock(code, name)) continue;
             if (curPrice < 15 || curPrice > 500) continue;
 
+            const change = Number((curPrice - prevClose).toFixed(2));
+            const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
             const isAboveMa20 = curPrice >= ma20;
             const isMa20FlatOrRising = ma20 >= prevMa20 * 0.995;
-            const isSafeBottom = isAboveMa20 && isMa20FlatOrRising;
+            const isSafeBottom = curPrice >= ma20 && (isMa20FlatOrRising || (curPrice >= ma5 && changePercent > 0));
 
             return {
               code,
@@ -4321,6 +4409,7 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
               yearHigh,
               yearLow,
               positionPct,
+              ma5,
               ma20,
               prevMa20,
               volumeAvg5d,
@@ -4355,7 +4444,7 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
     return a.positionPct - b.positionPct;
   });
 
-  const targetCandidates = lowBasePool.slice(0, 15);
+  const targetCandidates = lowBasePool.slice(0, 25);
   const d14m = new Date();
   d14m.setMonth(d14m.getMonth() - 14);
   const start14m = d14m.toISOString().split('T')[0];
@@ -4442,6 +4531,19 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         plusDI > minusDI &&
         item.curPrice >= item.ma20;
 
+      const tactic = calculateEntryTactic({
+        price: item.curPrice,
+        ma5,
+        ma10,
+        ma20: item.ma20,
+        weeklyLow,
+        changePercent,
+        bias20ma,
+        isBullishMa,
+        isVolumeExpanding: false,
+        revenueYoY,
+      });
+
       const buyRating = calculateBuyRatingScore({
         strategyType: 'turnaround',
         curPrice: item.curPrice,
@@ -4460,18 +4562,7 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         isVolumeExpanding: false,
         volumeRatio: 1.0,
         isGoldenBreakout,
-      });
-
-      const tactic = calculateEntryTactic({
-        price: item.curPrice,
-        ma5,
-        ma10,
-        ma20: item.ma20,
-        weeklyLow,
-        changePercent,
-        bias20ma,
-        isBullishMa,
-        isVolumeExpanding: false,
+        isEarlyRebound: tactic.entryTactic === 'EARLY_REBOUND',
       });
 
       const stopLossPrice = tactic.stopLossPrice;
@@ -4547,11 +4638,10 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
     })
   );
 
-  // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」、5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股
+  // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」、5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股（保留 EARLY_REBOUND 早期反彈觀察標的）
   const qualifiedResults = results.filter(
     (s) =>
-      s.entryTactic !== 'BEARISH_BROKEN' &&
-      s.price >= (s.ma20 ?? s.stopLossPrice) &&
+      (s.entryTactic === 'EARLY_REBOUND' || (s.entryTactic !== 'BEARISH_BROKEN' && s.price >= (s.ma20 ?? s.stopLossPrice))) &&
       (s.buyRatingScore ?? 0) >= 50 &&
       (s.volumeAvg5d ?? 0) >= 1000
   );
@@ -4729,10 +4819,14 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
       const prevHistory = hasToday ? cached.closes.slice(0, -1) : cached.closes;
       const prevMa20 = calculateMovingAverage(prevHistory, 20, prevHistory[prevHistory.length - 1] || curPrice, false);
 
-      // 現價必須站上 20MA 且 20MA 走平或微揚（排除向下破底弱勢股）
+      const ma5 = calculateMovingAverage(cached.closes, 5, curPrice, isIntraday, cached.lastDataDate, todayTaipeiDate);
+      const change = Number((curPrice - prevClose).toFixed(2));
+      const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
+
+      // 現價必須站上 20MA 且 (20MA 走平或微揚 或 (站上5MA且當日收紅))
       const isAboveMa20 = curPrice >= ma20;
       const isMa20FlatOrRising = ma20 >= prevMa20 * 0.995;
-      const isSafeBottom = isAboveMa20 && isMa20FlatOrRising;
+      const isSafeBottom = curPrice >= ma20 && (isMa20FlatOrRising || (curPrice >= ma5 && changePercent > 0));
 
       // 客觀量化波動度門檻與流動性門檻（維持安全閥 atrPct >= 2.2%，兼顧底部量縮打底特性）
       const isLiquidityPass = volumeAvg5d > 1000;
@@ -4743,7 +4837,6 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
       // 綜合量化驗證符合標準
       const isTurnaroundMatched = isLowBase && isSafeBottom && isLiquidityPass && isAtrPass && isProfitable && isRevGrowing;
 
-      const ma5 = calculateMovingAverage(cached.closes, 5, curPrice, isIntraday, cached.lastDataDate, todayTaipeiDate);
       const ma10 = calculateMovingAverage(cached.closes, 10, curPrice, isIntraday, cached.lastDataDate, todayTaipeiDate);
       const bias20ma = ma20 > 0 ? Number((((curPrice - ma20) / ma20) * 100).toFixed(1)) : 0;
       const isBullishMa = ma5 > ma10 && ma10 > ma20;
@@ -4752,8 +4845,6 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
       const isVolumeExpanding = volumeAvg5d > 0 && curVolumeLots >= volumeAvg5d * 1.3;
       const volumeRatio = volumeAvg5d > 0 ? Number((curVolumeLots / volumeAvg5d).toFixed(2)) : 1.0;
 
-      const change = Number((curPrice - prevClose).toFixed(2));
-      const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
       const alphaToday = Number((changePercent - taiexChangePercent).toFixed(2));
       const updateTime = item.time || marketStatus.timeString;
 
@@ -4767,6 +4858,19 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
         adx14 <= 30 &&
         plusDI > minusDI &&
         curPrice >= ma20;
+
+      const tactic = calculateEntryTactic({
+        price: curPrice,
+        ma5,
+        ma10,
+        ma20,
+        weeklyLow,
+        changePercent,
+        bias20ma,
+        isBullishMa,
+        isVolumeExpanding,
+        revenueYoY: cached.revenueYoY,
+      });
 
       const buyRating = calculateBuyRatingScore({
         strategyType: 'turnaround',
@@ -4786,18 +4890,7 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
         isVolumeExpanding,
         volumeRatio,
         isGoldenBreakout,
-      });
-
-      const tactic = calculateEntryTactic({
-        price: curPrice,
-        ma5,
-        ma10,
-        ma20,
-        weeklyLow,
-        changePercent,
-        bias20ma,
-        isBullishMa,
-        isVolumeExpanding,
+        isEarlyRebound: tactic.entryTactic === 'EARLY_REBOUND',
       });
 
       // 建議防守價：20MA 停損價
@@ -4892,12 +4985,10 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
 
   // -------------------------------------------------------------------------
   // -------------------------------------------------------------------------
-  // 第四階段（輸出結果）：
-  // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」、5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股
+  // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」、5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股（保留 EARLY_REBOUND 早期反彈觀察標的）
   const qualifiedResults = results.filter(
     (s) =>
-      s.entryTactic !== 'BEARISH_BROKEN' &&
-      s.price >= (s.ma20 ?? s.stopLossPrice) &&
+      (s.entryTactic === 'EARLY_REBOUND' || (s.entryTactic !== 'BEARISH_BROKEN' && s.price >= (s.ma20 ?? s.stopLossPrice))) &&
       (s.buyRatingScore ?? 0) >= 50 &&
       (s.volumeAvg5d ?? 0) >= 1000
   );
@@ -4943,7 +5034,10 @@ async function getScreenerData(force = false): Promise<ScreenerResponse> {
   lastScreenerRunTime = now;
 
   try {
-    const scanResult = await scanAllMarketTrustBuys();
+    const [scanResult, marketRegime] = await Promise.all([
+      scanAllMarketTrustBuys(),
+      getMarketRegime().catch(() => undefined),
+    ]);
 
     const responseData: ScreenerResponse = {
       cachedAt: new Date().toISOString(),
@@ -4956,6 +5050,7 @@ async function getScreenerData(force = false): Promise<ScreenerResponse> {
       modeLabel: scanResult.modeLabel,
       isMarketOpen: scanResult.isMarketOpen,
       marketStatusText: scanResult.marketStatusText,
+      marketRegime,
       lastUpdated: new Date().toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' }),
     };
 
@@ -4997,7 +5092,10 @@ async function getTurnaroundData(force = false): Promise<TurnaroundScreenerRespo
   lastTurnaroundRunTime = now;
 
   try {
-    const rawStocks = await scanTurnaroundStocks();
+    const [rawStocks, marketRegime] = await Promise.all([
+      scanTurnaroundStocks(),
+      getMarketRegime().catch(() => undefined),
+    ]);
     const allStocks = rawStocks.filter((s) => (s.buyRatingScore ?? 0) >= 50 && (s.volumeAvg5d ?? 0) >= 1000);
     const matchedList = allStocks.filter((s) => s.isTurnaroundMatched);
 
@@ -5022,6 +5120,7 @@ async function getTurnaroundData(force = false): Promise<TurnaroundScreenerRespo
       modeLabel,
       isMarketOpen: status.isIntradayTrading,
       marketStatusText,
+      marketRegime,
     };
 
     if (allStocks.length > 0) {
@@ -6804,6 +6903,7 @@ async function fetchYahooChart1Y(code: string): Promise<{
         const d = await safeParseJsonResponse(res, `Yahoo-Chart1Y-${code}${ext}`);
         const result = d?.chart?.result?.[0];
         const quote = result?.indicators?.quote?.[0];
+        const adjcloseArr = result?.indicators?.adjclose?.[0]?.adjclose;
         const timestamps = result?.timestamp;
         if (!quote || !quote.close) continue;
 
@@ -6816,7 +6916,11 @@ async function fetchYahooChart1Y(code: string): Promise<{
         for (let i = 0; i < quote.close.length; i++) {
           const c = quote.close[i];
           if (typeof c === 'number' && !isNaN(c) && c > 0) {
-            closes.push(c);
+            const adj =
+              adjcloseArr && typeof adjcloseArr[i] === 'number' && !isNaN(adjcloseArr[i]) && adjcloseArr[i] > 0
+                ? adjcloseArr[i]
+                : null;
+            closes.push(adj !== null ? adj : c);
             highs.push(typeof quote.high?.[i] === 'number' ? quote.high[i] : c);
             lows.push(typeof quote.low?.[i] === 'number' ? quote.low[i] : c);
             volumes.push(typeof quote.volume?.[i] === 'number' ? Math.round(quote.volume[i] / 1000) : 0);
@@ -7091,7 +7195,7 @@ app.get('/api/stocks/:symbol/strategy-audit', async (req: Request, res: Response
     // 2. 低基期價值轉型策略審查
     // -------------------------------------------------------------------------
     const isLowBase = positionPct <= 35.0;
-    const isSafeBottom = curPrice >= ma20 && isMa20FlatOrRising;
+    const isSafeBottom = curPrice >= ma20 && (isMa20FlatOrRising || (curPrice >= ma5 && changePercent > 0));
     const isRevGrowing = revenueYoY >= 8.0;
     const isProfitable = eps4Q !== null && eps4Q > 0;
     const isTurnaroundMatched = isLowBase && isSafeBottom && isRevGrowing && isProfitable;
@@ -7105,8 +7209,8 @@ app.get('/api/stocks/:symbol/strategy-audit', async (req: Request, res: Response
       },
       {
         name: '20MA 打底安全閥',
-        target: '現價站上 20MA 且均線走平或微揚',
-        actual: `現價 $${curPrice} / 20MA $${ma20} (${curPrice >= ma20 ? '已站上' : '跌破'}，${isMa20FlatOrRising ? '均線走平微揚' : '均線扣高下彎'})`,
+        target: '現價站上 20MA 且均線走平或站上5MA反彈',
+        actual: `現價 $${curPrice} / 20MA $${ma20} (${curPrice >= ma20 ? '已站上' : '跌破'}，${isSafeBottom ? '符合打底閥' : isMa20FlatOrRising ? '均線走平微揚' : '均線扣高下彎'})`,
         passed: isSafeBottom,
       },
       {
