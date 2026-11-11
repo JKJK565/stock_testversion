@@ -235,6 +235,9 @@ export default function App() {
   // Notification Center modal open state
   const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState(false);
 
+  // 選股卡片展開折疊狀態
+  const [expandedCardSymbols, setExpandedCardSymbols] = useState<Record<string, boolean>>({});
+
   // Data states
   const [marketData, setMarketData] = useState<MarketOverviewResponse | null>(null);
   const [morningBriefing, setMorningBriefing] = useState<MorningBriefingResponse | null>(null);
@@ -976,8 +979,12 @@ export default function App() {
     // 嚴格剔除產業黑名單
     list = list.filter((s) => !isBlacklisted(s.symbol, s.name));
 
-    // 嚴格剔除跌破 20MA (BEARISH_BROKEN) 與評分低於 50 分的弱勢標的
-    list = list.filter((s) => s.entryTactic !== 'BEARISH_BROKEN' && s.price >= s.ma20 && (s.buyRatingScore ?? 0) >= 50);
+    // 嚴格剔除跌破 20MA (BEARISH_BROKEN) 與評分低於 50 分的弱勢標的（保留 EARLY_REBOUND 早期反彈觀察）
+    list = list.filter(
+      (s) =>
+        (s.entryTactic === 'EARLY_REBOUND' || (s.entryTactic !== 'BEARISH_BROKEN' && s.price >= s.ma20)) &&
+        (s.buyRatingScore ?? 0) >= 50
+    );
 
     // 核心供應鏈白名單與業務特徵詞動態匹配（排除記憶體對 CoWoS 的干擾）
     if (selectedIndustryFilter !== 'all') {
@@ -1051,11 +1058,10 @@ export default function App() {
     // 嚴格剔除產業黑名單
     list = list.filter((s) => !isBlacklisted(s.symbol, s.name));
 
-    // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」且 5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股
+    // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」且 5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股（保留 EARLY_REBOUND 早期反彈觀察）
     list = list.filter(
       (s) =>
-        s.entryTactic !== 'BEARISH_BROKEN' &&
-        s.price >= (s.ma20 ?? s.stopLossPrice) &&
+        (s.entryTactic === 'EARLY_REBOUND' || (s.entryTactic !== 'BEARISH_BROKEN' && s.price >= (s.ma20 ?? s.stopLossPrice))) &&
         (s.buyRatingScore ?? 0) >= 50 &&
         (s.volumeAvg5d ?? 0) >= 1000
     );
@@ -1900,6 +1906,60 @@ export default function App() {
         {/* ========================================================================= */}
         {activeModule === 'screener' && (
           <div className="space-y-6 animate-fadeIn">
+            {/* 大盤多空位階總開關 (Market Regime Filter) 醒目橫幅 */}
+            {(() => {
+              const regime =
+                screenerData?.marketRegime ||
+                turnaroundData?.marketRegime ||
+                marketData?.marketRegime;
+              if (!regime) return null;
+              const { isBullish, taiexPrice, taiexMa20, biasPct, suggestionText } = regime;
+              return (
+                <div
+                  className={`p-4 sm:p-5 rounded-3xl border shadow-xl transition-all ${
+                    isBullish
+                      ? 'bg-gradient-to-r from-emerald-950/90 via-slate-900 to-teal-950/70 border-emerald-500/60 shadow-emerald-950/30'
+                      : 'bg-gradient-to-r from-rose-950/90 via-slate-900 to-amber-950/70 border-rose-500/60 shadow-rose-950/30'
+                  }`}
+                >
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-3.5">
+                      <div
+                        className={`w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0 shadow-inner ${
+                          isBullish
+                            ? 'bg-emerald-500/20 border border-emerald-500/50 text-emerald-400'
+                            : 'bg-rose-500/20 border border-rose-500/50 text-rose-400'
+                        }`}
+                      >
+                        <ShieldAlert className={`w-6 h-6 ${isBullish ? 'text-emerald-400' : 'text-rose-400'}`} />
+                      </div>
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span
+                            className={`text-xs px-2.5 py-0.5 rounded-full font-bold border ${
+                              isBullish
+                                ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                                : 'bg-rose-500/20 border-rose-500/40 text-rose-300'
+                            }`}
+                          >
+                            大盤多空位階總開關
+                          </span>
+                          <span className="text-xs font-mono text-slate-400">
+                            加權現價 {taiexPrice.toLocaleString()} 點 / 月線 {taiexMa20.toLocaleString()} 點 (乖離 {biasPct > 0 ? '+' : ''}{biasPct}%)
+                          </span>
+                        </div>
+                        <h2 className="text-sm sm:text-base font-black text-white mt-1 tracking-tight">
+                          {isBullish
+                            ? `🟢 大盤多頭格局（加權 ${taiexPrice} 站穩月線 ${taiexMa20}，乖離 +${biasPct}%）：${suggestionText}`
+                            : `🔴 大盤偏空防守（加權 ${taiexPrice} 低於月線 ${taiexMa20}，乖離 ${biasPct}%）：${suggestionText}`}
+                        </h2>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* 雙軌時間自動切換頂部醒目標示 */}
             {(() => {
               const activeMode =
@@ -2336,192 +2396,207 @@ export default function App() {
                               </div>
                             </div>
 
-                            {/* Quant Indicators Row (5 Dimensions) */}
-                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mt-3.5 text-center">
-                              <div
-                                className={`p-2.5 rounded-xl border text-xs ${
-                                  stock.isBullishMa
-                                    ? stock.isIntradaySignal
-                                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                                      : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-                                    : 'bg-slate-950 border-slate-800 text-slate-400'
-                                }`}
-                              >
-                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">均線排列</div>
-                                <div className="font-bold truncate">
-                                  {stock.isBullishMa ? '5>10>20 多頭排列' : '整理未發散'}
-                                </div>
-                              </div>
+                            {/* 折疊切換按鈕 */}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedCardSymbols((prev) => ({
+                                  ...prev,
+                                  [stock.symbol]: !prev[stock.symbol],
+                                }))
+                              }
+                              className="w-full mt-3 py-1.5 px-3 rounded-xl bg-slate-800/60 hover:bg-slate-800 border border-slate-700/60 text-xs font-semibold text-slate-300 hover:text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-sm select-none"
+                            >
+                              <span>📊 {expandedCardSymbols[stock.symbol] ? '收合詳細量化與法人明細 ▴' : '展開詳細量化與法人明細 ▾'}</span>
+                            </button>
 
-                              <div
-                                className={`p-2.5 rounded-xl border text-xs ${
-                                  stock.isVolumeExpanding
-                                    ? stock.isIntradaySignal
-                                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                                      : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-                                    : 'bg-slate-950 border-slate-800 text-slate-400'
-                                }`}
-                              >
-                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">
-                                  {screenerData?.mode === 'intraday' ? '預估全天成交量' : '量能攻擊'}
-                                </div>
-                                <div className="font-bold truncate">
-                                  {screenerData?.mode === 'intraday' && stock.estVolume ? (
-                                    <>
-                                      {stock.estVolume.toLocaleString()} 張
-                                      <span className="text-[10px] text-emerald-400 ml-1">
-                                        ({stock.estVolumeRatio?.toFixed(1) || stock.volumeRatio.toFixed(1)}x)
+                            {/* 詳細數據折疊區 */}
+                            {expandedCardSymbols[stock.symbol] && (
+                              <div className="mt-3 space-y-3 animate-fadeIn">
+                                {/* Quant Indicators Row (5 Dimensions) */}
+                                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 text-center">
+                                  <div
+                                    className={`p-2.5 rounded-xl border text-xs ${
+                                      stock.isBullishMa
+                                        ? stock.isIntradaySignal
+                                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                                          : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                                        : 'bg-slate-950 border-slate-800 text-slate-400'
+                                    }`}
+                                  >
+                                    <div className="text-[10px] text-slate-500 mb-0.5 truncate">均線排列</div>
+                                    <div className="font-bold truncate">
+                                      {stock.isBullishMa ? '5>10>20 多頭排列' : '整理未發散'}
+                                    </div>
+                                  </div>
+
+                                  <div
+                                    className={`p-2.5 rounded-xl border text-xs ${
+                                      stock.isVolumeExpanding
+                                        ? stock.isIntradaySignal
+                                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                                          : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                                        : 'bg-slate-950 border-slate-800 text-slate-400'
+                                    }`}
+                                  >
+                                    <div className="text-[10px] text-slate-500 mb-0.5 truncate">
+                                      {screenerData?.mode === 'intraday' ? '預估全天成交量' : '量能攻擊'}
+                                    </div>
+                                    <div className="font-bold truncate">
+                                      {screenerData?.mode === 'intraday' && stock.estVolume ? (
+                                        <>
+                                          {stock.estVolume.toLocaleString()} 張
+                                          <span className="text-[10px] text-emerald-400 ml-1">
+                                            ({stock.estVolumeRatio?.toFixed(1) || stock.volumeRatio.toFixed(1)}x)
+                                          </span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          {stock.volumeRatio.toFixed(1)}x 均量
+                                          {stock.isVolumeExpanding ? ' (出量)' : ''}
+                                        </>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div
+                                    className={`p-2.5 rounded-xl border text-xs ${
+                                      stock.isTrustAccumulating
+                                        ? 'bg-purple-500/10 border-purple-500/30 text-purple-300'
+                                        : 'bg-slate-950 border-slate-800 text-slate-400'
+                                    }`}
+                                  >
+                                    <div className="text-[10px] text-slate-500 mb-0.5 truncate">投信籌碼</div>
+                                    <div className="font-bold flex items-center justify-between truncate">
+                                      <span className="truncate">
+                                        {stock.consecutiveTrustDays > 0
+                                          ? `連 ${stock.consecutiveTrustDays} 日買超`
+                                          : '今日買超'}
                                       </span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      {stock.volumeRatio.toFixed(1)}x 均量
-                                      {stock.isVolumeExpanding ? ' (出量)' : ''}
-                                    </>
-                                  )}
-                                </div>
-                              </div>
+                                      <span className="font-mono text-rose-400 font-extrabold ml-1 flex-shrink-0">
+                                        {stock.trustNetLots > 0 ? '+' : ''}
+                                        {stock.trustNetLots.toLocaleString()} 張
+                                      </span>
+                                    </div>
+                                  </div>
 
-                              <div
-                                className={`p-2.5 rounded-xl border text-xs ${
-                                  stock.isTrustAccumulating
-                                    ? 'bg-purple-500/10 border-purple-500/30 text-purple-300'
-                                    : 'bg-slate-950 border-slate-800 text-slate-400'
-                                }`}
-                              >
-                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">投信籌碼</div>
-                                <div className="font-bold flex items-center justify-between truncate">
-                                  <span className="truncate">
-                                    {stock.consecutiveTrustDays > 0
-                                      ? `連 ${stock.consecutiveTrustDays} 日買超`
-                                      : '今日買超'}
-                                  </span>
-                                  <span className="font-mono text-rose-400 font-extrabold ml-1 flex-shrink-0">
-                                    {stock.trustNetLots > 0 ? '+' : ''}
-                                    {stock.trustNetLots.toLocaleString()} 張
-                                  </span>
-                                </div>
-                              </div>
+                                  {/* 20日 ATR% 波動度 */}
+                                  <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
+                                    <div className="text-[10px] text-slate-500 mb-0.5 truncate">20日 ATR% 波動度</div>
+                                    <div className="font-bold text-emerald-400 truncate">
+                                      {stock.atrPct ? `${stock.atrPct}%` : '≥2.5%'}
+                                      <span className="text-[10px] text-emerald-500 font-normal ml-1">≥2.5% 達標</span>
+                                    </div>
+                                  </div>
 
-                              {/* 20日 ATR% 波動度 */}
-                              <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
-                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">20日 ATR% 波動度</div>
-                                <div className="font-bold text-emerald-400 truncate">
-                                  {stock.atrPct ? `${stock.atrPct}%` : '≥2.5%'}
-                                  <span className="text-[10px] text-emerald-500 font-normal ml-1">≥2.5% 達標</span>
+                                  {/* 5日均量流動性 */}
+                                  <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
+                                    <div className="text-[10px] text-slate-500 mb-0.5 truncate">5日均量流動性</div>
+                                    <div className="font-bold text-sky-400 truncate">
+                                      {stock.volumeAvg5d ? `${stock.volumeAvg5d.toLocaleString()} 張` : '-'}
+                                      <span className={`text-[10px] font-normal ml-1 ${(stock.volumeAvg5d ?? 0) >= 1000 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                        {(stock.volumeAvg5d ?? 0) >= 1000 ? '≥1,000張達標' : '未達標 (不足千張)'}
+                                      </span>
+                                    </div>
+                                  </div>
                                 </div>
-                              </div>
 
-                              {/* 5日均量流動性 */}
-                              <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
-                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">5日均量流動性</div>
-                                <div className="font-bold text-sky-400 truncate">
-                                  {stock.volumeAvg5d ? `${stock.volumeAvg5d.toLocaleString()} 張` : '-'}
-                                  <span className={`text-[10px] font-normal ml-1 ${(stock.volumeAvg5d ?? 0) >= 1000 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                    {(stock.volumeAvg5d ?? 0) >= 1000 ? '≥1,000張達標' : '未達標 (不足千張)'}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
+                                {/* Overheated Warning */}
+                                {stock.isOverheated ? (
+                                  <div className="p-3 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-xs text-amber-300 flex items-start gap-2">
+                                    <ShieldAlert className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                                    <div>
+                                      <div className="font-bold">🚨 短線過熱・切勿追高！</div>
+                                      <div className="text-amber-200/90 mt-0.5">
+                                        20MA 乖離率達 +{stock.bias20ma.toFixed(1)}%（超過 10% 警戒線）。建議等待拉回 5MA (${stock.ma5.toFixed(1)}) 附近再擇機進場。
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : null}
 
-                            {/* Overheated Warning */}
-                            {stock.isOverheated ? (
-                              <div className="mt-3 p-3 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-xs text-amber-300 flex items-start gap-2">
-                                <ShieldAlert className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
-                                <div>
-                                  <div className="font-bold">🚨 短線過熱・切勿追高！</div>
-                                  <div className="text-amber-200/90 mt-0.5">
-                                    20MA 乖離率達 +{stock.bias20ma.toFixed(1)}%（超過 10% 警戒線）。建議等待拉回 5MA (${stock.ma5.toFixed(1)}) 附近再擇機進場。
+                                {/* 三大法人當日籌碼買賣超與土洋對策 */}
+                                <div className="p-3 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-2 text-xs">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[11px] font-semibold text-slate-400">法人籌碼走向</span>
+                                      {stock.foreignNetLots !== null && stock.foreignNetLots > 0 && stock.trustNetLots > 0 ? (
+                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5 animate-pulse">
+                                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                                          土洋同步作多
+                                        </span>
+                                      ) : stock.foreignNetLots !== null && stock.foreignNetLots < 0 && stock.trustNetLots > 0 ? (
+                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1.5">
+                                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                                          外資對作調節
+                                        </span>
+                                      ) : stock.trustNetLots > 0 ? (
+                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                                          投信單獨認養
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    {stock.consecutiveTrustDays > 0 && (
+                                      <span className="text-[10px] text-purple-300 font-mono">
+                                        連 {stock.consecutiveTrustDays} 日買超
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="grid grid-cols-3 gap-1.5 sm:gap-2 pt-1 font-mono text-center">
+                                    <div className="p-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80">
+                                      <span className="text-[10px] text-slate-500 block font-sans">外資買賣超</span>
+                                      <strong
+                                        className={`text-[11px] sm:text-xs block font-bold whitespace-nowrap ${
+                                          stock.foreignNetLots === null
+                                            ? 'text-slate-500 font-normal'
+                                            : stock.foreignNetLots > 0
+                                            ? 'text-rose-400'
+                                            : stock.foreignNetLots < 0
+                                            ? 'text-emerald-400'
+                                            : 'text-slate-300'
+                                        }`}
+                                      >
+                                        {stock.foreignNetLots !== null
+                                          ? `${stock.foreignNetLots > 0 ? '+' : ''}${stock.foreignNetLots.toLocaleString()} 張`
+                                          : '無數據'}
+                                      </strong>
+                                    </div>
+                                    <div className="p-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80">
+                                      <span className="text-[10px] text-slate-500 block font-sans">投信買賣超</span>
+                                      <strong
+                                        className={`text-[11px] sm:text-xs block font-bold whitespace-nowrap ${
+                                          stock.trustNetLots > 0
+                                            ? 'text-rose-400'
+                                            : stock.trustNetLots < 0
+                                            ? 'text-emerald-400'
+                                            : 'text-slate-300'
+                                        }`}
+                                      >
+                                        {stock.trustNetLots > 0 ? '+' : ''}
+                                        {stock.trustNetLots.toLocaleString()} 張
+                                      </strong>
+                                    </div>
+                                    <div className="p-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80">
+                                      <span className="text-[10px] text-slate-500 block font-sans">自營商</span>
+                                      <strong
+                                        className={`text-[11px] sm:text-xs block font-bold whitespace-nowrap ${
+                                          stock.dealerNetLots === null
+                                            ? 'text-slate-500 font-normal'
+                                            : stock.dealerNetLots > 0
+                                            ? 'text-rose-400'
+                                            : stock.dealerNetLots < 0
+                                            ? 'text-emerald-400'
+                                            : 'text-slate-300'
+                                        }`}
+                                      >
+                                        {stock.dealerNetLots !== null
+                                          ? `${stock.dealerNetLots > 0 ? '+' : ''}${stock.dealerNetLots.toLocaleString()} 張`
+                                          : '無數據'}
+                                      </strong>
+                                    </div>
                                   </div>
                                 </div>
                               </div>
-                            ) : null}
-
-                            {/* 三大法人當日籌碼買賣超與土洋對策 */}
-                            <div className="mt-3 p-3 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-2 text-xs">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[11px] font-semibold text-slate-400">法人籌碼走向</span>
-                                  {stock.foreignNetLots !== null && stock.foreignNetLots > 0 && stock.trustNetLots > 0 ? (
-                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5 animate-pulse">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                                      土洋同步作多
-                                    </span>
-                                  ) : stock.foreignNetLots !== null && stock.foreignNetLots < 0 && stock.trustNetLots > 0 ? (
-                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1.5">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                                      外資對作調節
-                                    </span>
-                                  ) : stock.trustNetLots > 0 ? (
-                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                                      投信單獨認養
-                                    </span>
-                                  ) : null}
-                                </div>
-
-                                {stock.consecutiveTrustDays > 0 && (
-                                  <span className="text-[10px] text-purple-300 font-mono">
-                                    連 {stock.consecutiveTrustDays} 日買超
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="grid grid-cols-3 gap-1.5 sm:gap-2 pt-1 font-mono text-center">
-                                <div className="p-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80">
-                                  <span className="text-[10px] text-slate-500 block font-sans">外資買賣超</span>
-                                  <strong
-                                    className={`text-[11px] sm:text-xs block font-bold whitespace-nowrap ${
-                                      stock.foreignNetLots === null
-                                        ? 'text-slate-500 font-normal'
-                                        : stock.foreignNetLots > 0
-                                        ? 'text-rose-400'
-                                        : stock.foreignNetLots < 0
-                                        ? 'text-emerald-400'
-                                        : 'text-slate-300'
-                                    }`}
-                                  >
-                                    {stock.foreignNetLots !== null
-                                      ? `${stock.foreignNetLots > 0 ? '+' : ''}${stock.foreignNetLots.toLocaleString()} 張`
-                                      : '無數據'}
-                                  </strong>
-                                </div>
-
-                                <div className="p-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80">
-                                  <span className="text-[10px] text-slate-500 block font-sans">投信買賣超</span>
-                                  <strong
-                                    className={`text-[11px] sm:text-xs block font-bold whitespace-nowrap ${
-                                      stock.trustNetLots > 0
-                                        ? 'text-rose-400'
-                                        : stock.trustNetLots < 0
-                                        ? 'text-emerald-400'
-                                        : 'text-slate-300'
-                                    }`}
-                                  >
-                                    {stock.trustNetLots > 0 ? '+' : ''}
-                                    {stock.trustNetLots.toLocaleString()} 張
-                                  </strong>
-                                </div>
-
-                                <div className="p-1.5 rounded-xl bg-slate-900/90 border border-slate-800/80">
-                                  <span className="text-[10px] text-slate-500 block font-sans">自營商</span>
-                                  <strong
-                                    className={`text-[11px] sm:text-xs block font-bold whitespace-nowrap ${
-                                      stock.dealerNetLots === null
-                                        ? 'text-slate-500 font-normal'
-                                        : stock.dealerNetLots > 0
-                                        ? 'text-rose-400'
-                                        : stock.dealerNetLots < 0
-                                        ? 'text-emerald-400'
-                                        : 'text-slate-300'
-                                    }`}
-                                  >
-                                    {stock.dealerNetLots !== null
-                                      ? `${stock.dealerNetLots > 0 ? '+' : ''}${stock.dealerNetLots.toLocaleString()} 張`
-                                      : '無數據'}
-                                  </strong>
-                                </div>
-                              </div>
-                            </div>
+                            )}
 
                             {/* Quant Anchors (動態戰術即時進場點) */}
                             <div
@@ -2539,7 +2614,9 @@ export default function App() {
                                   {stock.entryTacticLabel && (
                                     <span
                                       className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                                        stock.entryTactic === 'BEARISH_BROKEN'
+                                        stock.entryTactic === 'EARLY_REBOUND'
+                                          ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-300'
+                                          : stock.entryTactic === 'BEARISH_BROKEN'
                                           ? 'bg-rose-500/20 border-rose-500/50 text-rose-300'
                                           : stock.entryTactic === 'BREAKOUT_BUY'
                                           ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
@@ -2560,7 +2637,9 @@ export default function App() {
                               <div className="grid grid-cols-3 gap-2 text-center text-xs">
                                 <div
                                   className={`p-2 rounded-xl border ${
-                                    stock.entryTactic === 'BEARISH_BROKEN'
+                                    stock.entryTactic === 'EARLY_REBOUND'
+                                      ? 'bg-emerald-950/40 border-emerald-400/60 text-emerald-200'
+                                      : stock.entryTactic === 'BEARISH_BROKEN'
                                       ? 'bg-rose-950/40 border-rose-500/50 text-rose-200'
                                       : stock.entryTactic === 'BREAKOUT_BUY'
                                       ? 'bg-rose-950/40 border-rose-500/50 text-rose-200'
@@ -2570,7 +2649,9 @@ export default function App() {
                                   }`}
                                 >
                                   <div className="text-[10px] font-medium text-slate-300">
-                                    {stock.entryTactic === 'BEARISH_BROKEN'
+                                    {stock.entryTactic === 'EARLY_REBOUND'
+                                      ? '🌱 早期反彈低接 (5MA)'
+                                      : stock.entryTactic === 'BEARISH_BROKEN'
                                       ? '🚫 無安全買點 (破線)'
                                       : stock.entryTactic === 'BREAKOUT_BUY'
                                       ? '🎯 突破確認價'
@@ -2589,7 +2670,7 @@ export default function App() {
 
                                 <div className="p-2 rounded-xl bg-amber-950/40 border border-amber-900/60">
                                   <div className="text-[10px] text-amber-400 font-medium">
-                                    {stock.entryTactic === 'BEARISH_BROKEN' ? '建議防守價 (當周低)' : '建議防守價 (20MA)'}
+                                    {stock.entryTactic === 'EARLY_REBOUND' || stock.entryTactic === 'BEARISH_BROKEN' ? '建議防守價 (當周低)' : '建議防守價 (20MA)'}
                                   </div>
                                   <div className="font-extrabold text-base text-amber-300 mt-0.5">
                                     ${stock.stopLossPrice.toFixed(1)}
@@ -2598,7 +2679,7 @@ export default function App() {
 
                                 <div className="p-2 rounded-xl bg-purple-950/40 border border-purple-900/60">
                                   <div className="text-[10px] text-purple-400 font-medium">
-                                    {stock.entryTactic === 'BEARISH_BROKEN' ? '反彈壓力價 (20MA)' : '目標獲利價'}
+                                    {stock.entryTactic === 'EARLY_REBOUND' ? '第一目標反壓 (20MA)' : stock.entryTactic === 'BEARISH_BROKEN' ? '反彈壓力價 (20MA)' : '目標獲利價'}
                                   </div>
                                   <div className="font-extrabold text-base text-purple-300 mt-0.5">
                                     ${(stock.targetPrice ?? Number((stock.price * 1.15).toFixed(1))).toFixed(1)}
@@ -2800,115 +2881,134 @@ export default function App() {
                               <span className="text-indigo-400 font-semibold">{stock.positionLabel} (年低 ${stock.yearLow} ~ 年高 ${stock.yearHigh})</span>
                             </div>
 
-                            {/* Position Bar */}
-                            <div className="mt-3">
-                              <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1">
-                                <span>近 1 年股價位階區間</span>
-                                <span className={`font-bold ${stock.isLowBase ? 'text-indigo-300' : 'text-amber-400'}`}>
-                                  {stock.positionPct}% {stock.isLowBase ? '低檔安全區間' : '高於35%門檻'}
-                                </span>
-                              </div>
-                              <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex">
-                                <div
-                                  className="h-full bg-gradient-to-r from-emerald-500 via-indigo-500 to-rose-500"
-                                  style={{
-                                    width: `${Math.min(100, Math.max(5, stock.positionPct))}%`,
-                                  }}
-                                />
-                              </div>
-                              <div className="flex justify-between text-[10px] text-slate-500 mt-0.5 font-mono">
-                                <span>年低 ${stock.yearLow}</span>
-                                <span className="text-indigo-400">35% 低檔閥值</span>
-                                <span>年高 ${stock.yearHigh}</span>
-                              </div>
-                            </div>
+                            {/* 詳細資訊展開/收合按鈕 */}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedCardSymbols((prev) => ({
+                                  ...prev,
+                                  [stock.symbol]: !prev[stock.symbol],
+                                }))
+                              }
+                              className="w-full mt-3 py-1.5 px-3 rounded-xl bg-slate-800/60 hover:bg-slate-800 border border-slate-700/60 text-xs font-semibold text-slate-300 hover:text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-sm select-none"
+                            >
+                              <span>📊 {expandedCardSymbols[stock.symbol] ? '收合詳細量化與法人明細 ▴' : '展開詳細量化與法人明細 ▾'}</span>
+                            </button>
 
-                            {/* Quant Indicators Row (5 Dimensions) */}
-                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mt-3.5 text-center">
-                              <div
-                                className={`p-2.5 rounded-xl border text-xs ${
-                                  stock.isRevGrowing
-                                    ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300'
-                                    : 'bg-slate-950 border-slate-800 text-slate-400'
-                                }`}
-                              >
-                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">
-                                  最新營收年增率
+                            {/* 詳細數據折疊區 */}
+                            {expandedCardSymbols[stock.symbol] && (
+                              <div className="mt-3 space-y-3 animate-fadeIn">
+                                {/* Position Bar */}
+                                <div>
+                                  <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1">
+                                    <span>近 1 年股價位階區間</span>
+                                    <span className={`font-bold ${stock.isLowBase ? 'text-indigo-300' : 'text-amber-400'}`}>
+                                      {stock.positionPct}% {stock.isLowBase ? '低檔安全區間' : '高於35%門檻'}
+                                    </span>
+                                  </div>
+                                  <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex">
+                                    <div
+                                      className="h-full bg-gradient-to-r from-emerald-500 via-indigo-500 to-rose-500"
+                                      style={{
+                                        width: `${Math.min(100, Math.max(5, stock.positionPct))}%`,
+                                      }}
+                                    />
+                                  </div>
+                                  <div className="flex justify-between text-[10px] text-slate-500 mt-0.5 font-mono">
+                                    <span>年低 ${stock.yearLow}</span>
+                                    <span className="text-indigo-400">35% 低檔閥值</span>
+                                    <span>年高 ${stock.yearHigh}</span>
+                                  </div>
                                 </div>
-                                <div className="font-bold truncate">
-                                  YoY +{stock.revenueYoY.toFixed(1)}%
-                                </div>
-                              </div>
 
-                              <div
-                                className={`p-2.5 rounded-xl border text-xs ${
-                                  stock.isProfitable
-                                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                                    : 'bg-slate-950 border-slate-800 text-slate-400'
-                                }`}
-                              >
-                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">
-                                  近四季累計 EPS
-                                </div>
-                                <div className="font-bold truncate">
-                                  {stock.eps4Q !== null && stock.eps4Q !== undefined
-                                    ? `$${stock.eps4Q.toFixed(2)} 元`
-                                    : '未揭露'}
-                                </div>
-                              </div>
+                                {/* Quant Indicators Row (5 Dimensions) */}
+                                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 text-center">
+                                  <div
+                                    className={`p-2.5 rounded-xl border text-xs ${
+                                      stock.isRevGrowing
+                                        ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300'
+                                        : 'bg-slate-950 border-slate-800 text-slate-400'
+                                    }`}
+                                  >
+                                    <div className="text-[10px] text-slate-500 mb-0.5 truncate">
+                                      最新營收年增率
+                                    </div>
+                                    <div className="font-bold truncate">
+                                      YoY +{stock.revenueYoY.toFixed(1)}%
+                                    </div>
+                                  </div>
 
-                              <div
-                                className={`p-2.5 rounded-xl border text-xs ${
-                                  stock.isSafeBottom
-                                    ? 'bg-purple-500/10 border-purple-500/30 text-purple-300'
-                                    : stock.price < stock.stopLossPrice
-                                    ? 'bg-rose-950/25 border-rose-800/40 text-rose-300'
-                                    : 'bg-slate-950 border-slate-800 text-slate-400'
-                                }`}
-                              >
-                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">
-                                  20MA 剛性安全閥
-                                </div>
-                                <div className="font-bold truncate">
-                                  {stock.isSafeBottom
-                                    ? '站上20MA微揚'
-                                    : stock.price < stock.stopLossPrice
-                                    ? '跌破20MA弱勢'
-                                    : '均線整理中'}
-                                </div>
-                              </div>
+                                  <div
+                                    className={`p-2.5 rounded-xl border text-xs ${
+                                      stock.isProfitable
+                                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                                        : 'bg-slate-950 border-slate-800 text-slate-400'
+                                    }`}
+                                  >
+                                    <div className="text-[10px] text-slate-500 mb-0.5 truncate">
+                                      近四季累計 EPS
+                                    </div>
+                                    <div className="font-bold truncate">
+                                      {stock.eps4Q !== null && stock.eps4Q !== undefined
+                                        ? `$${stock.eps4Q.toFixed(2)} 元`
+                                        : '未揭露'}
+                                    </div>
+                                  </div>
 
-                              {/* 20日 ATR% 波動度 */}
-                              <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
-                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">20日 ATR% 波動度</div>
-                                <div className="font-bold text-emerald-400 truncate">
-                                  {stock.atrPct ? `${stock.atrPct}%` : '≥2.2%'}
-                                  <span className="text-[10px] text-emerald-500 font-normal ml-1">≥2.2% 達標</span>
+                                  <div
+                                    className={`p-2.5 rounded-xl border text-xs ${
+                                      stock.isSafeBottom
+                                        ? 'bg-purple-500/10 border-purple-500/30 text-purple-300'
+                                        : stock.price < stock.stopLossPrice
+                                        ? 'bg-rose-950/25 border-rose-800/40 text-rose-300'
+                                        : 'bg-slate-950 border-slate-800 text-slate-400'
+                                    }`}
+                                  >
+                                    <div className="text-[10px] text-slate-500 mb-0.5 truncate">
+                                      20MA 剛性安全閥
+                                    </div>
+                                    <div className="font-bold truncate">
+                                      {stock.isSafeBottom
+                                        ? '站上20MA微揚'
+                                        : stock.price < stock.stopLossPrice
+                                        ? '跌破20MA弱勢'
+                                        : '均線整理中'}
+                                    </div>
+                                  </div>
+
+                                  {/* 20日 ATR% 波動度 */}
+                                  <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
+                                    <div className="text-[10px] text-slate-500 mb-0.5 truncate">20日 ATR% 波動度</div>
+                                    <div className="font-bold text-emerald-400 truncate">
+                                      {stock.atrPct ? `${stock.atrPct}%` : '≥2.2%'}
+                                      <span className="text-[10px] text-emerald-500 font-normal ml-1">≥2.2% 達標</span>
+                                    </div>
+                                  </div>
+
+                                  {/* 5日均量流動性 */}
+                                  <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
+                                    <div className="text-[10px] text-slate-500 mb-0.5 truncate">5日均量流動性</div>
+                                    <div className="font-bold text-sky-400 truncate">
+                                      {stock.volumeAvg5d ? `${stock.volumeAvg5d.toLocaleString()} 張` : '-'}
+                                      <span className={`text-[10px] font-normal ml-1 ${(stock.volumeAvg5d ?? 0) >= 1000 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                        {(stock.volumeAvg5d ?? 0) >= 1000 ? '≥1,000張達標' : '未達標 (不足千張)'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Catalyst Description */}
+                                <div className="p-3.5 rounded-2xl bg-indigo-950/20 border border-indigo-900/50 space-y-1.5">
+                                  <div className="text-[11px] font-bold text-indigo-300 flex items-center gap-1.5">
+                                    <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                                    <span>全市場動態轉型爆發剖析</span>
+                                  </div>
+                                  <p className="text-xs text-slate-300 leading-relaxed">
+                                    {stock.catalyst}
+                                  </p>
                                 </div>
                               </div>
-
-                              {/* 5日均量流動性 */}
-                              <div className="p-2.5 rounded-xl border text-xs bg-slate-950 border-slate-800 text-slate-300">
-                                <div className="text-[10px] text-slate-500 mb-0.5 truncate">5日均量流動性</div>
-                                <div className="font-bold text-sky-400 truncate">
-                                  {stock.volumeAvg5d ? `${stock.volumeAvg5d.toLocaleString()} 張` : '-'}
-                                  <span className={`text-[10px] font-normal ml-1 ${(stock.volumeAvg5d ?? 0) >= 1000 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                    {(stock.volumeAvg5d ?? 0) >= 1000 ? '≥1,000張達標' : '未達標 (不足千張)'}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* Catalyst Description */}
-                            <div className="mt-3.5 p-3.5 rounded-2xl bg-indigo-950/20 border border-indigo-900/50 space-y-1.5">
-                              <div className="text-[11px] font-bold text-indigo-300 flex items-center gap-1.5">
-                                <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                                <span>全市場動態轉型爆發剖析</span>
-                              </div>
-                              <p className="text-xs text-slate-300 leading-relaxed">
-                                {stock.catalyst}
-                              </p>
-                            </div>
+                            )}
 
                             {/* Anchors (動態戰術即時進場點) */}
                             <div className="mt-3.5 p-3.5 rounded-2xl bg-slate-950/90 border border-slate-800/80 space-y-2.5">
@@ -2922,6 +3022,8 @@ export default function App() {
                                       className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
                                         stock.entryTactic === 'BEARISH_BROKEN'
                                           ? 'bg-rose-500/20 border-rose-500/50 text-rose-300'
+                                          : stock.entryTactic === 'EARLY_REBOUND'
+                                          ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-300'
                                           : stock.entryTactic === 'BREAKOUT_BUY'
                                           ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
                                           : stock.entryTactic === 'WAIT_PULLBACK'
@@ -2929,7 +3031,7 @@ export default function App() {
                                           : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
                                       }`}
                                     >
-                                      {stock.entryTacticLabel}
+                                      {stock.entryTactic === 'EARLY_REBOUND' ? '🌱 早期反彈觀察' : stock.entryTacticLabel}
                                     </span>
                                   )}
                                 </div>
@@ -2943,6 +3045,8 @@ export default function App() {
                                   className={`p-2 rounded-xl border ${
                                     stock.entryTactic === 'BEARISH_BROKEN'
                                       ? 'bg-rose-950/40 border-rose-500/50 text-rose-200'
+                                      : stock.entryTactic === 'EARLY_REBOUND'
+                                      ? 'bg-emerald-950/40 border-emerald-400/60 text-emerald-200'
                                       : stock.entryTactic === 'BREAKOUT_BUY'
                                       ? 'bg-rose-950/40 border-rose-500/50 text-rose-200'
                                       : stock.entryTactic === 'WAIT_PULLBACK'
@@ -2953,6 +3057,8 @@ export default function App() {
                                   <div className="text-[10px] font-medium text-slate-300">
                                     {stock.entryTactic === 'BEARISH_BROKEN'
                                       ? '🚫 無安全買點 (破線)'
+                                      : stock.entryTactic === 'EARLY_REBOUND'
+                                      ? '🌱 早期反彈低接 (5MA)'
                                       : stock.entryTactic === 'BREAKOUT_BUY'
                                       ? '🎯 突破確認價'
                                       : stock.entryTactic === 'WAIT_PULLBACK'
@@ -2970,7 +3076,7 @@ export default function App() {
 
                                 <div className="p-2 rounded-xl bg-amber-950/40 border border-amber-900/60">
                                   <div className="text-[10px] text-amber-400 font-medium">
-                                    {stock.entryTactic === 'BEARISH_BROKEN' ? '建議防守價 (當周低)' : '建議防守價 (20MA)'}
+                                    {stock.entryTactic === 'EARLY_REBOUND' || stock.entryTactic === 'BEARISH_BROKEN' ? '建議防守價 (當周低)' : '建議防守價 (20MA)'}
                                   </div>
                                   <div className="font-extrabold text-base text-amber-300 mt-0.5">
                                     ${stock.stopLossPrice.toFixed(1)}
@@ -2979,10 +3085,10 @@ export default function App() {
 
                                 <div className="p-2 rounded-xl bg-purple-950/40 border border-purple-900/60">
                                   <div className="text-[10px] text-purple-400 font-medium">
-                                    {stock.entryTactic === 'BEARISH_BROKEN' ? '反彈壓力價 (20MA)' : '目標獲利價'}
+                                    {stock.entryTactic === 'EARLY_REBOUND' ? '第一目標反壓 (20MA)' : stock.entryTactic === 'BEARISH_BROKEN' ? '反彈壓力價 (20MA)' : '目標獲利價'}
                                   </div>
                                   <div className="font-extrabold text-base text-purple-300 mt-0.5">
-                                    ${(stock.targetPrice ?? Number((stock.price * 1.35).toFixed(1))).toFixed(1)}
+                                    ${(stock.targetPrice ?? (stock.entryTactic === 'EARLY_REBOUND' && stock.ma20 ? stock.ma20 : Number((stock.price * 1.35).toFixed(1)))).toFixed(1)}
                                   </div>
                                 </div>
                               </div>
