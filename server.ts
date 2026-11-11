@@ -1920,26 +1920,41 @@ async function fetchTaiexKeyLevels(): Promise<{
       const data = await safeParseJsonResponse(res, 'TAIEX-Klines');
       const result = data?.chart?.result?.[0];
       const quote = result?.indicators?.quote?.[0];
+      const timestamps: number[] = Array.isArray(result?.timestamp) ? result.timestamp : [];
       if (quote && Array.isArray(quote.close)) {
-        const closes: number[] = [];
-        const highs: number[] = [];
-        const lows: number[] = [];
+        const todayTaipeiDate = getTaipeiDateString();
+        const bars: { close: number; high: number; low: number; dateStr: string }[] = [];
         for (let i = 0; i < quote.close.length; i++) {
           const c = quote.close[i];
           if (typeof c === 'number' && !isNaN(c) && c > 0) {
-            closes.push(c);
-            highs.push(typeof quote.high?.[i] === 'number' ? quote.high[i] : c);
-            lows.push(typeof quote.low?.[i] === 'number' ? quote.low[i] : c);
+            const h = typeof quote.high?.[i] === 'number' && !isNaN(quote.high[i]) ? quote.high[i] : c;
+            const l = typeof quote.low?.[i] === 'number' && !isNaN(quote.low[i]) ? quote.low[i] : c;
+            const ts = timestamps[i];
+            let dateStr = '';
+            if (ts && typeof ts === 'number') {
+              dateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date(ts * 1000));
+            }
+            bars.push({ close: c, high: h, low: l, dateStr });
           }
         }
-        if (closes.length >= 20) {
+        if (bars.length >= 20) {
+          const closes = bars.map((b) => b.close);
           const ma5 = Number((closes.slice(-5).reduce((a, b) => a + b, 0) / 5).toFixed(1));
           const ma10 = Number((closes.slice(-10).reduce((a, b) => a + b, 0) / 10).toFixed(1));
           const ma20 = Number((closes.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(1));
-          const prevHigh = Number((highs[highs.length - 2] || highs[highs.length - 1]).toFixed(1));
-          const prevLow = Number((lows[lows.length - 2] || lows[lows.length - 1]).toFixed(1));
-          const prevClose = Number((closes[closes.length - 2] || closes[closes.length - 1]).toFixed(1));
-          const latestClose = Number(closes[closes.length - 1].toFixed(1));
+
+          const lastBar = bars[bars.length - 1];
+          // 比對最後一根 K 線日期與今日台北日期：
+          // 若最後一根日期 === todayTaipeiDate（表示今日日 K 已建立）：取 length - 2（昨日正式 K 線）
+          // 若最後一根日期 < todayTaipeiDate（表示今日日 K 尚未建立，最後一根就是昨日收盤）：必須取 length - 1！
+          const isTodayCandlePresent = Boolean(lastBar.dateStr && lastBar.dateStr === todayTaipeiDate);
+          const prevIdx = isTodayCandlePresent ? Math.max(0, bars.length - 2) : bars.length - 1;
+          const prevBar = bars[prevIdx];
+
+          const prevHigh = Number(prevBar.high.toFixed(1));
+          const prevLow = Number(prevBar.low.toFixed(1));
+          const prevClose = Number(prevBar.close.toFixed(1));
+          const latestClose = Number(lastBar.close.toFixed(1));
           return { ma5, ma10, ma20, prevHigh, prevLow, prevClose, latestClose };
         }
       }
@@ -2133,8 +2148,9 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
 
   // 多空關鍵樞紐防守點位推算
   const pivotPoint = Number(((levels.prevHigh + levels.prevLow + levels.prevClose) / 3).toFixed(1));
-  const resistance1 = Number(Math.max(levels.prevHigh, levels.ma5).toFixed(1));
-  const support1 = Number(Math.min(levels.prevLow, levels.ma20).toFixed(1));
+  const isAboveMa5 = taiexPrice > levels.ma5;
+  const resistance1 = Number((isAboveMa5 ? Math.max(levels.prevHigh, levels.latestClose) : Math.max(levels.prevHigh, levels.ma5)).toFixed(1));
+  const support1 = Number((isAboveMa5 ? Math.min(levels.prevLow, levels.ma5) : Math.min(levels.prevLow, levels.ma20)).toFixed(1));
 
   const topTrustStr = topPicks.topTrustBuys.length > 0
     ? topPicks.topTrustBuys.map((s, i) => `${i + 1}. ${s.name} (${s.code}) +${s.lots.toLocaleString()}張 [${s.industry}]`).join('\n')
@@ -2165,7 +2181,7 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
    - 昨夜那斯達克 (^IXIC)：${market.usIndices.nasdaq?.price ?? 0} 點 (${(market.usIndices.nasdaq?.changePercent ?? 0) > 0 ? '+' : ''}${market.usIndices.nasdaq?.changePercent ?? 0}%)
 
 2. 大盤關鍵均線與防守點位（日K線量化推導）：
-   - 5MA (5日短期攻擊線)：${levels.ma5} 點
+   - 5MA (5日短期攻擊線)：${levels.ma5} 點（${isAboveMa5 ? `目前加權指數 ${taiexPrice} 點已守穩於 5MA 之上，5MA 轉為【下檔短期支撐】，絕非上方壓力` : `目前加權指數在 5MA 之下，5MA 為上方短均反壓`}）
    - 10MA (10日雙週均線)：${levels.ma10} 點
    - 20MA (20日月線生命線)：${levels.ma20} 點
    - 前一日最高價：${levels.prevHigh} 點
@@ -2212,8 +2228,8 @@ ${topForeignStr}
 ### 3. 今日大盤關鍵點位沙盤推演 (量化防守圖)
 - 精準列出具體點位數字，嚴禁模稜多可：
   * **今日多空分水嶺**：**${pivotPoint} 點**（站穩偏多，跌破偏空）
-  * **上方第一道壓力**：**${resistance1} 點**（前日高點或短均反壓）
-  * **下檔關鍵防守支撐**：**${support1} 點**（20MA 月線或波段前低）
+  * **上方第一道壓力**：**${resistance1} 點**（${isAboveMa5 ? '前日高點或短波段反壓區；注意指數已站穩 5MA，5MA 為下檔短期支撐而非上方壓力' : '前日高點或 5MA 短期均線反壓'}）
+  * **下檔關鍵防守支撐**：**${support1} 點**（${isAboveMa5 ? '5MA 短期攻擊線支撐與 20MA 月線生命線' : '20MA 月線生命線或波段前低'}）
 - 針對指數若「跳空開在分水嶺之上」與「跌破下檔支撐」分別給予具體應對劇本。
 
 ### 4. 匯率與外資熱錢風向
@@ -2265,8 +2281,8 @@ ${topForeignStr}
 
 ### 3. 今日大盤關鍵點位沙盤推演 (量化防守圖)
 - **今日多空分水嶺**：**${pivotPoint} 點**（開盤若能守穩此點上方，短線多頭掌握發球權，可逢低布局；若開低跌破分水嶺，則早盤需提高警覺避免過度追高）。
-- **上方第一道壓力**：**${resistance1} 點**（前日高點與短期均線反壓區，未放量帶動前易引發短線當沖隔日沖解套賣壓）。
-- **下檔關鍵防守支撐**：**${support1} 點**（20MA 月線生命線重要防守關卡，此處具備強力波段承接防守買盤）。
+- **上方第一道壓力**：**${resistance1} 點**（${isAboveMa5 ? '前日高點與波段高檔反壓區，指數已強勢站穩 5MA' : '前日高點與短期均線反壓區'}，未放量帶動前易引發短線當沖隔日沖解套賣壓）。
+- **下檔關鍵防守支撐**：**${support1} 點**（${isAboveMa5 ? `5MA 短期攻擊支撐線 (${levels.ma5} 點) 與 20MA 月線生命線` : '20MA 月線生命線重要防守關卡'}，此處具備強力波段承接防守買盤）。
 
 ### 4. 匯率與外資熱錢風向
 美元兌新台幣即時匯率最新報價為 **${twdFx.rate}**（${twdFx.status} ${Math.abs(twdFx.changePct)}%）。匯率維持在區間平衡水位，外資現貨針對大型權值股的無差別提款壓力明顯鈍化，短線被動式賣壓趨緩，盤面主流轉由內資投信主導之中小型利基題材股進行輪動攻擊。
