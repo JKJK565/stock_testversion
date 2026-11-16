@@ -1919,7 +1919,7 @@ function getCachedMorningBriefing(todayTaipeiDate: string): MorningBriefingRespo
 /**
  * 輔助 1：取得加權指數關鍵均線 (5MA / 10MA / 20MA) 及昨日高低點 (利用 Yahoo Finance %5ETWII 日K線)
  */
-async function fetchTaiexKeyLevels(): Promise<{
+async function fetchTaiexKeyLevels(currentPrice?: number): Promise<{
   ma5: number;
   ma10: number;
   ma20: number;
@@ -1955,6 +1955,7 @@ async function fetchTaiexKeyLevels(): Promise<{
         if (bars.length >= 20) {
           const metaPrice = result?.meta?.regularMarketPrice;
           const validMetaPrice = typeof metaPrice === 'number' && !isNaN(metaPrice) && metaPrice > 0 ? Number(metaPrice.toFixed(1)) : undefined;
+          const liveTodayPrice = currentPrice && currentPrice > 0 ? Number(currentPrice.toFixed(1)) : validMetaPrice;
 
           const lastBar = bars[bars.length - 1];
           // 比對最後一根 K 線日期與今日台北日期：
@@ -1962,8 +1963,13 @@ async function fetchTaiexKeyLevels(): Promise<{
           // 若最後一根日期 < todayTaipeiDate（表示今日日 K 尚未建立，最後一根就是昨日收盤）：必須取 length - 1！
           const isTodayCandlePresent = Boolean(lastBar.dateStr && lastBar.dateStr === todayTaipeiDate);
 
-          // 計算均線：若 metaPrice 存在且今日日 K 尚未進入 bars，計算 ma5 / ma10 / ma20 時應將今日最新價納入計算！
-          const maCloses = (!isTodayCandlePresent && validMetaPrice) ? [...bars.map((b) => b.close), validMetaPrice] : bars.map((b) => b.close);
+          // 計算均線：若今日現價 / meta.regularMarketPrice 存在且今日日 K 尚未寫入 bars，將今日最新價納入計算 5MA / 10MA / 20MA（若已寫入則以最新價更新末根）
+          const baseCloses = bars.map((b) => b.close);
+          const maCloses = liveTodayPrice
+            ? isTodayCandlePresent
+              ? [...baseCloses.slice(0, -1), liveTodayPrice]
+              : [...baseCloses, liveTodayPrice]
+            : baseCloses;
           const ma5 = Number((maCloses.slice(-5).reduce((a, b) => a + b, 0) / 5).toFixed(1));
           const ma10 = Number((maCloses.slice(-10).reduce((a, b) => a + b, 0) / 10).toFixed(1));
           const ma20 = Number((maCloses.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(1));
@@ -1974,7 +1980,7 @@ async function fetchTaiexKeyLevels(): Promise<{
           const prevHigh = Number(prevBar.high.toFixed(1));
           const prevLow = Number(prevBar.low.toFixed(1));
           const prevClose = Number(prevBar.close.toFixed(1));
-          const latestClose = validMetaPrice ?? Number(lastBar.close.toFixed(1));
+          const latestClose = liveTodayPrice ?? Number(lastBar.close.toFixed(1));
           return { ma5, ma10, ma20, prevHigh, prevLow, prevClose, latestClose };
         }
       }
@@ -2004,7 +2010,7 @@ async function getMarketRegime(currentPrice?: number): Promise<MarketRegime> {
     }
   }
 
-  const levels = await fetchTaiexKeyLevels();
+  const levels = await fetchTaiexKeyLevels(livePrice);
   const taiexPrice = livePrice ?? levels.latestClose;
   const taiexMa20 = levels.ma20;
   const isBullish = taiexPrice >= taiexMa20;
@@ -2041,7 +2047,7 @@ async function fetchTwdExchangeRate(): Promise<{
         const rate = Number(meta.regularMarketPrice.toFixed(3));
         const prevClose = Number((meta.chartPreviousClose || rate).toFixed(3));
         const change = Number((rate - prevClose).toFixed(3));
-        const changePct = Number((meta.regularMarketChangePercent || (prevClose > 0 ? (change / prevClose) * 100 : 0)).toFixed(2));
+        const changePct = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
         const status = change > 0 ? '貶值' : change < 0 ? '升值' : '持平';
         return { rate, prevClose, change, changePct, status };
       }
@@ -2177,18 +2183,19 @@ async function fetchTopInstitutionalPicks(settledDate: string): Promise<{
  * 輔助 5：抓取過去 24 小時台美產業重大訊息與外資評等即時新聞 (Google News 台灣繁體 RSS)
  */
 async function fetchLatestIndustryNews(): Promise<string[]> {
-  const newsList: string[] = [];
   const urls = [
     `https://news.google.com/rss/search?q=${encodeURIComponent('台股 外資 目標價 OR 評等 OR 記憶體 OR 半導體 when:1d')}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`,
     `https://news.google.com/rss/search?q=${encodeURIComponent('台股 重大訊息 OR 營收 OR 法說會 OR AI伺服器 when:1d')}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`,
+    `https://news.google.com/rss/search?q=${encodeURIComponent('本週財經行事曆 OR 財報 OR FOMC OR 零售銷售 when:3d')}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`,
     'https://tw.stock.yahoo.com/rss?category=tw-market',
     'https://tw.news.yahoo.com/rss/finance',
   ];
 
+  const perUrlItems: string[][] = urls.map(() => []);
   const seenTitles = new Set<string>();
 
   await Promise.all(
-    urls.map(async (url) => {
+    urls.map(async (url, idx) => {
       try {
         const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 5000);
         if (res.ok) {
@@ -2211,7 +2218,7 @@ async function fetchLatestIndustryNews(): Promise<string[]> {
               const key = cleaned.toLowerCase();
               if (cleaned.length >= 8 && !seenTitles.has(key)) {
                 seenTitles.add(key);
-                newsList.push(title);
+                perUrlItems[idx].push(title);
               }
             }
           }
@@ -2222,7 +2229,18 @@ async function fetchLatestIndustryNews(): Promise<string[]> {
     })
   );
 
-  return newsList.slice(0, 15);
+  // 交錯輪詢各來源標題，確保「本週財經行事曆 / 財報 / FOMC / 零售銷售」與產業新聞均能進入清單
+  const newsList: string[] = [];
+  const maxPerFeed = 5;
+  for (let i = 0; i < maxPerFeed; i++) {
+    for (let u = 0; u < perUrlItems.length; u++) {
+      if (perUrlItems[u][i]) {
+        newsList.push(perUrlItems[u][i]);
+      }
+    }
+  }
+
+  return newsList.slice(0, 20);
 }
 
 async function generateGeminiDeepMorningBriefing(force: boolean = false): Promise<MorningBriefingResponse> {
@@ -2349,7 +2367,7 @@ ${industryNewsStr}
 - 針對指數若「跳空開在分水嶺之上」與「跌破下檔支撐」分別給予具體應對劇本。
 
 ### 4. 匯率與外資熱錢風向
-- 結合目前台幣匯率（**${twdFx.rate}**，呈${twdFx.status} ${twdFx.changePct}%），從總體熱錢進出機制推演外資現貨在台積電與大型權值股的提款壓力是否趨緩，或是否有啟動被動型買盤回補契機。
+- 結合目前台幣匯率（**${twdFx.rate}**，呈${twdFx.status} ${Math.abs(twdFx.changePct)}%），從總體熱錢進出機制推演外資現貨在台積電與大型權值股的提款壓力是否趨緩，或是否有啟動被動型買盤回補契機。
 
 ### 5. 今日盤中實戰作戰 SOP
 - **建議總持股水位**：明確給出百分比區間（例如：【建議水位：40% ~ 55%】），嚴禁模稜兩可！
@@ -2363,8 +2381,9 @@ ${industryNewsStr}
 - 明確標註該訊息對今日對應族群（偏多催化 / 利空調節壓力）的實戰影響，嚴禁憑空編造未出現於新聞中的假報告。
 
 ### 7. 未來一週國際重大財經與台股事件行事曆
-- 每一條開頭必須使用具體日期標籤 📅【MM/DD (週X)】事件名稱：具體影響分析（依據今日日期 ${todayTaipeiDate} 與 Google Search 聯網查證未來 7~14 天的真實日期，嚴禁編造過去日期）。
-- 必須涵蓋：台指期月結算日（${txSettlement.label}）、美國關鍵總經數據/會議（FOMC、CPI、PPI、非農就業報告）、台美重量級科技大廠法說會或財報日程。
+- 每一條開頭必須使用具體日期標籤 📅【MM/DD (週X)】事件名稱：具體影響分析。
+- **嚴格時間與事實查證紀律**：必須嚴格依據「今日日期（${todayTaipeiDate} ${todayWeekday}）+ 上述餵入的真實財經行事曆新聞標題 / Google Search 即時聯網查證結果」核對未來 7~14 天的真實日程，**同時明確標註美東時間與台灣時間對應日期**（例如美股盤後財報須明確寫出美東日期與跨日換算後的台灣時間次日清晨），並即時查核最新公司人事與總經現況（如現任執行長人名、最新聯準會官員與利率動向）；**嚴禁編造過去日期，嚴禁憑舊記憶推測財報日期、聯準會方向或已異動的執行長人名**！
+- 必須涵蓋：台指期月結算日（${txSettlement.label}）、美國關鍵總經數據/會議（如 FOMC、CPI、PPI、零售銷售、非農就業報告）、台美重量級科技大廠法說會或財報日程。
 `;
 
   // Candidate models: Primary flagship model gemini-3.8-flash, followed by latest aliases
@@ -5080,10 +5099,11 @@ async function getScreenerData(force = false): Promise<ScreenerResponse> {
   lastScreenerRunTime = now;
 
   try {
-    const [scanResult, marketRegime] = await Promise.all([
+    const [scanResult, taiex] = await Promise.all([
       scanAllMarketTrustBuys(),
-      getMarketRegime(marketCache?.data?.taiex?.price).catch(() => undefined),
+      fetchYahooTaiwanIndex('%5ETWII', '^TWII', '加權指數').catch(() => null),
     ]);
+    const marketRegime = await getMarketRegime(taiex?.price ?? marketCache?.data?.taiex?.price).catch(() => undefined);
 
     const responseData: ScreenerResponse = {
       cachedAt: new Date().toISOString(),
@@ -5138,10 +5158,11 @@ async function getTurnaroundData(force = false): Promise<TurnaroundScreenerRespo
   lastTurnaroundRunTime = now;
 
   try {
-    const [rawStocks, marketRegime] = await Promise.all([
+    const [rawStocks, taiex] = await Promise.all([
       scanTurnaroundStocks(),
-      getMarketRegime(marketCache?.data?.taiex?.price).catch(() => undefined),
+      fetchYahooTaiwanIndex('%5ETWII', '^TWII', '加權指數').catch(() => null),
     ]);
+    const marketRegime = await getMarketRegime(taiex?.price ?? marketCache?.data?.taiex?.price).catch(() => undefined);
     const allStocks = rawStocks.filter((s) => (s.buyRatingScore ?? 0) >= 50 && (s.volumeAvg5d ?? 0) >= 1000);
     const matchedList = allStocks.filter((s) => s.isTurnaroundMatched);
 
@@ -7371,6 +7392,231 @@ app.get('/api/stocks/:symbol/strategy-audit', async (req: Request, res: Response
   }
 });
 
+// -------------------------------------------------------------------------
+// LINE Messaging API 主動推播通知模組 (原生 fetch，無須額外套件)
+// -------------------------------------------------------------------------
+const SITE_PUBLIC_URL = 'https://tw-stock-radar-nlvb.onrender.com/';
+const lineAlertedToday = new Set<string>();
+let lineAlertLastDate = '';
+
+/**
+ * 共用 LINE 主動推播函式
+ * 若未設定 LINE_CHANNEL_ACCESS_TOKEN 或 LINE_USER_ID，靜默回傳 false 不報錯
+ */
+async function sendLinePushMessage(text: string): Promise<boolean> {
+  const token = (process.env.LINE_CHANNEL_ACCESS_TOKEN || '').trim();
+  const userId = (process.env.LINE_USER_ID || '').trim();
+  if (!token || !userId) {
+    return false;
+  }
+
+  let safeText = String(text || '').trim();
+  if (!safeText) {
+    return false;
+  }
+
+  if (safeText.length > 4800) {
+    const suffix = `\n\n...(內容過長已截斷，完整戰報請至網頁查看：${SITE_PUBLIC_URL})`;
+    safeText = safeText.slice(0, 4800 - suffix.length) + suffix;
+  }
+
+  try {
+    const res = await fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        to: userId,
+        messages: [{ type: 'text', text: safeText }],
+      }),
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      console.warn(`[LINE Push] API returned ${res.status}: ${errBody.slice(0, 200)}`);
+      return false;
+    }
+
+    return true;
+  } catch (err: any) {
+    console.warn('[LINE Push] Failed to send message:', err?.message || err);
+    return false;
+  }
+}
+
+/**
+ * 從 7 大模組早報 Markdown 擷取核心重點精簡版供 LINE 推播
+ */
+function formatMorningBriefingForLine(dateStr: string, markdown: string): string {
+  const extractSection = (num: number): string => {
+    const regex = new RegExp(`###\\s*${num}\\.[^\\n]*\\n([\\s\\S]*?)(?=\\n###\\s*\\d+\\.|$)`);
+    const match = markdown.match(regex);
+    if (!match || !match[1]) return '';
+    return match[1]
+      .replace(/\*\*/g, '')
+      .replace(/^\s*[-*]\s+/gm, '• ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  };
+
+  const sec1 = extractSection(1);
+  const sec3 = extractSection(3);
+  const sec5 = extractSection(5);
+
+  if (sec1 || sec3 || sec5) {
+    const parts: string[] = [`📅 ${dateStr} 台股早盤戰略精華`];
+    if (sec1) parts.push(`【1. 開盤定調與台指期價差】\n${sec1.slice(0, 900)}`);
+    if (sec3) parts.push(`【3. 今日多空分水嶺、壓力與支撐】\n${sec3.slice(0, 900)}`);
+    if (sec5) {
+      // 優先保留建議持股水位與 SOP 前段重點
+      parts.push(`【5. 建議持股水位與作戰紀律】\n${sec5.slice(0, 900)}`);
+    }
+    parts.push(`🔗 完整早報與量化選股雷達：\n${SITE_PUBLIC_URL}`);
+    return parts.join('\n\n');
+  }
+
+  const fallbackSummary = markdown.replace(/\*\*/g, '').replace(/^#+\s*/gm, '').trim().slice(0, 1500);
+  return `📅 ${dateStr} 台股早盤戰略精華\n\n${fallbackSummary}\n\n🔗 完整報告請見：\n${SITE_PUBLIC_URL}`;
+}
+
+/**
+ * 盤中持股停損 / 停利自動巡檢與防重複推播機制
+ */
+async function checkPortfolioAlertsAndNotify(): Promise<void> {
+  const todayTaipeiDate = getTaipeiDateString();
+
+  // 跨日時自動清空舊紀錄，確保每日去重 Set 乾淨
+  if (lineAlertLastDate && lineAlertLastDate !== todayTaipeiDate) {
+    lineAlertedToday.clear();
+  }
+  lineAlertLastDate = todayTaipeiDate;
+  for (const existingKey of Array.from(lineAlertedToday)) {
+    if (!existingKey.startsWith(`${todayTaipeiDate}:`)) {
+      lineAlertedToday.delete(existingKey);
+    }
+  }
+
+  const userData = await getUserData();
+  const portfolio = Array.isArray(userData.portfolio) ? userData.portfolio : [];
+  if (portfolio.length === 0) {
+    return;
+  }
+
+  const symbols = Array.from(
+    new Set(
+      portfolio
+        .map((p: any) => String(p?.symbol || '').trim())
+        .filter((s: string) => /^[1-9][0-9]{3}$/.test(s))
+    )
+  );
+  if (symbols.length === 0) {
+    return;
+  }
+
+  const quoteMap = await fetchBatchTWSEMisQuotes(symbols);
+
+  interface PendingAlert {
+    key: string;
+    symbol: string;
+    name: string;
+    type: 'STOP_LOSS' | 'TAKE_PROFIT';
+    currentPrice: number;
+    entryPrice: number;
+    triggerPrice: number;
+    pnlPct: number;
+  }
+
+  const pendingAlerts: PendingAlert[] = [];
+  const seenKeysThisRun = new Set<string>();
+
+  for (const item of portfolio) {
+    const symbol = String(item?.symbol || '').trim();
+    if (!/^[1-9][0-9]{3}$/.test(symbol)) continue;
+
+    const q = quoteMap.get(symbol);
+    const currentPrice = q?.price || 0;
+    if (currentPrice <= 0) continue;
+
+    const name = getStockName(symbol, item?.name || q?.name);
+    const entryPrice = Number(item?.entryPrice || 0);
+    const stopLossPrice = Number(item?.stopLossPrice || 0);
+    const targetPrice = Number(item?.targetPrice || 0);
+    const pnlPct = entryPrice > 0 ? Number((((currentPrice - entryPrice) / entryPrice) * 100).toFixed(2)) : 0;
+
+    // 1. 觸及停損：stopLossPrice > 0 && currentPrice <= stopLossPrice
+    if (stopLossPrice > 0 && currentPrice <= stopLossPrice) {
+      const key = `${todayTaipeiDate}:${symbol}:STOP_LOSS`;
+      if (!lineAlertedToday.has(key) && !seenKeysThisRun.has(key)) {
+        seenKeysThisRun.add(key);
+        pendingAlerts.push({
+          key,
+          symbol,
+          name,
+          type: 'STOP_LOSS',
+          currentPrice,
+          entryPrice,
+          triggerPrice: stopLossPrice,
+          pnlPct,
+        });
+      }
+    }
+
+    // 2. 觸及停利：targetPrice > 0 && currentPrice >= targetPrice
+    if (targetPrice > 0 && currentPrice >= targetPrice) {
+      const key = `${todayTaipeiDate}:${symbol}:TAKE_PROFIT`;
+      if (!lineAlertedToday.has(key) && !seenKeysThisRun.has(key)) {
+        seenKeysThisRun.add(key);
+        pendingAlerts.push({
+          key,
+          symbol,
+          name,
+          type: 'TAKE_PROFIT',
+          currentPrice,
+          entryPrice,
+          triggerPrice: targetPrice,
+          pnlPct,
+        });
+      }
+    }
+  }
+
+  if (pendingAlerts.length === 0) {
+    return;
+  }
+
+  const taipeiTimeStr = new Date().toLocaleTimeString('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  const lines = pendingAlerts.map((a) => {
+    const badge = a.type === 'STOP_LOSS' ? '🔴 觸及停損' : '🟢 觸及停利';
+    const triggerLabel = a.type === 'STOP_LOSS' ? '停損價' : '目標價';
+    const pnlStr = `${a.pnlPct >= 0 ? '+' : ''}${a.pnlPct}%`;
+    return `${badge}｜${a.symbol} ${a.name}\n現價 $${a.currentPrice}｜成本 $${a.entryPrice} (${pnlStr})\n觸發${triggerLabel}：$${a.triggerPrice}`;
+  });
+
+  const message = `🚨【盤中持股風控快訊】(${todayTaipeiDate} ${taipeiTimeStr})\n\n${lines.join('\n\n')}\n\n🔗 前往調整持股與操作紀錄：\n${SITE_PUBLIC_URL}`;
+
+  const sent = await sendLinePushMessage(message);
+  if (sent) {
+    for (const a of pendingAlerts) {
+      lineAlertedToday.add(a.key);
+    }
+    console.log(`[LINE Alert] ✅ Sent intraday portfolio alert for ${pendingAlerts.length} triggers.`);
+  }
+}
+
+// 手動測試 LINE Messaging API 推播端點
+app.get('/api/line/test', async (_req: Request, res: Response) => {
+  const ok = await sendLinePushMessage('✅ 台股量化波段雷達 LINE 推播連線測試成功！');
+  res.json({ ok });
+});
+
 // Health check endpoint
 app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
@@ -7384,7 +7630,7 @@ app.get('/api/health', (_req: Request, res: Response) => {
 function setupQuantCronSchedulers() {
   console.log('[Cron] Initializing Taiwan Quant Scheduled Jobs (Asia/Taipei)...');
 
-  // 1. 大盤深度早報：每個交易日（週一至週五）早上 09:00 (0 9 * * 1-5)，納入 08:45 台指期開盤行情
+  // 1. 大盤深度早報：每個交易日（週一至週五）早上 09:00 (0 9 * * 1-5)，納入 08:45 台指期開盤行情並推播 LINE 精華
   cron.schedule(
     '0 9 * * 1-5',
     async () => {
@@ -7392,6 +7638,13 @@ function setupQuantCronSchedulers() {
       try {
         const result = await generateGeminiDeepMorningBriefing(true);
         console.log(`[Cron Scheduler 09:00] ✅ 大盤深度早報已產出定稿並鎖定：${result.date} (${result.model})`);
+        if (result.markdown) {
+          const lineDigest = formatMorningBriefingForLine(result.date || getTaipeiDateString(), result.markdown);
+          const pushed = await sendLinePushMessage(lineDigest);
+          if (pushed) {
+            console.log(`[Cron Scheduler 09:00] 📲 已推播早盤戰略報告精華至 LINE (${result.date})`);
+          }
+        }
       } catch (err: any) {
         console.error('[Cron Scheduler 09:00] ❌ 產出大盤深度早報失敗:', err?.message || err);
       }
@@ -7401,7 +7654,26 @@ function setupQuantCronSchedulers() {
     }
   );
 
-  // 2. 自選持股深層籌碼健診戰報：每個交易日（週一至週五）晚上 21:30 (30 21 * * 1-5)
+  // 2. 盤中持股停損 / 停利自動巡檢：交易日 09:00 ~ 13:35 每 5 分鐘巡檢一次，單日同標的同條件僅推播一次
+  cron.schedule(
+    '*/5 9-13 * * 1-5',
+    async () => {
+      try {
+        const marketStatus = getTaipeiMarketStatus();
+        const totalMins = marketStatus.hour * 60 + marketStatus.minute;
+        if (totalMins >= 9 * 60 && totalMins <= 13 * 60 + 35) {
+          await checkPortfolioAlertsAndNotify();
+        }
+      } catch (err: any) {
+        console.error('[Cron Scheduler Intraday Alert] ❌ 盤中持股巡檢失敗:', err?.message || err);
+      }
+    },
+    {
+      timezone: 'Asia/Taipei',
+    }
+  );
+
+  // 3. 自選持股深層籌碼健診戰報：每個交易日（週一至週五）晚上 21:30 (30 21 * * 1-5)
   cron.schedule(
     '30 21 * * 1-5',
     async () => {
@@ -7449,7 +7721,7 @@ function setupQuantCronSchedulers() {
     }
   );
 
-  console.log('[Cron] ✅ Quant scheduled jobs registered for 09:00 (Market) and 21:30 (Watchlist) Asia/Taipei.');
+  console.log('[Cron] ✅ Quant scheduled jobs registered for 09:00 (Market + LINE), */5 09:00-13:35 (Portfolio Alert), and 21:30 (Watchlist) Asia/Taipei.');
 }
 
 // Start Server and Mount Vite
