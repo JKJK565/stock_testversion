@@ -7484,7 +7484,7 @@ function formatMorningBriefingForLine(dateStr: string, markdown: string): string
 /**
  * 盤中持股停損 / 停利自動巡檢與防重複推播機制
  */
-async function checkPortfolioAlertsAndNotify(): Promise<void> {
+async function checkPortfolioAlertsAndNotify(): Promise<number> {
   const todayTaipeiDate = getTaipeiDateString();
 
   // 跨日時自動清空舊紀錄，確保每日去重 Set 乾淨
@@ -7501,7 +7501,7 @@ async function checkPortfolioAlertsAndNotify(): Promise<void> {
   const userData = await getUserData();
   const portfolio = Array.isArray(userData.portfolio) ? userData.portfolio : [];
   if (portfolio.length === 0) {
-    return;
+    return 0;
   }
 
   const symbols = Array.from(
@@ -7512,7 +7512,7 @@ async function checkPortfolioAlertsAndNotify(): Promise<void> {
     )
   );
   if (symbols.length === 0) {
-    return;
+    return 0;
   }
 
   const quoteMap = await fetchBatchTWSEMisQuotes(symbols);
@@ -7583,7 +7583,7 @@ async function checkPortfolioAlertsAndNotify(): Promise<void> {
   }
 
   if (pendingAlerts.length === 0) {
-    return;
+    return 0;
   }
 
   const taipeiTimeStr = new Date().toLocaleTimeString('zh-TW', {
@@ -7609,12 +7609,25 @@ async function checkPortfolioAlertsAndNotify(): Promise<void> {
     }
     console.log(`[LINE Alert] ✅ Sent intraday portfolio alert for ${pendingAlerts.length} triggers.`);
   }
+
+  return pendingAlerts.length;
 }
 
-// 手動測試 LINE Messaging API 推播端點
+// 手動測試 LINE Messaging API 推播端點 (註冊於 startServer() app.get('*') 之前)
 app.get('/api/line/test', async (_req: Request, res: Response) => {
   const ok = await sendLinePushMessage('✅ 台股量化波段雷達 LINE 推播連線測試成功！');
   res.json({ ok });
+});
+
+// 手動觸發一次持股停損 / 停利巡檢與推播測試端點 (註冊於 startServer() app.get('*') 之前)
+app.get('/api/line/test-alerts', async (_req: Request, res: Response) => {
+  try {
+    const triggeredCount = await checkPortfolioAlertsAndNotify();
+    res.json({ ok: true, triggeredCount });
+  } catch (err: any) {
+    console.error('[LINE Test Alerts] Error:', err?.message || err);
+    res.status(500).json({ ok: false, triggeredCount: 0, error: err?.message });
+  }
 });
 
 // Health check endpoint
@@ -7768,7 +7781,10 @@ async function startServer() {
   } else {
     const distPath = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
+    app.get('*', (req, res) => {
+      if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ error: 'API endpoint not found' });
+      }
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

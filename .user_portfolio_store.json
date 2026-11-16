@@ -2,23 +2,6 @@
   "initialCapital": 1000000,
   "portfolio": [
     {
-      "id": "1802-1794363384508",
-      "symbol": "1802",
-      "name": "台玻",
-      "entryPrice": 65.5,
-      "sharesLots": 3,
-      "feeDiscount": 60,
-      "stopLossPrice": 72.86,
-      "targetPrice": 95.88,
-      "entryDate": "2026-11-11",
-      "strategyType": "momentum",
-      "notes": "【自選加入】玻璃陶瓷",
-      "currentPrice": 76.7,
-      "change": 6.9,
-      "changePercent": 9.89,
-      "updateTime": "07:05:50"
-    },
-    {
       "id": "1477-1793951225695",
       "symbol": "1477",
       "name": "聚陽",
@@ -29,12 +12,49 @@
       "targetPrice": 287.6,
       "entryDate": "2026-11-06",
       "strategyType": "turnaround",
-      "notes": "【價值轉型】處於近一年 15.8% 低檔區，紡織纖維，最新單月營收年增達 +15.1%，近一年處於 15.8% 低檔基期，現價(213元)站上 20MA(207.55元)打底成型且均線走平翻揚。",
-      "currentPrice": 213,
-      "change": -2.5,
-      "changePercent": -1.16,
-      "updateTime": "06:35:46"
+      "notes": "【價值轉型】處於近一年 15.8% 低檔區，紡織纖維，最新單月營收年增達 +15.1%，近一年處於 15.8% 低檔基期，現價(213元)站上 20MA(207.55元)打底成型且均線走平翻揚。"
     }
   ],
-  "tradeHistory": []
+  "tradeHistory": [
+    {
+      "id": "trade_1794446801325_rxcov",
+      "symbol": "1802",
+      "name": "台玻",
+      "strategyType": "momentum",
+      "entryPrice": 65.5,
+      "exitPrice": 82.8,
+      "sharesLots": 3,
+      "entryDate": "2026-11-11",
+      "exitDate": "2026-11-12",
+      "exitType": "TAKE_PROFIT",
+      "realizedPL": 50774.99999999997,
+      "returnPct": 25.84,
+      "holdingDays": 1,
+      "feeDiscount": 60,
+      "feeCostTotal": 1125,
+      "netPL": 50774.99999999997,
+      "netReturnPct": 25.84,
+      "notes": "波段達標停利落袋"
+    },
+    {
+      "id": "trade_1794362491185_ohv0g",
+      "symbol": "1802",
+      "name": "台玻",
+      "strategyType": "momentum",
+      "entryPrice": 65.5,
+      "exitPrice": 76.7,
+      "sharesLots": 2,
+      "entryDate": "2026-11-04",
+      "exitDate": "2026-11-11",
+      "exitType": "TAKE_PROFIT",
+      "realizedPL": 21697,
+      "returnPct": 16.56,
+      "holdingDays": 7,
+      "feeDiscount": 60,
+      "feeCostTotal": 703,
+      "netPL": 21697,
+      "netReturnPct": 16.56,
+      "notes": "波段達標停利落袋"
+    }
+  ]
 }
