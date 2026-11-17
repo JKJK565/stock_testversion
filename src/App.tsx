@@ -9,7 +9,6 @@ import {
   PortfolioStockItem,
   TradeRecordItem,
   WatchlistAlertDetail,
-  NotificationItem,
   WatchlistBriefingResponse,
   WatchlistStockDiagnostic,
   EntryTactic,
@@ -27,7 +26,6 @@ import {
   BatchQuoteItem,
 } from './services/stockApi';
 import { Navbar } from './components/Navbar';
-import { NotificationCenter } from './components/NotificationCenter';
 import { WatchlistView } from './components/WatchlistView';
 import { StockDetailModal } from './components/StockDetailModal';
 import { StockStrategyAuditModal } from './components/StockStrategyAuditModal';
@@ -231,9 +229,6 @@ export default function App() {
   const [selectedIndustryFilter, setSelectedIndustryFilter] = useState<
     'all' | 'ai' | 'cowos' | 'cpo' | 'power' | 'turnaround'
   >('all');
-
-  // Notification Center modal open state
-  const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState(false);
 
   // 選股卡片展開折疊狀態
   const [expandedCardSymbols, setExpandedCardSymbols] = useState<Record<string, boolean>>({});
@@ -585,17 +580,6 @@ export default function App() {
     [portfolio, initialCapital, syncUserPortfolioToServer, syncTradesToServer]
   );
 
-  // Notifications stored in localStorage
-  const [notifications, setNotifications] = useState<NotificationItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('tw_swing_notifications');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {
-      console.error('Failed to load notifications from localStorage:', e);
-    }
-    return [];
-  });
-
   // Save portfolio to localStorage only (Supabase sync decoupled from quote refresh)
   useEffect(() => {
     try {
@@ -604,15 +588,6 @@ export default function App() {
       console.error('Failed to save portfolio to localStorage:', e);
     }
   }, [portfolio]);
-
-  // Save notifications to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('tw_swing_notifications', JSON.stringify(notifications));
-    } catch (e) {
-      console.error('Failed to save notifications to localStorage:', e);
-    }
-  }, [notifications]);
 
   // Load Market Data (cached 15s on server)
   const loadMarket = useCallback(async (force = false) => {
@@ -1061,14 +1036,23 @@ export default function App() {
     // 嚴格剔除產業黑名單
     list = list.filter((s) => !isBlacklisted(s.symbol, s.name));
 
-    // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」且 5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股及 Beta < 0.5 死水股（保留 EARLY_REBOUND 早期反彈觀察）
-    list = list.filter(
-      (s) =>
-        (s.entryTactic === 'EARLY_REBOUND' || (s.entryTactic !== 'BEARISH_BROKEN' && s.price >= (s.ma20 ?? s.stopLossPrice))) &&
-        (s.buyRatingScore ?? 0) >= 50 &&
-        (s.volumeAvg5d ?? 0) >= 1000 &&
-        !(s.beta1Y !== undefined && s.beta1Y < 0.5)
-    );
+    // v3.6.0 低基期價值轉型：5日均量 >= 2,000 張，剔除 Beta < 0.5 死水股；matched 顯示右側買點+左側試單，all 同時納入基本面觀察池
+    list = list.filter((s) => {
+      if ((s.volumeAvg5d ?? 0) < 2000) return false;
+      if (s.beta1Y !== undefined && s.beta1Y < 0.5) return false;
+      if (screenerTab === 'matched') {
+        if (s.turnaroundTier) {
+          return s.turnaroundTier === 'RIGHT_BUY' || s.turnaroundTier === 'LEFT_PROBE';
+        }
+        return (
+          (s.entryTactic === 'EARLY_REBOUND' ||
+            (s.entryTactic !== 'BEARISH_BROKEN' && s.price >= (s.ma20 ?? s.stopLossPrice))) &&
+          (s.buyRatingScore ?? 0) >= 50
+        );
+      }
+      // 'all' tab (潛在價值轉型池): 顯示全部三大分層（右側正式買點、左側試單、基本面觀察池）
+      return true;
+    });
 
     // 核心供應鏈白名單與業務特徵詞動態匹配（排除記憶體對 CoWoS 的干擾）
     if (selectedIndustryFilter !== 'all') {
@@ -1320,74 +1304,22 @@ export default function App() {
         volumeAvg5d: diag?.volumeAvg5d,
         foreignNetLots: diag?.foreignNetLots,
         marginChangeLots: diag?.marginChangeLots,
+        dispositionLight: diag?.dispositionLight,
+        dispositionLabel: diag?.dispositionLabel,
+        dispositionReason: diag?.dispositionReason,
+        holdingTradingDays: diag?.holdingTradingDays,
+        revenueYoY: diag?.revenueYoY,
+        negativeNewsHits: diag?.negativeNewsHits,
         healthAlerts,
       };
     });
   }, [portfolio, screenerData, turnaroundData, watchlistQuotes, watchlistDiagnostics]);
 
 
-  // Synchronize detected health alerts into NotificationCenter
-  useEffect(() => {
-    if (enrichedPortfolio.length === 0) return;
-
-    setNotifications((prev) => {
-      const existingIds = new Set(prev.map((n) => n.id));
-      const todayStr = new Date().toISOString().split('T')[0];
-      const newItems: NotificationItem[] = [];
-
-      for (const stock of enrichedPortfolio) {
-        if (stock.healthAlerts && stock.healthAlerts.length > 0) {
-          for (const alert of stock.healthAlerts) {
-            const id = `alert-${stock.symbol}-${alert.type}-${todayStr}`;
-            if (!existingIds.has(id)) {
-              newItems.push({
-                id,
-                stockSymbol: stock.symbol,
-                stockName: stock.name,
-                type: alert.severity,
-                title: alert.title,
-                message: `${stock.name} (${stock.symbol}) ${alert.description}`,
-                alertType: alert.type,
-                timestamp: new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
-                isRead: false,
-              });
-            }
-          }
-        }
-      }
-
-      if (newItems.length > 0) {
-        return [...newItems, ...prev];
-      }
-      return prev;
-    });
-  }, [enrichedPortfolio]);
-
-  // Unread notification count
-  const unreadAlertCount = useMemo(() => {
-    return notifications.filter((n) => !n.isRead).length;
-  }, [notifications]);
-
   // Count of stocks currently triggering health alert in watchlist
   const alertWatchlistCount = useMemo(() => {
     return enrichedPortfolio.filter((p) => p.healthAlerts && p.healthAlerts.length > 0).length;
   }, [enrichedPortfolio]);
-
-  // Mark all notifications as read
-  const handleMarkAllNotificationsAsRead = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
-  };
-
-  // Clear all notifications
-  const handleClearAllNotifications = () => {
-    setNotifications([]);
-  };
-
-  // Handle click on stock from notification
-  const handleSelectStockFromNotification = (symbol: string) => {
-    setActiveModule('watchlist');
-    setSearchQuery(symbol);
-  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-rose-500 selection:text-white">
@@ -1399,26 +1331,12 @@ export default function App() {
         setActiveModule={setActiveModule}
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
-        unreadAlertCount={unreadAlertCount}
         screenerMatchedCount={
           (screenerData?.totalMatched ?? 0) + (turnaroundData?.totalMatched ?? 0)
         }
         watchlistCount={portfolio.length}
         alertWatchlistCount={alertWatchlistCount}
-        onToggleNotificationCenter={() => setIsNotificationCenterOpen((prev) => !prev)}
-        isNotificationCenterOpen={isNotificationCenterOpen}
         onOpenStrategyAudit={handleOpenStrategyAudit}
-      />
-
-      {/* Notification Center Popover */}
-      <NotificationCenter
-        isOpen={isNotificationCenterOpen}
-        onClose={() => setIsNotificationCenterOpen(false)}
-        notifications={notifications}
-        onMarkAllAsRead={handleMarkAllNotificationsAsRead}
-        onClearAll={handleClearAllNotifications}
-        onSelectStock={handleSelectStockFromNotification}
-        onRemoveStockFromWatchlist={handleRemovePortfolioItemBySymbol}
       />
 
       {/* Main Content Area */}
@@ -1962,6 +1880,40 @@ export default function App() {
               );
             })()}
 
+            {/* v3.6.0 大盤空頭硬煞車警戒橫幅 */}
+            {(() => {
+              const regime =
+                screenerData?.marketRegime ||
+                turnaroundData?.marketRegime ||
+                marketData?.marketRegime;
+              const isBrake = Boolean(screenerData?.isBearMarketBrake || regime?.isBearMarketBrake);
+              if (!isBrake) return null;
+              const brakeMsg =
+                screenerData?.bearBrakeMessage ||
+                regime?.bearBrakeReason ||
+                '大盤偏空煞車啟動，暫停追價（加權現價低於 20MA 且 5MA 下彎，動能區僅保留極少數抗跌且土洋合買標的）';
+              return (
+                <div className="p-4 rounded-2xl bg-gradient-to-r from-rose-950/90 via-red-950/70 to-slate-900 border-2 border-rose-500/70 shadow-lg flex items-start sm:items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-500/50 flex items-center justify-center flex-shrink-0 text-lg">
+                    🛑
+                  </div>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-black text-rose-300">
+                        大盤偏空煞車啟動，暫停追價
+                      </span>
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-200 font-mono">
+                        BEAR BRAKE ACTIVE
+                      </span>
+                    </div>
+                    <p className="text-xs text-rose-200/90 mt-0.5 leading-relaxed">
+                      {brakeMsg}
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* 雙軌時間自動切換頂部醒目標示 */}
             {(() => {
               const activeMode =
@@ -2126,7 +2078,7 @@ export default function App() {
                     <span>2. 波動度與量能</span>
                   </div>
                   <p className="text-slate-300 text-[11px] leading-relaxed">
-                    20日 ATR 波動度 <strong className="text-white">≥ 2.5%</strong>、5日均量 <strong className="text-white">&gt; 1,000 張</strong>、股價 <strong className="text-white">15 ~ 500 元</strong>。
+                    20日 ATR 波動度 <strong className="text-white">≥ 2.5%</strong>、5日均量 <strong className="text-white">動能 &gt; 1,000 / 轉型 ≥ 2,000 張</strong>、股價 <strong className="text-white">15 ~ 500 元</strong>。
                   </p>
                 </div>
 
@@ -2330,6 +2282,17 @@ export default function App() {
                                   <Sparkles className="w-3 h-3 text-rose-400 flex-shrink-0" />
                                   <span>{stock.industryTheme || stock.industry}</span>
                                 </span>
+                                {stock.holdingPeriodLabel && (
+                                  <span
+                                    className={`text-[11px] px-2.5 py-0.5 rounded-full border font-bold whitespace-nowrap flex-shrink-0 ${
+                                      stock.holdingPeriodLabel.includes('短線')
+                                        ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                                        : 'bg-cyan-500/15 border-cyan-500/40 text-cyan-300'
+                                    }`}
+                                  >
+                                    {stock.holdingPeriodLabel}
+                                  </span>
+                                )}
                               </div>
 
                               <div className="text-right flex-shrink-0 pr-1">
@@ -2689,6 +2652,17 @@ export default function App() {
                                 </div>
                               </div>
 
+                              {stock.trailingStopLabel && (
+                                <div className="text-[11px] text-amber-200/95 bg-amber-950/30 border border-amber-500/30 rounded-xl px-2.5 py-1.5 flex items-center justify-between gap-2">
+                                  <span className="font-semibold">🛡️ 移動防守：{stock.trailingStopLabel}</span>
+                                  {stock.trailingStopPrice !== undefined && stock.trailingStopPrice > 0 && (
+                                    <span className="font-mono font-bold text-amber-300 whitespace-nowrap">
+                                      防線 ${stock.trailingStopPrice.toFixed(1)}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+
                               {stock.entryActionNote && (
                                 <div className="text-[11px] text-indigo-300/90 bg-indigo-950/30 border border-indigo-900/40 rounded-xl px-2.5 py-1.5 flex items-start gap-1.5">
                                   <Sparkles className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0 mt-0.5" />
@@ -2774,7 +2748,7 @@ export default function App() {
                       今日無符合低基期轉型之安全標的
                     </p>
                     <p className="text-xs text-slate-400 mt-2 max-w-lg mx-auto leading-relaxed">
-                      系統遵循嚴格量化紀律（近一年位階 &le; 35% 低檔、現價站穩 20MA 且均線走平微揚、單月營收 YoY &ge; 8%、5日均量 &gt; 1,000張、ATR% &ge; 2.2%），絕不濫竽充數推薦未達標標的。
+                      系統遵循嚴格量化紀律（近一年位階 &le; 35% 低檔、單月營收 YoY &ge; 8% 且累計營收 YoY &gt; 0%、5日均量 &ge; 2,000張、ATR% &ge; 2.2%），分級區分右側買點、左側試單與觀察池，絕不濫竽充數。
                     </p>
                   </div>
                 ) : (
@@ -2817,6 +2791,24 @@ export default function App() {
                                   <Sparkles className="w-3 h-3 text-indigo-400 flex-shrink-0" />
                                   <span>{stock.industryTheme || stock.industry}</span>
                                 </span>
+                                {stock.turnaroundTierLabel && (
+                                  <span
+                                    className={`text-[11px] px-2.5 py-0.5 rounded-full border font-bold whitespace-nowrap flex-shrink-0 ${
+                                      stock.turnaroundTier === 'RIGHT_BUY'
+                                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                                        : stock.turnaroundTier === 'LEFT_PROBE'
+                                        ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                                        : 'bg-slate-800 border-slate-600 text-slate-300'
+                                    }`}
+                                  >
+                                    {stock.turnaroundTierLabel}
+                                  </span>
+                                )}
+                                {stock.holdingPeriodLabel && (
+                                  <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/40 text-cyan-300 font-bold whitespace-nowrap flex-shrink-0">
+                                    {stock.holdingPeriodLabel}
+                                  </span>
+                                )}
                                 {turnaroundData?.mode === 'intraday' && (
                                   <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold flex items-center gap-1 whitespace-nowrap flex-shrink-0">
                                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
@@ -2938,6 +2930,11 @@ export default function App() {
                                     <div className="font-bold truncate">
                                       YoY +{stock.revenueYoY.toFixed(1)}%
                                     </div>
+                                    {stock.cumulativeRevenueYoY !== null && stock.cumulativeRevenueYoY !== undefined && (
+                                      <div className="text-[10px] text-indigo-200/80 font-mono mt-0.5 truncate">
+                                        累計 {stock.cumulativeRevenueYoY >= 0 ? '+' : ''}{stock.cumulativeRevenueYoY.toFixed(1)}%
+                                      </div>
+                                    )}
                                   </div>
 
                                   <div
@@ -2992,8 +2989,8 @@ export default function App() {
                                     <div className="text-[10px] text-slate-500 mb-0.5 truncate">5日均量流動性</div>
                                     <div className="font-bold text-sky-400 truncate">
                                       {stock.volumeAvg5d ? `${stock.volumeAvg5d.toLocaleString()} 張` : '-'}
-                                      <span className={`text-[10px] font-normal ml-1 ${(stock.volumeAvg5d ?? 0) >= 1000 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                        {(stock.volumeAvg5d ?? 0) >= 1000 ? '≥1,000張達標' : '未達標 (不足千張)'}
+                                      <span className={`text-[10px] font-normal ml-1 ${(stock.volumeAvg5d ?? 0) >= 2000 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                        {(stock.volumeAvg5d ?? 0) >= 2000 ? '≥2,000張達標' : '未達標 (不足兩千張)'}
                                       </span>
                                     </div>
                                   </div>
@@ -3094,6 +3091,20 @@ export default function App() {
                                   </div>
                                 </div>
                               </div>
+
+                              {(stock.trailingStopLabel || stock.positionSizingHint) && (
+                                <div className="text-[11px] text-amber-200/95 bg-amber-950/30 border border-amber-500/30 rounded-xl px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-2">
+                                  <span>
+                                    🛡️ {stock.trailingStopLabel || '移動防線'}
+                                    {stock.positionSizingHint ? `｜${stock.positionSizingHint}` : ''}
+                                  </span>
+                                  {stock.trailingStopPrice !== undefined && stock.trailingStopPrice > 0 && (
+                                    <span className="font-mono font-bold text-amber-300 whitespace-nowrap">
+                                      硬停損 ${stock.trailingStopPrice.toFixed(1)}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
 
                               {stock.entryActionNote && (
                                 <div className="text-[11px] text-indigo-300/90 bg-indigo-950/30 border border-indigo-900/40 rounded-xl px-2.5 py-1.5 flex items-start gap-1.5">

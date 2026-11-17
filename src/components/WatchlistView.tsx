@@ -842,10 +842,31 @@ export function WatchlistView({
                               {item.strategyType === 'turnaround' ? '低基期轉型' : '動能突破'}
                             </span>
                           )}
+                          {item.dispositionLabel && (
+                            <span
+                              className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${
+                                item.dispositionLight === 'RED_EXIT'
+                                  ? 'bg-rose-500/20 border-rose-500/50 text-rose-300'
+                                  : item.dispositionLight === 'YELLOW_TRIM'
+                                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
+                                  : 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                              }`}
+                              title={item.dispositionReason || ''}
+                            >
+                              {item.dispositionLabel}
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-slate-400 mt-1">
-                          建倉日期：{item.entryDate || '未設定'} ｜ 最新現價 <strong className="text-white">${curPrice.toFixed(2)}</strong>
+                          建倉日期：{item.entryDate || '未設定'}
+                          {item.holdingTradingDays ? ` (持有 ${item.holdingTradingDays} 交易日)` : ''} ｜ 最新現價{' '}
+                          <strong className="text-white">${curPrice.toFixed(2)}</strong>
                         </div>
+                        {item.dispositionReason && (
+                          <div className="text-[11px] text-slate-300 mt-1 leading-snug">
+                            📌 {item.dispositionReason}
+                          </div>
+                        )}
                       </div>
 
                       {/* 損益金額與百分比 (以扣除手續費與證交稅之實拿淨損益為主，輔以毛損益小字) */}

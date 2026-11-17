@@ -113,6 +113,10 @@ export interface MarketRegime {
   isBullish: boolean;
   taiexPrice: number;
   taiexMa20: number;
+  taiexMa5?: number;
+  taiexPrevMa5?: number;
+  isBearMarketBrake?: boolean;
+  bearBrakeReason?: string;
   biasPct: number;
   suggestionText: string;
 }
@@ -194,6 +198,15 @@ export interface ScreenerStockItem {
   entryTactic?: EntryTactic;
   entryTacticLabel?: string;
   entryActionNote?: string;
+  // v3.6.0 持有週期、移動停利線與進階籌碼門檻
+  holdingPeriodLabel?: string;
+  trailingStopLabel?: string;
+  trailingStopPrice?: number;
+  hardStopPct?: number;
+  trustNet10d?: number;
+  foreignNet5d?: number;
+  instNet5d?: number;
+  consecutiveForeignDays?: number;
 }
 
 export type EntryTactic = 'PULLBACK_BUY' | 'BREAKOUT_BUY' | 'WAIT_PULLBACK' | 'BEARISH_BROKEN' | 'EARLY_REBOUND';
@@ -221,8 +234,12 @@ export interface ScreenerResponse {
   isMarketOpen: boolean;
   marketStatusText: string;
   marketRegime?: MarketRegime;
+  isBearMarketBrake?: boolean;
+  bearBrakeMessage?: string;
   lastUpdated?: string;
 }
+
+export type TurnaroundTier = 'RIGHT_BUY' | 'LEFT_PROBE' | 'WATCH_POOL';
 
 export interface TurnaroundStockItem {
   symbol: string;
@@ -277,6 +294,16 @@ export interface TurnaroundStockItem {
   entryTactic?: EntryTactic;
   entryTacticLabel?: string;
   entryActionNote?: string;
+  // v3.6.0 低基期分級買點、持有週期、停損線與累計營收
+  turnaroundTier?: TurnaroundTier;
+  turnaroundTierLabel?: string;
+  holdingPeriodLabel?: string;
+  trailingStopLabel?: string;
+  trailingStopPrice?: number;
+  positionSizingHint?: string;
+  cumulativeRevenueYoY?: number | null;
+  trustNet5d?: number;
+  foreignNet5d?: number;
 }
 
 export interface TurnaroundScreenerResponse {
@@ -333,6 +360,16 @@ export interface WatchlistStockDiagnostic {
   diagnosticTitle: string;
   diagnosticNote: string;
   severity: 'danger' | 'warning' | 'info' | 'success';
+  // v3.6.0 每日 21:30 續抱/減碼/出場燈號診斷
+  holdingTradingDays?: number;
+  unrealizedPnlPct?: number;
+  foreignNet5d?: number;
+  trustNet5d?: number;
+  revenueYoY?: number | null;
+  negativeNewsHits?: string[];
+  dispositionLight?: 'GREEN_HOLD' | 'YELLOW_TRIM' | 'RED_EXIT';
+  dispositionLabel?: string;
+  dispositionReason?: string;
 }
 
 export interface WatchlistBriefingResponse {
@@ -1384,9 +1421,14 @@ async function fetchYahooTaiwanIndex(
 async function fetchRealtimeTWSEIndices(): Promise<{
   taiex: MarketIndexItem | null;
   tpex: MarketIndexItem | null;
+  isPreOpen: boolean;
 }> {
   let taiex: MarketIndexItem | null = null;
   let tpex: MarketIndexItem | null = null;
+  let taiexPreOpen = false;
+  let tpexPreOpen = false;
+
+  const marketStatus = getTaipeiMarketStatus();
 
   try {
     const timestamp = Date.now();
@@ -1416,13 +1458,27 @@ async function fetchRealtimeTWSEIndices(): Promise<{
         if (!isTaiex && !isTpex) continue;
 
         const prevClose = parseFloat(item.y);
-        let price = parseFloat(item.z);
-        // When market is pre-open, in trial auction, or before trading, z may be '-'
-        if (isNaN(price) || item.z === '-') {
-          price = parseFloat(item.pz) || parseFloat(item.o) || prevClose;
+        const spotZ = parseFloat(item.z);
+        const trialPz = parseFloat(item.pz);
+        const openP = parseFloat(item.o);
+        const hasSpotZ = item.z !== '-' && !isNaN(spotZ) && spotZ > 0;
+
+        let price = hasSpotZ ? spotZ : NaN;
+        let itemPreOpen = false;
+
+        // When market is pre-open, in trial auction, or before first tick, z may be '-'
+        if (!hasSpotZ) {
+          itemPreOpen = true;
+          if (!isNaN(trialPz) && trialPz > 0) {
+            price = trialPz;
+          } else if (!isNaN(openP) && openP > 0) {
+            price = openP;
+          } else {
+            price = prevClose;
+          }
         }
 
-        if (isNaN(price) || isNaN(prevClose) || prevClose <= 0) {
+        if (isNaN(price) || price <= 0 || isNaN(prevClose) || prevClose <= 0) {
           continue;
         }
 
@@ -1434,9 +1490,10 @@ async function fetchRealtimeTWSEIndices(): Promise<{
         const datePart =
           item.d && item.d.length === 8
             ? `${item.d.slice(0, 4)}-${item.d.slice(4, 6)}-${item.d.slice(6, 8)}`
-            : new Date().toISOString().split('T')[0];
-        const timePart = item.t || new Date().toLocaleTimeString('zh-TW', { hour12: false });
-        const updateTime = `${datePart} ${timePart}`.trim();
+            : marketStatus.dateString;
+        const timePart = item.t || marketStatus.timeString;
+        const statusSuffix = itemPreOpen ? ' (盤前/試撮)' : '';
+        const updateTime = `${datePart} ${timePart}${statusSuffix}`.trim();
 
         const parsedItem: MarketIndexItem = {
           symbol: isTaiex ? '^TWII' : '^TWOII',
@@ -1452,8 +1509,10 @@ async function fetchRealtimeTWSEIndices(): Promise<{
 
         if (isTaiex) {
           taiex = parsedItem;
+          taiexPreOpen = itemPreOpen;
         } else if (isTpex) {
           tpex = parsedItem;
+          tpexPreOpen = itemPreOpen;
         }
       }
     }
@@ -1461,15 +1520,23 @@ async function fetchRealtimeTWSEIndices(): Promise<{
     console.error('Error fetching TWSE MIS realtime indices, attempting Yahoo Finance fallback:', err);
   }
 
-  // 海外機房 (如 Render) 防禦：若 TWSE MIS 被擋或連線逾時，立即使用 Yahoo Finance 備援
-  if (!taiex || taiex.price <= 0) {
-    taiex = await fetchYahooTaiwanIndex('%5ETWII', '^TWII', '加權指數');
+  // 若為 09:00 開盤後但 TWSE MIS 仍回傳 z === '-' (尚未撮合或海外延遲)，補抓 Yahoo 即時報價比對
+  if (!taiex || taiex.price <= 0 || (taiexPreOpen && marketStatus.isWeekday && marketStatus.timeInMinutes >= 540)) {
+    const yahooTaiex = await fetchYahooTaiwanIndex('%5ETWII', '^TWII', '加權指數');
+    if (yahooTaiex && yahooTaiex.price > 0 && (!taiex || taiex.price <= 0 || yahooTaiex.price !== taiex.prevClose)) {
+      taiex = yahooTaiex;
+      taiexPreOpen = false;
+    }
   }
-  if (!tpex || tpex.price <= 0) {
-    tpex = await fetchYahooTaiwanIndex('%5ETWOII', '^TWOII', '櫃買指數');
+  if (!tpex || tpex.price <= 0 || (tpexPreOpen && marketStatus.isWeekday && marketStatus.timeInMinutes >= 540)) {
+    const yahooTpex = await fetchYahooTaiwanIndex('%5ETWOII', '^TWOII', '櫃買指數');
+    if (yahooTpex && yahooTpex.price > 0 && (!tpex || tpex.price <= 0 || yahooTpex.price !== tpex.prevClose)) {
+      tpex = yahooTpex;
+      tpexPreOpen = false;
+    }
   }
 
-  return { taiex, tpex };
+  return { taiex, tpex, isPreOpen: taiexPreOpen || tpexPreOpen };
 }
 
 // 2. Fetch Taiwan Futures (WTX&) from Yahoo Finance Taiwan
@@ -1782,16 +1849,28 @@ function generateMorningReport(
   };
 }
 
-// 6. Get or Refresh Market Overview with 15-second cache
+// 6. Get or Refresh Market Overview with 15-second cache (and rapid invalidation during 08:40~09:10 open transition)
 async function getMarketOverview(force = false): Promise<MarketOverviewResponse> {
   const now = Date.now();
-  if (!force && marketCache && now < marketCache.expireAt) {
+  const marketStatus = getTaipeiMarketStatus();
+  const isOpenTransition =
+    marketStatus.isWeekday && marketStatus.timeInMinutes >= 520 && marketStatus.timeInMinutes <= 550; // 08:40 ~ 09:10
+
+  // 若剛跨越 09:00 現貨開盤，立即淘汰先前 08:40~08:59 盤前試撮/尚未開盤之舊快取
+  const cachedIsPreOpen =
+    marketCache?.data?.taiex?.updateTime?.includes('盤前') ||
+    marketCache?.data?.tpex?.updateTime?.includes('盤前');
+  const shouldBypassStalePreOpen = Boolean(
+    cachedIsPreOpen && marketStatus.isWeekday && marketStatus.timeInMinutes >= 540
+  );
+
+  if (!force && !shouldBypassStalePreOpen && marketCache && now < marketCache.expireAt) {
     return marketCache.data;
   }
 
   // 臺灣證券交易所官方即時 API (tse_t00.tw|otc_o00.tw) + Yahoo WTX& + US Market
   const [twseIndices, wtx, usIndices] = await Promise.all([
-    fetchRealtimeTWSEIndices().catch(() => ({ taiex: null, tpex: null })),
+    fetchRealtimeTWSEIndices().catch(() => ({ taiex: null, tpex: null, isPreOpen: false })),
     fetchYahooTaiwanIndexFutures().catch(() => null),
     fetchUSMarketData().catch(() => ({
       dow: null,
@@ -1824,9 +1903,11 @@ async function getMarketOverview(force = false): Promise<MarketOverviewResponse>
     timestamp: new Date().toISOString(),
   };
 
+  // 開盤轉換期 (08:40 ~ 09:10) 或盤前資料一律限制為最短 15 秒 TTL，避免鎖死開盤前舊資料
+  const effectiveTtl = isOpenTransition || twseIndices.isPreOpen ? 15 * 1000 : MARKET_CACHE_TTL_MS;
   marketCache = {
     data: overview,
-    expireAt: now + MARKET_CACHE_TTL_MS,
+    expireAt: now + effectiveTtl,
   };
 
   return overview;
@@ -1917,10 +1998,13 @@ function getCachedMorningBriefing(todayTaipeiDate: string): MorningBriefingRespo
 }
 
 /**
- * 輔助 1：取得加權指數關鍵均線 (5MA / 10MA / 20MA) 及昨日高低點 (利用 Yahoo Finance %5ETWII 日K線)
+ * 輔助 1：取得加權指數關鍵均線 (5MA / 10MA / 20MA) 及前一交易日高低收
+ * 優先採用 FinMind TaiwanStockPrice (data_id=TAIEX) 官方結算日K線（解決 Yahoo 09:00 常滯後抓到 T-2 舊點位之問題），
+ * 若失敗則降級使用 Yahoo Finance %5ETWII 日K線。
  */
 async function fetchTaiexKeyLevels(currentPrice?: number): Promise<{
   ma5: number;
+  prevMa5: number;
   ma10: number;
   ma20: number;
   prevHigh: number;
@@ -1928,6 +2012,83 @@ async function fetchTaiexKeyLevels(currentPrice?: number): Promise<{
   prevClose: number;
   latestClose: number;
 }> {
+  const todayTaipeiDate = getTaipeiDateString();
+  const computeLevelsFromBars = (
+    bars: { close: number; high: number; low: number; dateStr: string }[],
+    metaPrice?: number
+  ) => {
+    const liveTodayPrice =
+      currentPrice && currentPrice > 0
+        ? Number(currentPrice.toFixed(1))
+        : metaPrice && metaPrice > 0
+        ? Number(metaPrice.toFixed(1))
+        : undefined;
+
+    const lastBar = bars[bars.length - 1];
+    const isTodayCandlePresent = Boolean(lastBar.dateStr && lastBar.dateStr === todayTaipeiDate);
+
+    const baseCloses = bars.map((b) => b.close);
+    const maCloses = liveTodayPrice
+      ? isTodayCandlePresent
+        ? [...baseCloses.slice(0, -1), liveTodayPrice]
+        : [...baseCloses, liveTodayPrice]
+      : baseCloses;
+
+    const ma5 = Number((maCloses.slice(-5).reduce((a, b) => a + b, 0) / Math.min(5, maCloses.length)).toFixed(1));
+    const prev5Slice = maCloses.slice(-6, -1);
+    const prevMa5 =
+      prev5Slice.length > 0
+        ? Number((prev5Slice.reduce((a, b) => a + b, 0) / prev5Slice.length).toFixed(1))
+        : ma5;
+    const ma10 = Number((maCloses.slice(-10).reduce((a, b) => a + b, 0) / Math.min(10, maCloses.length)).toFixed(1));
+    const ma20 = Number((maCloses.slice(-20).reduce((a, b) => a + b, 0) / Math.min(20, maCloses.length)).toFixed(1));
+
+    // 前一正式結算交易日 (dateStr < todayTaipeiDate)
+    let prevBar = isTodayCandlePresent ? bars[Math.max(0, bars.length - 2)] : lastBar;
+    for (let i = bars.length - 1; i >= 0; i--) {
+      if (bars[i].dateStr && bars[i].dateStr < todayTaipeiDate) {
+        prevBar = bars[i];
+        break;
+      }
+    }
+
+    const prevHigh = Number(prevBar.high.toFixed(1));
+    const prevLow = Number(prevBar.low.toFixed(1));
+    const prevClose = Number(prevBar.close.toFixed(1));
+    const latestClose = liveTodayPrice ?? Number(lastBar.close.toFixed(1));
+    return { ma5, prevMa5, ma10, ma20, prevHigh, prevLow, prevClose, latestClose };
+  };
+
+  // 1. 優先使用 FinMind TaiwanStockPrice (data_id=TAIEX) 官方日 K（隔日清晨已寫入昨日正式高低收）
+  try {
+    const d90 = new Date();
+    d90.setDate(d90.getDate() - 90);
+    const startDate = d90.toISOString().split('T')[0];
+    const fmUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=TAIEX&start_date=${startDate}&token=${FINMIND_TOKEN}`;
+    const fmRes = await fetchWithTimeout(fmUrl, {}, 6000);
+    if (fmRes.ok) {
+      const fmJson = await safeParseJsonResponse(fmRes, 'FinMind-TAIEX-Klines');
+      if (Array.isArray(fmJson?.data) && fmJson.data.length >= 20) {
+        const fmBars: { close: number; high: number; low: number; dateStr: string }[] = [];
+        for (const r of fmJson.data) {
+          const c = Number(r.close);
+          if (!isNaN(c) && c > 0) {
+            const h = !isNaN(Number(r.max)) && Number(r.max) > 0 ? Number(r.max) : c;
+            const l = !isNaN(Number(r.min)) && Number(r.min) > 0 ? Number(r.min) : c;
+            const dateStr = String(r.date || '').trim();
+            fmBars.push({ close: c, high: h, low: l, dateStr });
+          }
+        }
+        if (fmBars.length >= 20) {
+          return computeLevelsFromBars(fmBars);
+        }
+      }
+    }
+  } catch (e: any) {
+    console.warn('[TaiexLevels] FinMind TAIEX fetch failed, falling back to Yahoo Finance:', e?.message || e);
+  }
+
+  // 2. 備援使用 Yahoo Finance %5ETWII 日 K 線
   try {
     const url = 'https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII?range=3mo&interval=1d';
     const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 6000);
@@ -1937,7 +2098,6 @@ async function fetchTaiexKeyLevels(currentPrice?: number): Promise<{
       const quote = result?.indicators?.quote?.[0];
       const timestamps: number[] = Array.isArray(result?.timestamp) ? result.timestamp : [];
       if (quote && Array.isArray(quote.close)) {
-        const todayTaipeiDate = getTaipeiDateString();
         const bars: { close: number; high: number; low: number; dateStr: string }[] = [];
         for (let i = 0; i < quote.close.length; i++) {
           const c = quote.close[i];
@@ -1954,46 +2114,22 @@ async function fetchTaiexKeyLevels(currentPrice?: number): Promise<{
         }
         if (bars.length >= 20) {
           const metaPrice = result?.meta?.regularMarketPrice;
-          const validMetaPrice = typeof metaPrice === 'number' && !isNaN(metaPrice) && metaPrice > 0 ? Number(metaPrice.toFixed(1)) : undefined;
-          const liveTodayPrice = currentPrice && currentPrice > 0 ? Number(currentPrice.toFixed(1)) : validMetaPrice;
-
-          const lastBar = bars[bars.length - 1];
-          // 比對最後一根 K 線日期與今日台北日期：
-          // 若最後一根日期 === todayTaipeiDate（表示今日日 K 已建立）：取 length - 2（昨日正式 K 線）
-          // 若最後一根日期 < todayTaipeiDate（表示今日日 K 尚未建立，最後一根就是昨日收盤）：必須取 length - 1！
-          const isTodayCandlePresent = Boolean(lastBar.dateStr && lastBar.dateStr === todayTaipeiDate);
-
-          // 計算均線：若今日現價 / meta.regularMarketPrice 存在且今日日 K 尚未寫入 bars，將今日最新價納入計算 5MA / 10MA / 20MA（若已寫入則以最新價更新末根）
-          const baseCloses = bars.map((b) => b.close);
-          const maCloses = liveTodayPrice
-            ? isTodayCandlePresent
-              ? [...baseCloses.slice(0, -1), liveTodayPrice]
-              : [...baseCloses, liveTodayPrice]
-            : baseCloses;
-          const ma5 = Number((maCloses.slice(-5).reduce((a, b) => a + b, 0) / 5).toFixed(1));
-          const ma10 = Number((maCloses.slice(-10).reduce((a, b) => a + b, 0) / 10).toFixed(1));
-          const ma20 = Number((maCloses.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(1));
-
-          const prevIdx = isTodayCandlePresent ? Math.max(0, bars.length - 2) : bars.length - 1;
-          const prevBar = bars[prevIdx];
-
-          const prevHigh = Number(prevBar.high.toFixed(1));
-          const prevLow = Number(prevBar.low.toFixed(1));
-          const prevClose = Number(prevBar.close.toFixed(1));
-          const latestClose = liveTodayPrice ?? Number(lastBar.close.toFixed(1));
-          return { ma5, ma10, ma20, prevHigh, prevLow, prevClose, latestClose };
+          const validMetaPrice =
+            typeof metaPrice === 'number' && !isNaN(metaPrice) && metaPrice > 0 ? metaPrice : undefined;
+          return computeLevelsFromBars(bars, validMetaPrice);
         }
       }
     }
   } catch (e: any) {
     console.warn('[TaiexLevels] Failed to fetch TAIEX klines:', e?.message || e);
   }
-  return { ma5: 27180, ma10: 27050, ma20: 26890, prevHigh: 27350, prevLow: 27120, prevClose: 27245, latestClose: 27245 };
+  return { ma5: 27180, prevMa5: 27180, ma10: 27050, ma20: 26890, prevHigh: 27350, prevLow: 27120, prevClose: 27245, latestClose: 27245 };
 }
 
 /**
  * 輔助 1-1：大盤多空位階總開關 (Market Regime Filter)
  * 比對加權現價與 20MA (月線)：站穩則為多頭 (水位 60%~80%)，跌破則偏空防守 (水位 20%~30%)
+ * v3.6.0：若加權現價 < 20MA 且 5MA 下彎，自動觸發大盤偏空硬煞車 (isBearMarketBrake = true)
  */
 async function getMarketRegime(currentPrice?: number): Promise<MarketRegime> {
   let livePrice = currentPrice && currentPrice > 0 ? Number(currentPrice.toFixed(1)) : undefined;
@@ -2013,15 +2149,27 @@ async function getMarketRegime(currentPrice?: number): Promise<MarketRegime> {
   const levels = await fetchTaiexKeyLevels(livePrice);
   const taiexPrice = livePrice ?? levels.latestClose;
   const taiexMa20 = levels.ma20;
+  const taiexMa5 = levels.ma5;
+  const taiexPrevMa5 = levels.prevMa5;
   const isBullish = taiexPrice >= taiexMa20;
+  const isBearMarketBrake = taiexPrice < taiexMa20 && taiexMa5 < taiexPrevMa5;
+  const bearBrakeReason = isBearMarketBrake
+    ? `加權現價 ${taiexPrice.toLocaleString()} 點跌破 20MA (${taiexMa20.toLocaleString()}) 且 5MA 下彎 (${taiexMa5.toLocaleString()} < ${taiexPrevMa5.toLocaleString()})，大盤偏空煞車啟動，暫停追價`
+    : undefined;
   const biasPct = Number((((taiexPrice - taiexMa20) / taiexMa20) * 100).toFixed(2));
   const suggestionText = isBullish
     ? `🟢 大盤多頭格局（站穩月線 ${taiexMa20}）：建議總資金水位 60%~80%，正常執行波段操作`
+    : isBearMarketBrake
+    ? `🛑 大盤偏空煞車啟動（跌破月線 ${taiexMa20} 且 5MA 下彎）：強勢動能區暫停追價，資金水位壓低至 20% 嚴守紀律`
     : `🔴 大盤偏空防守（跌破月線 ${taiexMa20}）：建議總資金水位壓低至 20%~30% 試單，嚴格縮小停損`;
   return {
     isBullish,
     taiexPrice,
     taiexMa20,
+    taiexMa5,
+    taiexPrevMa5,
+    isBearMarketBrake,
+    bearBrakeReason,
     biasPct,
     suggestionText,
   };
@@ -2059,23 +2207,106 @@ async function fetchTwdExchangeRate(): Promise<{
 }
 
 /**
- * 輔助 3：全市場融資券消長 (利用 fetchDayMargin 與 TWSE MI_MARGN 彙總)
+ * 輔助 3：全市場融資券消長與大盤融資維持率 (利用 TWSE MI_MARGN + Blave / WantGoo 維持率)
  */
 async function fetchMarketMarginOverview(settledDate: string): Promise<{
   marginChangeBillion: number;
   marginTotalBillion: number;
   marginChangeLots: number;
   marginTotalLots: number;
+  marginMaintenanceRatio: number | null;
+  marginMaintenanceDate?: string;
 }> {
   let marginTotalBillion = 0;
   let marginChangeBillion = 0;
   let marginTotalLots = 0;
   let marginChangeLots = 0;
+  let marginMaintenanceRatio: number | null = null;
+  let marginMaintenanceDate: string | undefined = undefined;
+
+  const fetchMaintenanceRatio = async () => {
+    // 1. Blave 台股上市大盤融資維持率頁面（無 Cloudflare 阻擋，含確切估算維持率與日期）
+    try {
+      const bRes = await fetchWithTimeout(
+        'https://blave.org/studio/twstock/zh/market/margin',
+        {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            Accept: 'text/html,application/xhtml+xml',
+          },
+        },
+        6000
+      );
+      if (bRes.ok) {
+        const html = await bRes.text();
+        const datedMatch = html.match(/(\d{4}-\d{2}-\d{2})\s*上市融資維持率(?:（估算）)?為\s*([0-9]+(?:\.[0-9]+)?)%/);
+        if (datedMatch) {
+          const val = parseFloat(datedMatch[2]);
+          if (!isNaN(val) && val >= 80 && val <= 300) {
+            marginMaintenanceDate = datedMatch[1];
+            marginMaintenanceRatio = Number(val.toFixed(2));
+          }
+        } else {
+          const simpleMatch = html.match(/上市融資維持率[^0-9]{0,20}([0-9]{2,3}\.[0-9]{1,2})%/);
+          if (simpleMatch) {
+            const val = parseFloat(simpleMatch[1]);
+            if (!isNaN(val) && val >= 80 && val <= 300) {
+              marginMaintenanceRatio = Number(val.toFixed(2));
+            }
+          }
+        }
+        // 若 TWSE MI_MARGN 金額未抓到，順便嘗試讀取 Blave 的大盤融資餘額 (億元)
+        if (marginTotalBillion === 0) {
+          const balMatch = html.match(/大盤融資餘額\s*([0-9,]+(?:\.[0-9]+)?)\s*億/);
+          if (balMatch) {
+            const balVal = parseFloat(balMatch[1].replace(/,/g, ''));
+            if (!isNaN(balVal) && balVal > 0) {
+              marginTotalBillion = Number(balVal.toFixed(2));
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      console.warn('[MarginOverview] Blave maintenance ratio fetch failed:', e?.message || e);
+    }
+
+    // 2. 若 Blave 未取得，嘗試 WantGoo 備援
+    if (marginMaintenanceRatio === null) {
+      try {
+        const wRes = await fetchWithTimeout(
+          'https://www.wantgoo.com/stock/margin-trading/market-price/taiex',
+          {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            },
+          },
+          5000
+        );
+        if (wRes.ok) {
+          const html = await wRes.text();
+          if (!html.includes('Just a moment')) {
+            const wgMatch = html.match(/(?:融資維持率|大盤維持率)[^0-9]{0,30}([0-9]{2,3}\.[0-9]{1,2})\s*%?/);
+            if (wgMatch) {
+              const val = parseFloat(wgMatch[1]);
+              if (!isNaN(val) && val >= 80 && val <= 300) {
+                marginMaintenanceRatio = Number(val.toFixed(2));
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+  };
 
   try {
     const dTwse = settledDate.replace(/-/g, '');
     const url = `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${dTwse}&selectType=ALL&response=json`;
-    const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 7000);
+    const [res] = await Promise.all([
+      fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 7000),
+      fetchMaintenanceRatio(),
+    ]);
     if (res.ok) {
       const json = await safeParseJsonResponse(res, 'TWSE-MI_MARGN-Table0');
       const tables = Array.isArray(json?.tables) ? json.tables : [];
@@ -2103,6 +2334,9 @@ async function fetchMarketMarginOverview(settledDate: string): Promise<{
     }
   } catch (err: any) {
     console.warn('[MarginOverview] TWSE MI_MARGN summary fetch failed:', err?.message || err);
+    if (marginMaintenanceRatio === null) {
+      await fetchMaintenanceRatio().catch(() => {});
+    }
   }
 
   try {
@@ -2127,7 +2361,14 @@ async function fetchMarketMarginOverview(settledDate: string): Promise<{
     console.warn('[MarginOverview] Aggregation fallback failed:', e?.message || e);
   }
 
-  return { marginChangeBillion, marginTotalBillion, marginChangeLots, marginTotalLots };
+  return {
+    marginChangeBillion,
+    marginTotalBillion,
+    marginChangeLots,
+    marginTotalLots,
+    marginMaintenanceRatio,
+    marginMaintenanceDate,
+  };
 }
 
 /**
@@ -2257,16 +2498,16 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
     }
   }
 
-  // 1. 並行取得 5 大全市場深度量化數據與過去 24 小時重大新聞
-  const [market, inst, levels, twdFx, marginData, topPicks, industryNews] = await Promise.all([
-    getMarketOverview(),
+  // 1. 並行取得全市場深度量化數據與過去 24 小時重大新聞（強制刷新大盤即時現價避免沿用盤前舊快取，並傳入 fetchTaiexKeyLevels）
+  const [market, inst, twdFx, marginData, topPicks, industryNews] = await Promise.all([
+    getMarketOverview(force),
     fetchTWSEInstitutionalSummary(),
-    fetchTaiexKeyLevels(),
     fetchTwdExchangeRate(),
     fetchMarketMarginOverview(settledDate),
     fetchTopInstitutionalPicks(settledDate),
     fetchLatestIndustryNews(),
   ]);
+  const levels = await fetchTaiexKeyLevels(market.taiex?.price);
 
   const taiexPrice = market.taiex?.price || levels.latestClose || 27245;
   const wtxPrice = market.wtx?.price || taiexPrice;
@@ -2323,6 +2564,7 @@ async function generateGeminiDeepMorningBriefing(force: boolean = false): Promis
 3. 全市場信用交易與散戶融資浮額（最新已結算日 ${settledDate}）：
    - 全市場融資餘額：約 ${marginData.marginTotalBillion > 0 ? marginData.marginTotalBillion + ' 億元' : marginData.marginTotalLots.toLocaleString() + ' 張'}
    - 全市場融資單日消長：${marginData.marginChangeBillion >= 0 ? '+' : ''}${marginData.marginChangeBillion} 億元 (${marginData.marginChangeLots >= 0 ? '+' : ''}${marginData.marginChangeLots.toLocaleString()} 張)
+   - 上市大盤融資維持率：${marginData.marginMaintenanceRatio !== null ? `${marginData.marginMaintenanceRatio}%（資料日 ${marginData.marginMaintenanceDate || settledDate}；注意 < 166% 為警戒線、135%~140% 為追繳斷頭高風險區）` : `暫無直連數值，請務必使用 Google Search 聯網工具查證最新已結算日 (${settledDate}) 台股上市大盤融資維持率 (%)`}
 
 4. 法人籌碼動向與重押個股清單（最新已結算日 ${settledDate}）：
    - 三大法人合計買賣超：${inst.totalNetTwdBillion >= 0 ? '+' : ''}${inst.totalNetTwdBillion} 億元
@@ -2355,7 +2597,8 @@ ${industryNewsStr}
 - 明確給出今日開盤定調（如：跳空開高強攻、平低盤洗盤、弱勢回測防守）與前 15 分鐘多空對撞焦點。
 
 ### 2. 籌碼大對帳：法人鎖碼 vs 散戶融資浮額
-- 深入剖析三大法人（外資 ${inst.foreignNetTwdBillion} 億 vs 投信 ${inst.trustNetTwdBillion} 億）與全市場融資浮額（消長 ${marginData.marginChangeBillion >= 0 ? '+' : ''}${marginData.marginChangeBillion} 億，${marginData.marginChangeLots >= 0 ? '+' : ''}${marginData.marginChangeLots.toLocaleString()} 張）：
+- 深入剖析三大法人（外資 ${inst.foreignNetTwdBillion} 億 vs 投信 ${inst.trustNetTwdBillion} 億）與全市場融資狀態：
+  * **大盤融資餘額、單日消長與維持率（必含）**：明確列出最新大盤融資總餘額（${marginData.marginTotalBillion > 0 ? marginData.marginTotalBillion + ' 億元' : '約 ' + marginData.marginTotalLots.toLocaleString() + ' 張'}）、單日增減（${marginData.marginChangeBillion >= 0 ? '+' : ''}${marginData.marginChangeBillion} 億 / ${marginData.marginChangeLots >= 0 ? '+' : ''}${marginData.marginChangeLots.toLocaleString()} 張）與 **上市大盤融資維持率（${marginData.marginMaintenanceRatio !== null ? marginData.marginMaintenanceRatio + '%' : '請透過 Google Search 填入最新已結算日維持率%'}）**，並明確研判是否低於 166% 警戒線或逼近 135%~140% 追繳斷頭高風險區。
   * 深度解析散戶當前心態：是恐慌多殺多斷頭浮額洗淨？還是逆勢攤平、融資不減反增套牢沉重？
   * 具體點名昨日投信逆勢重押的關鍵族群與買超前 3~5 檔標的（如 ${topPicks.topTrustBuys.slice(0, 3).map(s => s.name).join('、')}），解析內資作帳與鎖碼保護傘。
 
@@ -2442,7 +2685,7 @@ ${industryNewsStr}
 昨夜美股費半指數小幅震盪（${(market.usIndices.sox?.changePercent ?? 0) > 0 ? '+' : ''}${market.usIndices.sox?.changePercent ?? 0}%），台積電 ADR 報 ${market.usIndices.tsm?.price ?? 0} 美元（${(market.usIndices.tsm?.changePercent ?? 0) > 0 ? '+' : ''}${market.usIndices.tsm?.changePercent ?? 0}%）。台指期夜盤收報 ${wtxPrice} 點，與加權現貨維持【${basisText}】。早盤預期以平盤附近溫和開出，前 15 分鐘多空對撞焦點在於權值權值股能否在昨收價位與多空分水嶺附近獲得有效防守買盤支撐。
 
 ### 2. 籌碼大對帳：法人鎖碼 vs 散戶融資浮額
-昨日三大法人合計買賣超 ${inst.totalNetTwdBillion >= 0 ? '+' : ''}${inst.totalNetTwdBillion} 億元（外資 ${inst.foreignNetTwdBillion >= 0 ? '+' : ''}${inst.foreignNetTwdBillion} 億元，投信逆勢加碼 ${inst.trustNetTwdBillion >= 0 ? '+' : ''}${inst.trustNetTwdBillion} 億元）。全市場融資單日消長 ${marginData.marginChangeBillion >= 0 ? '+' : ''}${marginData.marginChangeBillion} 億元（${marginData.marginChangeLots >= 0 ? '+' : ''}${marginData.marginChangeLots.toLocaleString()} 張），散戶浮額並未出現非理性追高堆積，短線籌碼面持續向內資主力靠攏。昨日投信重押之核心主流個股集中於：${topTrustStr.split('\n').slice(0, 3).join('、')}，內資鎖碼標的具備強烈籌碼防護傘。
+昨日三大法人合計買賣超 ${inst.totalNetTwdBillion >= 0 ? '+' : ''}${inst.totalNetTwdBillion} 億元（外資 ${inst.foreignNetTwdBillion >= 0 ? '+' : ''}${inst.foreignNetTwdBillion} 億元，投信逆勢加碼 ${inst.trustNetTwdBillion >= 0 ? '+' : ''}${inst.trustNetTwdBillion} 億元）。全市場最新融資餘額約 ${marginData.marginTotalBillion > 0 ? marginData.marginTotalBillion + ' 億元' : marginData.marginTotalLots.toLocaleString() + ' 張'}、單日消長 ${marginData.marginChangeBillion >= 0 ? '+' : ''}${marginData.marginChangeBillion} 億元（${marginData.marginChangeLots >= 0 ? '+' : ''}${marginData.marginChangeLots.toLocaleString()} 張）${marginData.marginMaintenanceRatio !== null ? `，最新上市大盤融資維持率報 **${marginData.marginMaintenanceRatio}%**（${marginData.marginMaintenanceRatio < 140 ? '已落入 135%~140% 斷頭高風險警戒區，留意多殺多追繳壓力' : marginData.marginMaintenanceRatio < 166 ? '低於 166% 安全警戒線，散戶追繳壓力升溫' : '維持於 166% 安全警戒線之上，信用籌碼相對可控'}）` : '（需持續留意融資維持率是否跌破 166% 警戒線或逼近 135%~140% 斷頭風險區）'}。昨日投信重押之核心主流個股集中於：${topTrustStr.split('\n').slice(0, 3).join('、')}，內資鎖碼標的具備強烈籌碼防護傘。
 
 ### 3. 今日大盤關鍵點位沙盤推演 (量化防守圖)
 - **今日多空分水嶺**：**${pivotPoint} 點**（開盤若能守穩此點上方，短線多頭掌握發球權，可逢低布局；若開低跌破分水嶺，則早盤需提高警覺避免過度追高）。
@@ -2792,6 +3035,11 @@ interface CachedTrustBuyItem {
   day1TrustLots: number;
   day2TrustLots: number;
   totalTrustLots: number;
+  trustNet5d: number;
+  trustNet10d: number;
+  foreignNet5d: number;
+  instNet5d: number;
+  consecutiveForeignDays: number;
   market: '上市' | '上櫃';
   foreignNetLots: number | null;
   dealerNetLots: number | null;
@@ -2805,6 +3053,7 @@ interface CachedStockKline {
   code: string;
   date: string; // 今天日期 (todayTaipeiDate)
   lastDataDate?: string; // 歷史資料中最後一筆K線交易日 (例如 '2026-10-20')
+  opens?: number[];
   closes: number[];
   highs?: number[];
   lows?: number[];
@@ -2833,6 +3082,7 @@ function loadKlineCache() {
  * 極速自 Yahoo Finance 抓取個股最近 3 個月日K歷史數據（0.2 秒極速響應，支援上市 .TW 與上櫃 .TWO，整合最新撮合價）
  */
 async function fetchYahooStockKlines(code: string): Promise<{
+  opens?: number[];
   closes: number[];
   highs?: number[];
   lows?: number[];
@@ -2854,6 +3104,7 @@ async function fetchYahooStockKlines(code: string): Promise<{
         const adjcloseArr = result?.indicators?.adjclose?.[0]?.adjclose;
         const meta = result?.meta;
         if (quote && Array.isArray(quote.close) && quote.close.length >= 20) {
+          const opens: number[] = [];
           const closes: number[] = [];
           const highs: number[] = [];
           const lows: number[] = [];
@@ -2867,6 +3118,7 @@ async function fetchYahooStockKlines(code: string): Promise<{
                 adjcloseArr && typeof adjcloseArr[i] === 'number' && !isNaN(adjcloseArr[i]) && adjcloseArr[i] > 0
                   ? adjcloseArr[i]
                   : null;
+              opens.push(typeof quote.open?.[i] === 'number' && !isNaN(quote.open[i]) ? quote.open[i] : c);
               closes.push(adj !== null ? adj : c);
               highs.push(typeof quote.high?.[i] === 'number' ? quote.high[i] : c);
               lows.push(typeof quote.low?.[i] === 'number' ? quote.low[i] : c);
@@ -2874,7 +3126,9 @@ async function fetchYahooStockKlines(code: string): Promise<{
                 typeof quote.volume?.[i] === 'number' ? Math.round(quote.volume[i] / 1000) : 0
               );
               if (timestamps[i]) {
-                lastDataDate = new Date(timestamps[i] * 1000).toISOString().split('T')[0];
+                lastDataDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(
+                  new Date(timestamps[i] * 1000)
+                );
               }
             }
           }
@@ -2885,11 +3139,16 @@ async function fetchYahooStockKlines(code: string): Promise<{
           if (meta && typeof meta.regularMarketPrice === 'number' && meta.regularMarketPrice > 0) {
             livePrice = Number(meta.regularMarketPrice);
             liveVol = Math.round((Number(meta.regularMarketVolume) || 0) / 1000);
+            const liveOpen =
+              typeof meta.regularMarketOpen === 'number' && meta.regularMarketOpen > 0
+                ? Number(meta.regularMarketOpen)
+                : livePrice;
             const todayTaipei = getTaipeiMarketStatus().dateString;
             if (lastDataDate === todayTaipei && closes.length > 0) {
               closes[closes.length - 1] = livePrice;
               if (liveVol > 0) volumes[volumes.length - 1] = liveVol;
             } else if (lastDataDate < todayTaipei) {
+              opens.push(liveOpen);
               closes.push(livePrice);
               highs.push(livePrice);
               lows.push(livePrice);
@@ -2900,6 +3159,7 @@ async function fetchYahooStockKlines(code: string): Promise<{
 
           if (closes.length >= 20) {
             return {
+              opens,
               closes,
               highs,
               lows,
@@ -2919,16 +3179,17 @@ async function fetchYahooStockKlines(code: string): Promise<{
 async function getStockHistoricalKlines(
   code: string,
   todayTaipeiDate: string
-): Promise<{ closes: number[]; highs?: number[]; lows?: number[]; volumes: number[]; lastDataDate?: string } | null> {
+): Promise<{ opens?: number[]; closes: number[]; highs?: number[]; lows?: number[]; volumes: number[]; lastDataDate?: string } | null> {
   loadKlineCache();
   const cached = memoryKlineCache.get(code);
   const isIntraday = getTaipeiMarketStatus().isIntradayTrading;
 
   // 核心修復 1：盤中時段快取最長 60 秒（嚴禁把早盤價格鎖死整天）；盤後時段當天有效
-  if (cached && cached.date === todayTaipeiDate && cached.closes && cached.closes.length >= 20) {
+  if (cached && cached.date === todayTaipeiDate && cached.closes && cached.closes.length >= 20 && Array.isArray(cached.opens)) {
     const age = Date.now() - (cached.fetchedAt || 0);
     if (!isIntraday || age < 60000) {
       return {
+        opens: cached.opens,
         closes: cached.closes,
         highs: cached.highs,
         lows: cached.lows,
@@ -2946,6 +3207,7 @@ async function getStockHistoricalKlines(
         code,
         date: todayTaipeiDate,
         lastDataDate: yk.lastDataDate,
+        opens: yk.opens,
         closes: yk.closes,
         highs: yk.highs,
         lows: yk.lows,
@@ -2960,7 +3222,7 @@ async function getStockHistoricalKlines(
         fs.writeFileSync(STOCK_KLINE_CACHE_FILE, JSON.stringify(obj), 'utf-8');
       } catch (err) {}
 
-      return { closes: yk.closes, highs: yk.highs, lows: yk.lows, volumes: yk.volumes, lastDataDate: yk.lastDataDate };
+      return { opens: yk.opens, closes: yk.closes, highs: yk.highs, lows: yk.lows, volumes: yk.volumes, lastDataDate: yk.lastDataDate };
     }
   } catch (err: any) {
     console.warn(`Yahoo historical klines failed for ${code}, falling back to FinMind:`, err?.message || err);
@@ -2979,6 +3241,7 @@ async function getStockHistoricalKlines(
       if (rows.length >= 20) {
         const lastRow = rows[rows.length - 1];
         const lastDataDate = lastRow?.date || '';
+        const opens = rows.map((r: any) => Number(r.open || r.close));
         const closes = rows.map((r: any) => Number(r.close));
         const highs = rows.map((r: any) => Number(r.max || r.close));
         const lows = rows.map((r: any) => Number(r.min || r.close));
@@ -2987,6 +3250,7 @@ async function getStockHistoricalKlines(
           code,
           date: todayTaipeiDate,
           lastDataDate,
+          opens,
           closes,
           highs,
           lows,
@@ -3001,7 +3265,7 @@ async function getStockHistoricalKlines(
           fs.writeFileSync(STOCK_KLINE_CACHE_FILE, JSON.stringify(obj), 'utf-8');
         } catch (err) {}
 
-        return { closes, highs, lows, volumes, lastDataDate };
+        return { opens, closes, highs, lows, volumes, lastDataDate };
       }
     }
   } catch (err: any) {
@@ -3018,17 +3282,22 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
     try {
       const content = fs.readFileSync(TRUST_BUYS_CACHE_FILE, 'utf-8');
       const parsed = JSON.parse(content);
-      // 核心修復 2：必須嚴格檢查 parsed.date === settledDate（或差距 <= 3 天），若早於最新結算日強制重新抓取！
+      // 核心修復 2：必須嚴格檢查 parsed.date === settledDate（或差距 <= 3 天）且已含 v3.6.0 10日累計籌碼欄位
       const isDateValid =
         parsed?.date &&
         (parsed.date === settledDate ||
           Math.abs((new Date(settledDate).getTime() - new Date(parsed.date).getTime()) / 86400000) <= 3);
+      const hasV36Fields =
+        Array.isArray(parsed?.candidates) &&
+        parsed.candidates.length > 0 &&
+        typeof parsed.candidates[0]?.trustNet10d === 'number' &&
+        typeof parsed.candidates[0]?.instNet5d === 'number';
 
-      if (isDateValid && Array.isArray(parsed?.candidates) && parsed.candidates.length > 0) {
+      if (isDateValid && hasV36Fields) {
         return parsed.candidates;
       } else {
         console.log(
-          `[Trust Buys] Cache date (${parsed?.date}) is older than settled date (${settledDate}). Forcing fresh fetch...`
+          `[Trust Buys] Cache date (${parsed?.date}) stale or missing v3.6.0 10d fields. Forcing fresh fetch...`
         );
       }
     } catch (e) {
@@ -3036,7 +3305,7 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
     }
   }
 
-  // 1. 優先爬取證交所 T86 與櫃買中心官方三大法人日結算資料
+  // 1. 優先爬取證交所 T86 與櫃買中心官方三大法人日結算資料（回溯最多 10 個交易日計算投信10日累計與法人5日合計）
   try {
     const tradingDates = await fetchRecentTradingDates();
     if (tradingDates.length >= 2) {
@@ -3047,7 +3316,7 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
         const instMap = await fetchDayInstitutional(d);
         if (instMap && instMap.size > 0) {
           validInstDays.push({ date: d, map: instMap });
-          if (validInstDays.length >= 5) break;
+          if (validInstDays.length >= 10) break;
         }
       }
 
@@ -3066,7 +3335,21 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
           const day1Trust = prev1Inst.get(code)?.trustNetLots || 0;
           const totalTrust = day1Trust + day2Trust;
 
-          if (day2Trust <= 0 && totalTrust <= 0) continue;
+          let trustNet5d = 0;
+          let trustNet10d = 0;
+          let foreignNet5d = 0;
+          for (let dIdx = 0; dIdx < validInstDays.length; dIdx++) {
+            const dData = validInstDays[dIdx].map.get(code);
+            if (!dData) continue;
+            trustNet10d += dData.trustNetLots || 0;
+            if (dIdx < 5) {
+              trustNet5d += dData.trustNetLots || 0;
+              foreignNet5d += dData.foreignNetLots || 0;
+            }
+          }
+          const instNet5d = trustNet5d + foreignNet5d;
+
+          if (day2Trust <= 0 && totalTrust <= 0 && trustNet10d < 300) continue;
 
           const q = marketQuotes.get(code);
           const name = getStockName(code, q?.name);
@@ -3077,6 +3360,16 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
             const lots = dayObj.map.get(code)?.trustNetLots ?? 0;
             if (lots > 0) {
               consecutiveTrustDays++;
+            } else {
+              break;
+            }
+          }
+
+          let consecutiveForeignDays = 0;
+          for (const dayObj of validInstDays) {
+            const lots = dayObj.map.get(code)?.foreignNetLots ?? 0;
+            if (lots > 0) {
+              consecutiveForeignDays++;
             } else {
               break;
             }
@@ -3097,6 +3390,11 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
             day1TrustLots: day1Trust,
             day2TrustLots: day2Trust,
             totalTrustLots: totalTrust,
+            trustNet5d,
+            trustNet10d,
+            foreignNet5d,
+            instNet5d,
+            consecutiveForeignDays,
             market: inst0.market || '上市',
             foreignNetLots,
             dealerNetLots,
@@ -3104,8 +3402,13 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
           });
         }
 
-        candidates.sort((a, b) => b.totalTrustLots - a.totalTrustLots);
-        const topCandidates = candidates.slice(0, 50);
+        candidates.sort((a, b) => {
+          const passA = a.trustNet10d >= 300 && a.instNet5d > 0 ? 1 : 0;
+          const passB = b.trustNet10d >= 300 && b.instNet5d > 0 ? 1 : 0;
+          if (passA !== passB) return passB - passA;
+          return b.trustNet10d - a.trustNet10d || b.totalTrustLots - a.totalTrustLots;
+        });
+        const topCandidates = candidates.slice(0, 80);
 
         if (topCandidates.length > 0) {
           try {
@@ -3125,12 +3428,12 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
     console.error('Failed to build trust buys list from TWSE/TPEx:', err);
   }
 
-  // 2. 核心修復 2（海外機房備援）：若證交所 T86 被海外擋掉，啟用 FinMind 針對主流活躍代表股建立投信認養名單
+  // 2. 核心修復 2（海外機房備援）：若證交所 T86 被海外擋掉，啟用 FinMind 針對主流活躍代表股建立投信認養名單（抓22日涵蓋10交易日）
   try {
-    console.log('[Trust Buys] TWSE/TPEx 爬蟲受阻，啟用 FinMind 主流股投信籌碼備援引擎...');
-    const d14 = new Date();
-    d14.setDate(d14.getDate() - 14);
-    const startDate = d14.toISOString().split('T')[0];
+    console.log('[Trust Buys] TWSE/TPEx 爬蟲受阻，啟用 FinMind 主流股投信籌碼備援引擎 (10日累計)...');
+    const d22 = new Date();
+    d22.setDate(d22.getDate() - 22);
+    const startDate = d22.toISOString().split('T')[0];
 
     const activeCodes = Array.from(
       new Set([
@@ -3175,11 +3478,27 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
                   const latestInst = dateMap.get(dLatest)!;
                   const prevInst = dPrev ? dateMap.get(dPrev)! : { trust: 0, foreign: 0, dealer: 0 };
 
-                  if (latestInst.trust > 0) {
+                  const recent10 = sortedDates.slice(-10);
+                  const recent5 = sortedDates.slice(-5);
+                  const trustNet10d = recent10.reduce((sum, d) => sum + (dateMap.get(d)?.trust || 0), 0);
+                  const trustNet5d = recent5.reduce((sum, d) => sum + (dateMap.get(d)?.trust || 0), 0);
+                  const foreignNet5d = recent5.reduce((sum, d) => sum + (dateMap.get(d)?.foreign || 0), 0);
+                  const instNet5d = trustNet5d + foreignNet5d;
+
+                  if (latestInst.trust > 0 || trustNet10d >= 300) {
                     let consecutiveTrustDays = 0;
                     for (let idx = sortedDates.length - 1; idx >= 0; idx--) {
                       if (dateMap.get(sortedDates[idx])!.trust > 0) {
                         consecutiveTrustDays++;
+                      } else {
+                        break;
+                      }
+                    }
+
+                    let consecutiveForeignDays = 0;
+                    for (let idx = sortedDates.length - 1; idx >= 0; idx--) {
+                      if (dateMap.get(sortedDates[idx])!.foreign > 0) {
+                        consecutiveForeignDays++;
                       } else {
                         break;
                       }
@@ -3191,6 +3510,11 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
                       day1TrustLots: prevInst.trust,
                       day2TrustLots: latestInst.trust,
                       totalTrustLots: prevInst.trust + latestInst.trust,
+                      trustNet5d,
+                      trustNet10d,
+                      foreignNet5d,
+                      instNet5d,
+                      consecutiveForeignDays,
                       market: '上市',
                       foreignNetLots: latestInst.foreign,
                       dealerNetLots: latestInst.dealer,
@@ -3206,8 +3530,13 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
     }
 
     if (fallbackCandidates.length > 0) {
-      fallbackCandidates.sort((a, b) => b.totalTrustLots - a.totalTrustLots);
-      const topFallback = fallbackCandidates.slice(0, 50);
+      fallbackCandidates.sort((a, b) => {
+        const passA = a.trustNet10d >= 300 && a.instNet5d > 0 ? 1 : 0;
+        const passB = b.trustNet10d >= 300 && b.instNet5d > 0 ? 1 : 0;
+        if (passA !== passB) return passB - passA;
+        return b.trustNet10d - a.trustNet10d || b.totalTrustLots - a.totalTrustLots;
+      });
+      const topFallback = fallbackCandidates.slice(0, 80);
       try {
         fs.writeFileSync(
           TRUST_BUYS_CACHE_FILE,
@@ -3231,8 +3560,8 @@ async function getCachedOrFreshTrustBuys(forceRefresh = false): Promise<CachedTr
  */
 async function fetchRealtimeBatchQuotes(
   codes: string[]
-): Promise<Map<string, { price: number; prevClose: number; volumeLots: number; time: string; name: string }>> {
-  const map = new Map<string, { price: number; prevClose: number; volumeLots: number; time: string; name: string }>();
+): Promise<Map<string, { price: number; open?: number; prevClose: number; volumeLots: number; time: string; name: string }>> {
+  const map = new Map<string, { price: number; open?: number; prevClose: number; volumeLots: number; time: string; name: string }>();
   const uniqueCodes = Array.from(new Set(codes.filter((c) => /^[1-9][0-9]{3}$/.test(c))));
   if (uniqueCodes.length === 0) return map;
 
@@ -3248,6 +3577,7 @@ async function fetchRealtimeBatchQuotes(
           if (res.ok) {
             const d = await safeParseJsonResponse(res, `Fugle-Quote-${code}`);
             const price = Number(d?.lastPrice || d?.closePrice || d?.avgPrice || 0);
+            const open = Number(d?.openPrice || 0) || undefined;
             const prevClose = Number(d?.previousClose || price);
             const volumeLots = Math.round(Number(d?.total?.tradeVolume || 0));
             const time = d?.lastUpdated
@@ -3256,6 +3586,7 @@ async function fetchRealtimeBatchQuotes(
             if (price > 0) {
               map.set(code, {
                 price,
+                open,
                 prevClose: prevClose > 0 ? prevClose : price,
                 volumeLots,
                 time,
@@ -3287,6 +3618,7 @@ async function fetchRealtimeBatchQuotes(
                 const meta = result?.meta;
                 if (meta) {
                   const regularPrice = Number(meta.regularMarketPrice || 0);
+                  const openPrice = Number(meta.regularMarketOpen || 0) || undefined;
                   const prevClose = Number(meta.chartPreviousClose || meta.previousClose || regularPrice);
                   const volumeLots = Math.round((Number(meta.regularMarketVolume) || 0) / 1000);
                   const time = meta.regularMarketTime
@@ -3298,6 +3630,7 @@ async function fetchRealtimeBatchQuotes(
                   if (regularPrice > 0) {
                     map.set(code, {
                       price: regularPrice,
+                      open: openPrice,
                       prevClose: prevClose > 0 ? prevClose : regularPrice,
                       volumeLots,
                       time,
@@ -3319,8 +3652,8 @@ async function fetchRealtimeBatchQuotes(
 
 async function fetchBatchTWSEMisQuotes(
   codes: string[]
-): Promise<Map<string, { price: number; prevClose: number; volumeLots: number; time: string; name: string }>> {
-  const map = new Map<string, { price: number; prevClose: number; volumeLots: number; time: string; name: string }>();
+): Promise<Map<string, { price: number; open?: number; prevClose: number; volumeLots: number; time: string; name: string }>> {
+  const map = new Map<string, { price: number; open?: number; prevClose: number; volumeLots: number; time: string; name: string }>();
   const validCodes = Array.from(new Set(codes.filter((c) => /^[1-9][0-9]{3}$/.test(c))));
   if (validCodes.length === 0) return map;
 
@@ -3336,6 +3669,7 @@ async function fetchBatchTWSEMisQuotes(
           if (res.ok) {
             const d = await safeParseJsonResponse(res, `Fugle-Quote-${code}`);
             const price = Number(d?.lastPrice || d?.closePrice || d?.avgPrice || 0);
+            const open = Number(d?.openPrice || 0) || undefined;
             const prevClose = Number(d?.previousClose || price);
             const volumeLots = Math.round(Number(d?.total?.tradeVolume || 0));
             const time = d?.lastUpdated
@@ -3344,6 +3678,7 @@ async function fetchBatchTWSEMisQuotes(
             if (price > 0) {
               map.set(code, {
                 price,
+                open,
                 prevClose: prevClose > 0 ? prevClose : price,
                 volumeLots,
                 time,
@@ -3406,11 +3741,13 @@ async function fetchBatchTWSEMisQuotes(
             } else if (m.o && m.o !== '-') p = parseFloat(m.o);
             else p = parseFloat(m.y);
 
+            const openVal = m.o && m.o !== '-' && !isNaN(parseFloat(m.o)) ? parseFloat(m.o) : undefined;
             const prevClose = parseFloat(m.y || '0');
             const volumeLots = parseInt(m.v || '0', 10);
             if (p > 0) {
               map.set(m.c, {
                 price: p,
+                open: openVal,
                 prevClose: prevClose > 0 ? prevClose : p,
                 volumeLots,
                 time: m.t || '',
@@ -3493,6 +3830,7 @@ async function getTaiexChangePercent(): Promise<number> {
  */
 function calculateBuyRatingScore(params: {
   strategyType?: 'momentum' | 'turnaround';
+  turnaroundTier?: TurnaroundTier;
   curPrice?: number;
   ma20?: number;
   changePercent?: number;
@@ -3517,6 +3855,7 @@ function calculateBuyRatingScore(params: {
   isEarlyRebound?: boolean;
 }): BuyRatingResult {
   const isTurnaround = params.strategyType === 'turnaround';
+  const isLeftProbe = params.turnaroundTier === 'LEFT_PROBE';
   const curPrice = params.curPrice ?? 0;
   const ma20 = params.ma20 ?? 0;
   const isBroken = params.curPrice !== undefined && params.ma20 !== undefined && curPrice < ma20;
@@ -3638,8 +3977,8 @@ function calculateBuyRatingScore(params: {
     techScore += 2;
   }
 
-  // 規則 A：若破線（curPrice < ma20），techScore 強制壓在 5 分以下（但若符合早期反彈 isEarlyRebound，已站上 5MA，給予實質反彈分 12 分）
-  if (params.isEarlyRebound) {
+  // 規則 A：若破線（curPrice < ma20），techScore 強制壓在 5 分以下（但早期反彈或左側試單給予實質築底分）
+  if (params.isEarlyRebound || isLeftProbe) {
     techScore = 12;
   } else if (isBroken) {
     techScore = Math.min(5, techScore);
@@ -3650,9 +3989,9 @@ function calculateBuyRatingScore(params: {
   // -------------------------------------------------------------
   // 維度三：位階與乖離安全防護（滿分 20 分）
   // -------------------------------------------------------------
-  if (params.isEarlyRebound) {
-    // 早期反彈股：距 20MA 僅 <= 6% 且站上 5MA，給予合理的實質安全分 8 分
-    safetyScore = 8;
+  if (params.isEarlyRebound || isLeftProbe) {
+    // 早期反彈 / 左側試單：站上5MA或止跌且有法人逆勢承接，給予實質低檔安全分
+    safetyScore = isLeftProbe ? 12 : 8;
   } else if (isBroken) {
     // 規則 A：跌破月線毫無安全可言，嚴禁給分！
     safetyScore = 0;
@@ -3709,14 +4048,14 @@ function calculateBuyRatingScore(params: {
     momentumScore += 2;
   }
 
-  // 2. 出量突破（滿分 7 分）：必須滿足 (params.changePercent ?? 0) > -1.0 且 curPrice >= ma20 才給分！（早期反彈且站上 5MA 亦給分）
+  // 2. 出量突破（滿分 7 分）：必須滿足 (params.changePercent ?? 0) > -1.0 且 curPrice >= ma20 才給分！（早期反彈或左側試單亦給分）
   const changeP = params.changePercent ?? 0;
   const volRatio = params.volumeRatio ?? 1.0;
 
   if (changeP <= -1.5) {
     // 當日收黑下跌 <= -1.5% 且出量（主力爆量下殺出貨），量能項給 0 分！
     // 不加分
-  } else if (changeP > -1.0 && (!isBroken || params.isEarlyRebound)) {
+  } else if (changeP > -1.0 && (!isBroken || params.isEarlyRebound || isLeftProbe)) {
     if (params.isVolumeExpanding || volRatio >= 1.3) {
       momentumScore += 7;
     } else if (volRatio >= 1.1) {
@@ -3748,7 +4087,7 @@ function calculateBuyRatingScore(params: {
   // 總分計算與破線強制封頂（規則 A）：真實加總，嚴禁強行灌水保送 50 分
   // -------------------------------------------------------------
   let totalScore = chipScore + techScore + safetyScore + momentumScore;
-  if (isBroken && !params.isEarlyRebound) {
+  if (isBroken && !params.isEarlyRebound && !isLeftProbe) {
     // 破線無買點股總分強制壓在 45 分以下
     totalScore = Math.min(45, totalScore);
   }
@@ -3758,7 +4097,11 @@ function calculateBuyRatingScore(params: {
   let label: string;
   let stars: string;
 
-  if (params.isEarlyRebound) {
+  if (isLeftProbe) {
+    level = 'ACCUMULATE';
+    label = '🟡 左側低接試單 (1/3 倉)';
+    stars = '★★☆';
+  } else if (params.isEarlyRebound) {
     if (totalScore >= 50) {
       level = 'ACCUMULATE';
       label = '🌱 早期反彈觀察 (Early Rebound)';
@@ -3958,28 +4301,31 @@ interface ScanAllResult {
   modeLabel: string;
   isMarketOpen: boolean;
   marketStatusText: string;
+  isBearMarketBrake?: boolean;
+  bearBrakeMessage?: string;
 }
 
-async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
+async function scanAllMarketTrustBuys(marketRegime?: MarketRegime): Promise<ScanAllResult> {
   const marketStatus = getTaipeiMarketStatus();
   const isIntraday = marketStatus.isIntradayTrading;
   const todayTaipeiDate = marketStatus.dateString;
+  const isBearBrake = Boolean(marketRegime?.isBearMarketBrake);
 
   // 1. 籌碼基底：盤中直接讀取伺服器已快取之投信連續買超名單（嚴禁呼叫 FinMind）
   const candidates = await getCachedOrFreshTrustBuys(!isIntraday);
 
-  // 【核心過濾 1】：嚴格剔除金控股與金融保險個股，並排除假突破/法人倒貨股（如 1802 台玻）
+  // 【核心過濾 1】：嚴格剔除金控股與金融保險個股，並排除假突破/法人倒貨股
   const validCandidates = candidates.filter((c) => {
     if (isFinancialStock(c.code, c.name)) return false;
-    // 嚴格確保今日/最新投信持續買超，且連續天數 >= 1
-    if (c.day2TrustLots <= 0 || c.consecutiveTrustDays < 1) return false;
+    // 嚴格確保今日/最新投信買超或近10日累計 >= 300 張
+    if (c.day2TrustLots <= 0 && c.trustNet10d < 300) return false;
     // 三大法人合計買賣超不得小於 -500 張（防止投信小買、外資自營倒貨巨量之假拉抬股）
     const totalInstSum = c.day2TrustLots + (c.foreignNetLots || 0) + (c.dealerNetLots || 0);
     if (totalInstSum <= -500) return false;
     return true;
   });
 
-  // 2. 價格與成交量來源：介接臺灣證交所 MIS 官方即時 API（取得即時成交價 z、昨收 y、累計成交張數 v）
+  // 2. 價格與成交量來源：介接臺灣證交所 MIS 官方即時 API（取得即時成交價 z、昨收 y、開盤 o、累計成交張數 v）
   const codes = validCandidates.map((c) => c.code);
   const realQuotes = await fetchBatchTWSEMisQuotes(codes);
   const taiexChangePercent = await getTaiexChangePercent();
@@ -3998,6 +4344,13 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
 
       const curClose = misQuote?.price || histCloses[histCloses.length - 1];
       const prevClose = misQuote?.prevClose || histCloses[histCloses.length - 2] || curClose;
+      const hasToday = Boolean(klines.lastDataDate && todayTaipeiDate && klines.lastDataDate === todayTaipeiDate);
+      const openPrice =
+        misQuote?.open && misQuote.open > 0
+          ? misQuote.open
+          : hasToday && klines.opens && klines.opens.length > 0
+          ? klines.opens[klines.opens.length - 1]
+          : prevClose;
 
       // 【核心過濾 2】：剔除股價 > 500 元之千金股，鎖定 15 ~ 500 元之間具備爆發力的中小型與傳產股
       if (curClose < 15 || curClose > 500) continue;
@@ -4008,11 +4361,10 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
       if (volumeAvg5d <= 1000) continue;
 
       // 【核心過濾 4：客觀量化波動度濾網】：計算過去 20 日之「平均真實波動度百分比 (ATR%)」
-      // 升級門檻至 >= 2.5%：只鎖定日均震幅充足的攻擊型飆股，徹底剔除日震幅不足 2.5% 的溫吞平庸股
       const { atr20, atrPct } = calculateATR20Pct(histCloses, klines.highs, klines.lows, curClose);
       if (atrPct < 2.5) continue;
 
-      // 產業主題與白名單判定（AI硬體周邊、CoWoS先進封裝、CPO矽光子、重電電網與儲能、轉型爆發）
+      // 產業主題與白名單判定
       const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(c.code, c.name);
 
       const change = Number((curClose - prevClose).toFixed(2));
@@ -4021,13 +4373,12 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
       const curVolumeLots =
         misQuote?.volumeLots !== undefined ? misQuote.volumeLots : histVolumes[histVolumes.length - 1];
 
-      // 計算最新均線（精準區分盤中即時 vs 盤後結算，防止重複疊加）
+      // 計算最新均線
       const ma5 = calculateMovingAverage(histCloses, 5, curClose, isIntraday, klines.lastDataDate, todayTaipeiDate);
       const ma10 = calculateMovingAverage(histCloses, 10, curClose, isIntraday, klines.lastDataDate, todayTaipeiDate);
       const ma20 = calculateMovingAverage(histCloses, 20, curClose, isIntraday, klines.lastDataDate, todayTaipeiDate);
 
       // 前一日 20MA
-      const hasToday = Boolean(klines.lastDataDate && todayTaipeiDate && klines.lastDataDate === todayTaipeiDate);
       const prevHistory = hasToday ? histCloses.slice(0, -1) : histCloses;
       const prevMa20 = calculateMovingAverage(prevHistory, 20, prevHistory[prevHistory.length - 1] || curClose, false);
       const isMa20FlatOrRising = ma20 >= prevMa20 * 0.995;
@@ -4035,51 +4386,72 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
       const weeklyLow = Math.min(...histCloses.slice(-5), curClose);
       const bias20ma = ma20 > 0 ? Number((((curClose - ma20) / ma20) * 100).toFixed(2)) : 0;
 
-      // 位階估算 (以近 60~250 日高低點)
+      // 位階估算
       const yearHigh = Math.max(...(klines.highs || histCloses), curClose);
       const yearLow = Math.min(...(klines.lows || histCloses), curClose);
       const range = yearHigh - yearLow;
       const positionPct = range > 0 ? Number((((curClose - yearLow) / range) * 100).toFixed(1)) : 50;
+
+      // v3.6.0 量價與籌碼防雷：
+      // 1) volumeRatio >= 1.3 必須綁定「當日收紅 K (現價 >= 開盤價) 且漲幅 > 0%」，過濾爆量出貨長黑 K
+      // 2) 籌碼門檻升級：投信近10日 >= 300 張 且 法人合計 (外資+投信) 近5日為淨買超，並納入 alphaToday > 0 (抗跌)
+      const isBullishMa = curClose >= ma5 && curClose > ma20 && ma5 > ma10 && ma10 > ma20;
+      const isRedCandlePositive = curClose >= openPrice && changePercent > 0;
+      const isChipQualified = (c.trustNet10d ?? 0) >= 300 && (c.instNet5d ?? 0) > 0;
+      const isAlphaResilient = alphaToday > 0;
+      const isOverheated = bias20ma > 10;
+
+      // v3.6.0 自動判定持有週期與出場線
+      const isJointSwing = c.consecutiveTrustDays >= 3 && (c.foreignNet5d ?? 0) > 0;
+      const holdingPeriodLabel = isJointSwing ? '🌊 波段 2~4 週' : '⚡ 短線 3~5 天';
+      const hardStopPct = isJointSwing ? 6 : 5;
+      const trailingStopPrice = isJointSwing
+        ? Number((ma10 < curClose ? Math.max(ma10, curClose * 0.94) : curClose * 0.94).toFixed(1))
+        : Number((ma5 < curClose ? Math.max(ma5, curClose * 0.95) : curClose * 0.95).toFixed(1));
+      const trailingStopLabel = isJointSwing
+        ? `10MA ($${ma10.toFixed(1)}) / -6% 硬停損`
+        : `5MA ($${ma5.toFixed(1)}) / -5% 硬停損`;
 
       let estVolume = curVolumeLots;
       let estVolumeRatio = 1.0;
       let isVolumeExpanding = false;
       let isIntradaySignal = false;
       let isMatched = false;
-      // 嚴格多頭排列防禦：現價必須站上 5MA 且 站上 20MA，且 5MA > 10MA > 20MA
-      const isBullishMa = curClose >= ma5 && curClose > ma20 && ma5 > ma10 && ma10 > ma20;
-      const isOverheated = bias20ma > 10;
       let actionNote = '';
 
       if (isIntraday) {
-        // 🟢 盤中即時監控模式：早盤 U 型成交量分段權重校正
         const elapsed = marketStatus.elapsed;
         estVolume = estimateIntradayVolume(curVolumeLots, elapsed);
         estVolumeRatio = volumeAvg5d > 0 ? Number((estVolume / volumeAvg5d).toFixed(2)) : 1.0;
-        isVolumeExpanding = estVolume > volumeAvg5d * 1.3;
-        isIntradaySignal = isBullishMa && isVolumeExpanding;
+        isVolumeExpanding = estVolumeRatio >= 1.3 && isRedCandlePositive;
+        isIntradaySignal = isBullishMa && isVolumeExpanding && isChipQualified && isAlphaResilient;
         isMatched = isIntradaySignal;
 
         if (isOverheated) {
-          actionNote = `🚨短線過熱・切勿追高 (偏離20MA +${bias20ma}%)，預估全日量能 ${estVolume.toLocaleString()} 張 (${estVolumeRatio}x均量)，建議等待拉回 5MA (${ma5.toFixed(1)}) 再進場`;
+          actionNote = `🚨短線過熱・切勿追高 (偏離20MA +${bias20ma}%)，預估全日量能 ${estVolume.toLocaleString()} 張 (${estVolumeRatio}x)，建議拉回 ${holdingPeriodLabel === '🌊 波段 2~4 週' ? `10MA (${ma10.toFixed(1)})` : `5MA (${ma5.toFixed(1)})`} 再介入`;
+        } else if (estVolumeRatio >= 1.3 && !isRedCandlePositive) {
+          actionNote = `⚠️爆量黑K防雷警戒：預估量比 ${estVolumeRatio}x 但未收紅K或漲幅未正，已自動過濾不列為突破買點`;
         } else if (isIntradaySignal) {
-          actionNote = `🟢 盤中即時進場訊號：站穩20MA、5>10>20多頭排列、預估全日量能達均量 ${estVolumeRatio}x (${estVolume.toLocaleString()}張) 出量突破！[ATR% ${atrPct}%]`;
-        } else if (isBullishMa) {
-          actionNote = `⏳均線多頭排列且站穩20MA，目前累計成交 ${curVolumeLots.toLocaleString()} 張 (預估 ${estVolume.toLocaleString()} 張)，靜待量能放大至 1.3 倍啟動攻擊 [ATR% ${atrPct}%]`;
+          actionNote = `🟢 盤中強勢突破 [${holdingPeriodLabel}]：站穩20MA紅K出量 ${estVolumeRatio}x、投信10日+${c.trustNet10d}張、5日法人+${c.instNet5d}張、Alpha +${alphaToday}%！防守 ${trailingStopLabel}`;
+        } else if (isBullishMa && isChipQualified) {
+          actionNote = `⏳均線多頭且籌碼達標 (投信10日+${c.trustNet10d}張)，靜待紅K量比 ≥1.3x 且強於大盤啟動 [${holdingPeriodLabel}]`;
         } else {
-          actionNote = `投信波段認養名單（買超 ${c.totalTrustLots} 張），現階段均線打底整理中，列入即時雷達監控 [ATR% ${atrPct}%]`;
+          actionNote = `投信觀察名單（10日 ${c.trustNet10d >= 0 ? '+' : ''}${c.trustNet10d}張 / 5日法人 ${c.instNet5d >= 0 ? '+' : ''}${c.instNet5d}張），持續追蹤 [ATR% ${atrPct}%]`;
         }
       } else {
-        // 🔵 盤後籌碼結算模式
         estVolume = curVolumeLots;
         estVolumeRatio = volumeAvg5d > 0 ? Number((curVolumeLots / volumeAvg5d).toFixed(2)) : 1.0;
-        isVolumeExpanding = curVolumeLots > volumeAvg5d * 1.2;
-        isMatched = isBullishMa;
+        isVolumeExpanding = estVolumeRatio >= 1.3 && isRedCandlePositive;
+        isMatched = isBullishMa && isVolumeExpanding && isChipQualified && isAlphaResilient;
 
-        if (isBullishMa) {
-          actionNote = `🔵 盤後官方籌碼正式結算精選：投信連續買超認養、均線多頭發散，列為明日重點開盤觀察名單 [ATR% ${atrPct}%]`;
+        if (estVolumeRatio >= 1.3 && !isRedCandlePositive) {
+          actionNote = `⚠️盤後爆量黑K過濾：量比 ${estVolumeRatio}x 但收黑K/未漲，嚴防主力出貨，不列追價精選`;
+        } else if (isMatched) {
+          actionNote = `🔵 盤後精選 [${holdingPeriodLabel}]：紅K出量 ${estVolumeRatio}x、投信10日+${c.trustNet10d}張、5日法人+${c.instNet5d}張、Alpha +${alphaToday}%！防守 ${trailingStopLabel}`;
+        } else if (isBullishMa && isChipQualified) {
+          actionNote = `投信籌碼達標（10日+${c.trustNet10d}張），等待紅K放量突破 ≥1.3x 確認攻擊 [${holdingPeriodLabel}]`;
         } else {
-          actionNote = `投信籌碼底定，均線區間整理，列入明日盤後持續觀察池 [ATR% ${atrPct}%]`;
+          actionNote = `投信觀察名單（10日 ${c.trustNet10d >= 0 ? '+' : ''}${c.trustNet10d}張 / 5日法人 ${c.instNet5d >= 0 ? '+' : ''}${c.instNet5d}張），列入明日盤後持續觀察池 [ATR% ${atrPct}%]`;
         }
       }
 
@@ -4087,7 +4459,6 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
       const rsi14 = calculateRSI14(histCloses, curClose);
       const { adx14, plusDI, minusDI } = calculateADX14(klines.highs, klines.lows, histCloses, curClose);
       const beta1Y = calculateBeta1Y(histCloses, taiex1YCloses);
-      // 排除 beta1Y < 0.5 的極低波動牛皮股
       if (beta1Y !== undefined && beta1Y < 0.5) continue;
       const volRatioVal = isIntraday ? estVolumeRatio : Number((curVolumeLots / volumeAvg5d).toFixed(2));
       const isGoldenBreakout =
@@ -4097,9 +4468,8 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
         adx14 <= 30 &&
         plusDI > minusDI &&
         curClose >= ma20 &&
-        (isVolumeExpanding || volRatioVal >= 1.5);
+        (isVolumeExpanding || (volRatioVal >= 1.5 && isRedCandlePositive));
 
-      // 重構即時進場點演算法與戰術標籤 (杜絕無腦現買現套，支援早期反彈觀察)
       const entryInfo = calculateEntryTactic({
         price: curClose,
         ma5,
@@ -4113,7 +4483,6 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
         trustNetLots: c.day2TrustLots,
       });
 
-      // 重構客觀量化買入評分系統 (0 ~ 100分)
       const buyRating = calculateBuyRatingScore({
         strategyType: 'momentum',
         curPrice: curClose,
@@ -4184,7 +4553,14 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
         targetPrice: entryInfo.targetPrice,
         riskRewardRatio,
         actionNote,
-        // 評分與戰術
+        holdingPeriodLabel,
+        trailingStopLabel,
+        trailingStopPrice,
+        hardStopPct,
+        trustNet10d: c.trustNet10d,
+        foreignNet5d: c.foreignNet5d,
+        instNet5d: c.instNet5d,
+        consecutiveForeignDays: c.consecutiveForeignDays,
         buyRatingScore: buyRating.score,
         buyRatingLevel: buyRating.level,
         buyRatingLabel: buyRating.label,
@@ -4226,7 +4602,22 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
     return (b.estVolumeRatio || b.volumeRatio) - (a.estVolumeRatio || a.volumeRatio);
   });
 
-  const matchedList = qualifiedList.filter((s) => s.isMatched);
+  // v3.6.0 大盤空頭硬煞車：加權現價 < 20MA 且 5MA 下彎時，暫停追價（僅保留 alphaToday > 0 且土洋合買的極少數抗跌股）
+  let matchedList = qualifiedList.filter((s) => s.isMatched);
+  let bearBrakeMessage: string | undefined;
+  if (isBearBrake) {
+    matchedList = matchedList.filter(
+      (s) =>
+        (s.alphaToday ?? 0) > 0 &&
+        s.isMajorLocked &&
+        (s.foreignNet5d ?? 0) > 0 &&
+        (s.trustNet10d ?? 0) >= 300
+    );
+    bearBrakeMessage =
+      matchedList.length > 0
+        ? `大盤偏空煞車啟動，暫停追價（僅保留 ${matchedList.length} 檔抗跌且土洋合買標的）`
+        : '大盤偏空煞車啟動，暫停追價';
+  }
 
   const mode: ScreenerMode = isIntraday ? 'intraday' : 'after_hours';
   const modeLabel = isIntraday
@@ -4243,29 +4634,125 @@ async function scanAllMarketTrustBuys(): Promise<ScanAllResult> {
     modeLabel,
     isMarketOpen: isIntraday,
     marketStatusText,
+    isBearMarketBrake: isBearBrake,
+    bearBrakeMessage,
   };
 }
 
 // =========================================================================
 // 9. Screener 2: 全市場動態低基期轉型掃描器 (All-Market Dynamic Turnaround Scanner)
-// 徹底廢除寫死名單，基於全市場單月營收年增、真實位階與均線安全閥動態篩選
+// v3.6.0：流動性 >= 2000 張、單月 YoY >= 8% 且累計 YoY > 0%、分級買點 (RIGHT_BUY / LEFT_PROBE / WATCH_POOL)
 // =========================================================================
 
 interface MarketRevenueSnapshot {
   code: string;
   name: string;
   revenueYoY: number;
+  cumulativeRevenueYoY?: number | null;
   revenue: number;
   revenueMonth: number;
   revenueYear: number;
 }
 
+let allMarketRevenueCache: { data: MarketRevenueSnapshot[]; expireAt: number } | null = null;
+const ALL_MARKET_REVENUE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
 /**
- * 第一階段：全市場單次營收快照（消耗 1 次請求）
- * 呼叫 FinMind TaiwanStockMonthRevenue 或官方 OpenAPI 直連，一次性撈出最新單月營收
+ * 第一階段：全市場單次營收快照（含 30 分鐘快取）
+ * 優先呼叫 TWSE 官方 OpenData t187ap05_L（直接含官方「去年同月增減(%)」）與 TPEx 上櫃 OpenData，
+ * 若失敗才降級呼叫 FinMind TaiwanStockMonthRevenue。
  */
 async function fetchAllMarketLatestRevenue(): Promise<MarketRevenueSnapshot[]> {
-  // 1. 先嘗試呼叫 FinMind TaiwanStockMonthRevenue（以最新月份為參數，消耗 1 次請求）
+  const now = Date.now();
+  if (allMarketRevenueCache && now < allMarketRevenueCache.expireAt && allMarketRevenueCache.data.length > 0) {
+    return allMarketRevenueCache.data;
+  }
+
+  // 1. 證交所 (TWSE) 官方 OpenAPI 直連 (含「去年同月增減(%)」，不耗 FinMind 額度)
+  try {
+    const [twseRes, tpexRes] = await Promise.all([
+      fetchWithTimeout('https://openapi.twse.com.tw/v1/opendata/t187ap05_L', {}, 8000),
+      fetchWithTimeout('https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O', {}, 8000).catch(() => null),
+    ]);
+
+    const mergedMap = new Map<string, MarketRevenueSnapshot>();
+
+    if (twseRes.ok) {
+      const data = await safeParseJsonResponse(twseRes, 'TWSE-OpenAPI-t187ap05_L');
+      if (Array.isArray(data) && data.length > 0) {
+        for (const item of data) {
+          const code = String(item['公司代號'] || '').trim();
+          if (!/^[1-9][0-9]{3}$/.test(code)) continue;
+          const name = getStockName(code, item['公司名稱']);
+          const yoy = parseFloat(item['營業收入-去年同月增減(%)'] || '0');
+          const rawCumYoy =
+            item['累計營業收入-前期比較增減(%)'] ??
+            item['累計營收-前期比較增減(%)'];
+          const cumYoyParsed = rawCumYoy !== undefined && rawCumYoy !== '' ? parseFloat(String(rawCumYoy)) : NaN;
+          const rev = parseFloat(item['營業收入-當月營收'] || '0');
+          const dateStr = String(item['資料年月'] || '');
+          const revenueMonth = dateStr.length >= 5 ? parseInt(dateStr.slice(3), 10) : 9;
+          const revenueYear = dateStr.length >= 5 ? parseInt(dateStr.slice(0, 3), 10) + 1911 : 2026;
+          mergedMap.set(code, {
+            code,
+            name,
+            revenueYoY: isNaN(yoy) ? 0 : Number(yoy.toFixed(2)),
+            cumulativeRevenueYoY: !isNaN(cumYoyParsed) ? Number(cumYoyParsed.toFixed(2)) : null,
+            revenue: isNaN(rev) ? 0 : rev,
+            revenueMonth,
+            revenueYear,
+          });
+        }
+      }
+    }
+
+    if (tpexRes && tpexRes.ok) {
+      const tpData = await safeParseJsonResponse(tpexRes, 'TPEx-OpenAPI-t187ap05_O');
+      if (Array.isArray(tpData) && tpData.length > 0) {
+        for (const item of tpData) {
+          const code = String(item['公司代號'] || item['SecuritiesCompanyCode'] || '').trim();
+          if (!/^[1-9][0-9]{3}$/.test(code) || mergedMap.has(code)) continue;
+          const name = getStockName(code, item['公司名稱'] || item['CompanyName']);
+          const rawYoy =
+            item['營業收入-去年同月增減(%)'] ??
+            item['去年同月增減(%)'] ??
+            item['OperatingRevenue-ComparisonWithTheSamePeriodLastYear(%)'];
+          const yoy = parseFloat(String(rawYoy ?? '0'));
+          const rawCumYoy =
+            item['累計營業收入-前期比較增減(%)'] ??
+            item['累計營收-前期比較增減(%)'] ??
+            item['CumulativeOperatingRevenue-ComparisonWithTheSamePeriodLastYear(%)'];
+          const cumYoyParsed = rawCumYoy !== undefined && rawCumYoy !== '' ? parseFloat(String(rawCumYoy)) : NaN;
+          const rev = parseFloat(String(item['營業收入-當月營收'] ?? item['當月營收'] ?? '0'));
+          const dateStr = String(item['資料年月'] || '');
+          const revenueMonth = dateStr.length >= 5 ? parseInt(dateStr.slice(3), 10) : 9;
+          const revenueYear = dateStr.length >= 5 ? parseInt(dateStr.slice(0, 3), 10) + 1911 : 2026;
+          if (!isNaN(yoy)) {
+            mergedMap.set(code, {
+              code,
+              name,
+              revenueYoY: Number(yoy.toFixed(2)),
+              cumulativeRevenueYoY: !isNaN(cumYoyParsed) ? Number(cumYoyParsed.toFixed(2)) : null,
+              revenue: isNaN(rev) ? 0 : rev,
+              revenueMonth,
+              revenueYear,
+            });
+          }
+        }
+      }
+    }
+
+    if (mergedMap.size > 0) {
+      const list = Array.from(mergedMap.values());
+      console.log(`[Revenue Snapshot] 官方 OpenData 取得 ${list.length} 檔最新單月營收與官方 YoY%`);
+      allMarketRevenueCache = { data: list, expireAt: now + ALL_MARKET_REVENUE_TTL_MS };
+      return list;
+    }
+  } catch (err) {
+    console.warn('[Revenue Snapshot] 官方 OpenData 取得失敗，降級使用 FinMind:', err);
+  }
+
+  // 2. 備援呼叫 FinMind TaiwanStockMonthRevenue
   try {
     const d = new Date();
     d.setDate(1);
@@ -4275,7 +4762,6 @@ async function fetchAllMarketLatestRevenue(): Promise<MarketRevenueSnapshot[]> {
     const fmRes = await fetchWithTimeout(finmindUrl, {}, 7000);
     const fmJson = await safeParseJsonResponse(fmRes, 'FinMind-MonthRevenue');
     if (fmJson && fmJson.status === 200 && Array.isArray(fmJson.data) && fmJson.data.length > 0) {
-      console.log(`[Turnaround Scanner] FinMind 全市場營收快照成功取得 ${fmJson.data.length} 筆`);
       const map = new Map<string, MarketRevenueSnapshot>();
       for (const r of fmJson.data) {
         if (!r.stock_id || !/^[1-9][0-9]{3}$/.test(r.stock_id)) continue;
@@ -4290,43 +4776,14 @@ async function fetchAllMarketLatestRevenue(): Promise<MarketRevenueSnapshot[]> {
           revenueYear: Number(r.revenue_year || d.getFullYear()),
         });
       }
-      if (map.size > 0) return Array.from(map.values());
-    }
-  } catch (e) {
-    console.warn('[Turnaround Scanner] FinMind 全市場營收快照未取得，使用證交所官方 OpenData API 備援:', e);
-  }
-
-  // 2. 證交所 (TWSE) 官方 OpenAPI 直連備援 (100% 官方真實數據，不耗 FinMind 額度)
-  try {
-    const res = await fetchWithTimeout('https://openapi.twse.com.tw/v1/opendata/t187ap05_L', {}, 8000);
-    if (res.ok) {
-      const data = await safeParseJsonResponse(res, 'TWSE-OpenAPI-t187ap05_L');
-      if (Array.isArray(data) && data.length > 0) {
-        const list: MarketRevenueSnapshot[] = [];
-        for (const item of data) {
-          const code = item['公司代號'];
-          const name = getStockName(code, item['公司名稱']);
-          if (!/^[1-9][0-9]{3}$/.test(code)) continue;
-          const yoy = parseFloat(item['營業收入-去年同月增減(%)'] || '0');
-          const rev = parseFloat(item['營業收入-當月營收'] || '0');
-          const dateStr = item['資料年月'] || '';
-          const revenueMonth = dateStr.length >= 5 ? parseInt(dateStr.slice(3), 10) : 9;
-          const revenueYear = dateStr.length >= 5 ? parseInt(dateStr.slice(0, 3), 10) + 1911 : 2026;
-          list.push({
-            code,
-            name,
-            revenueYoY: Number(yoy.toFixed(2)),
-            revenue: rev,
-            revenueMonth,
-            revenueYear,
-          });
-        }
-        console.log(`[Turnaround Scanner] 臺灣證交所官方 OpenData 取得 ${list.length} 檔最新單月營收`);
+      if (map.size > 0) {
+        const list = Array.from(map.values());
+        allMarketRevenueCache = { data: list, expireAt: now + ALL_MARKET_REVENUE_TTL_MS };
         return list;
       }
     }
-  } catch (err) {
-    console.error('[Turnaround Scanner] 證交所 OpenData 取得失敗:', err);
+  } catch (e) {
+    console.warn('[Turnaround Scanner] FinMind 全市場營收快照未取得:', e);
   }
 
   return [];
@@ -4392,12 +4849,178 @@ const TURNAROUND_FALLBACK_CANDIDATE_CODES = [
   '2606', '1476', '1477', '9910', '9938', '2355', '3014', '2363', '4919', '6239'
 ];
 
+/**
+ * 輔助：取得多檔候選股最近 5 個交易日之累計外資與投信淨買賣超（優先複用全市場 dayInstCache，無則單股 FinMind 補齊）
+ */
+async function fetchStock5dInstMap(
+  codes: string[]
+): Promise<Map<string, { foreignNet5d: number; trustNet5d: number }>> {
+  const result = new Map<string, { foreignNet5d: number; trustNet5d: number }>();
+  const uniqueCodes = Array.from(new Set(codes.filter((c) => /^[1-9][0-9]{3}$/.test(c))));
+  if (uniqueCodes.length === 0) return result;
+
+  try {
+    const tradingDates = await fetchRecentTradingDates();
+    const recent5 = [...tradingDates].reverse().slice(0, 5);
+    const dayMaps: Map<string, DayInstData>[] = [];
+    for (const d of recent5) {
+      const m = await fetchDayInstitutional(d);
+      if (m && m.size > 0) dayMaps.push(m);
+    }
+    if (dayMaps.length > 0) {
+      for (const code of uniqueCodes) {
+        let f5 = 0;
+        let t5 = 0;
+        let hit = false;
+        for (const dm of dayMaps) {
+          const entry = dm.get(code);
+          if (entry) {
+            hit = true;
+            f5 += entry.foreignNetLots || 0;
+            t5 += entry.trustNetLots || 0;
+          }
+        }
+        if (hit) result.set(code, { foreignNet5d: f5, trustNet5d: t5 });
+      }
+    }
+  } catch {}
+
+  const missing = uniqueCodes.filter((c) => !result.has(c)).slice(0, 25);
+  if (missing.length > 0) {
+    const d12 = new Date();
+    d12.setDate(d12.getDate() - 12);
+    const start12 = d12.toISOString().split('T')[0];
+    await Promise.all(
+      missing.map(async (code) => {
+        try {
+          const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id=${code}&start_date=${start12}&token=${FINMIND_TOKEN}`;
+          const res = await fetchWithTimeout(url, {}, 3500);
+          if (res.ok) {
+            const json = await safeParseJsonResponse(res, `FinMind-Inst5d-${code}`);
+            const rows = Array.isArray(json?.data) ? json.data : [];
+            if (rows.length > 0) {
+              const dateSet = Array.from(new Set<string>(rows.map((r: any) => String(r.date || ''))))
+                .filter(Boolean)
+                .sort()
+                .slice(-5);
+              const keep = new Set(dateSet);
+              let f5 = 0;
+              let t5 = 0;
+              for (const r of rows) {
+                if (!keep.has(String(r.date || ''))) continue;
+                const netLots = Math.round((Number(r.buy || 0) - Number(r.sell || 0)) / 1000);
+                if (r.name === 'Investment_Trust') t5 += netLots;
+                else if (r.name === 'Foreign_Investor' || r.name === 'Foreign_Dealer_Self') f5 += netLots;
+              }
+              result.set(code, { foreignNet5d: f5, trustNet5d: t5 });
+            }
+          }
+        } catch {}
+      })
+    );
+  }
+
+  return result;
+}
+
+/**
+ * 輔助：評估低基期價值轉型策略三大買點分級 (RIGHT_BUY / LEFT_PROBE / WATCH_POOL)
+ */
+function classifyTurnaroundTier(params: {
+  curPrice: number;
+  ma5: number;
+  ma20: number;
+  closes: number[];
+  lows: number[];
+  isLowBase: boolean;
+  isProfitable: boolean;
+  isRevGrowing: boolean;
+  isLiquidityPass: boolean;
+  isAtrPass: boolean;
+  foreignNet5d: number;
+  trustNet5d: number;
+}): {
+  turnaroundTier: TurnaroundTier;
+  turnaroundTierLabel: string;
+  holdingPeriodLabel: string;
+  trailingStopLabel: string;
+  trailingStopPrice: number;
+  positionSizingHint: string;
+  isTurnaroundMatched: boolean;
+  isSafeBottom: boolean;
+} {
+  const { curPrice, ma5, ma20, closes, lows, isLowBase, isProfitable, isRevGrowing, isLiquidityPass, isAtrPass, foreignNet5d, trustNet5d } = params;
+
+  // 20MA 5日斜率 >= -0.3% (走平或翻揚)
+  const ma20_5dAgo =
+    closes.length >= 25
+      ? Number((closes.slice(-25, -5).reduce((a, b) => a + b, 0) / 20).toFixed(2))
+      : ma20;
+  const ma20SlopePct = ma20_5dAgo > 0 ? (ma20 - ma20_5dAgo) / ma20_5dAgo : 0;
+  const isMa20FlatOrRising5d = ma20SlopePct >= -0.003;
+
+  // 止跌訊號：連續 2 日不破前低 或 站上 5MA
+  const notBreakingPriorLow2d =
+    lows.length >= 3 &&
+    lows[lows.length - 1] >= lows[lows.length - 3] &&
+    lows[lows.length - 2] >= lows[lows.length - 3];
+  const isStabilized = curPrice >= ma5 || notBreakingPriorLow2d;
+  const hasInstSupport = foreignNet5d > 0 || trustNet5d > 0;
+  const coreFundamentalsPass = isLowBase && isProfitable && isRevGrowing && isLiquidityPass && isAtrPass;
+
+  if (coreFundamentalsPass && curPrice >= ma20 && isMa20FlatOrRising5d) {
+    // 第一級：🟢 右側正式買點
+    const cands = [ma20 * 0.97, curPrice * 0.92].filter((v) => v > 0 && v < curPrice);
+    const hardStop = cands.length > 0 ? Number(Math.max(...cands).toFixed(1)) : Number((curPrice * 0.92).toFixed(1));
+    return {
+      turnaroundTier: 'RIGHT_BUY',
+      turnaroundTierLabel: '🟢 右側正式買點',
+      holdingPeriodLabel: '🌊 波段 2~4 週',
+      trailingStopLabel: `20MA-3% ($${(ma20 * 0.97).toFixed(1)}) / -8% 硬停損`,
+      trailingStopPrice: hardStop,
+      positionSizingHint: '標準波段倉位',
+      isTurnaroundMatched: true,
+      isSafeBottom: true,
+    };
+  }
+
+  if (coreFundamentalsPass && curPrice < ma20 && hasInstSupport && isStabilized) {
+    // 第二級：🟡 左側低接試單（1/3 倉位）
+    const low5d = lows.length >= 5 ? Math.min(...lows.slice(-5)) : curPrice * 0.93;
+    const hardStop =
+      low5d > 0 && low5d < curPrice
+        ? Number(Math.max(low5d, curPrice * 0.93).toFixed(1))
+        : Number((curPrice * 0.93).toFixed(1));
+    return {
+      turnaroundTier: 'LEFT_PROBE',
+      turnaroundTierLabel: '🟡 左側低接試單・1/3 倉位',
+      holdingPeriodLabel: '🌱 中波段發酵 4~8 週（1/3 試單）',
+      trailingStopLabel: `近5日低 ($${low5d.toFixed(1)}) / -7% 硬停損`,
+      trailingStopPrice: hardStop,
+      positionSizingHint: '1/3 試單倉位',
+      isTurnaroundMatched: true,
+      isSafeBottom: isStabilized,
+    };
+  }
+
+  // 第三級：⏳ 基本面觀察池
+  return {
+    turnaroundTier: 'WATCH_POOL',
+    turnaroundTierLabel: '⏳ 基本面觀察池',
+    holdingPeriodLabel: '⏳ 等待止跌訊號',
+    trailingStopLabel: '等待止跌或站上 20MA 再進場',
+    trailingStopPrice: Number((curPrice * 0.93).toFixed(1)),
+    positionSizingHint: '暫不建倉',
+    isTurnaroundMatched: false,
+    isSafeBottom: curPrice >= ma20 && isMa20FlatOrRising5d,
+  };
+}
+
 async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boolean): Promise<TurnaroundStockItem[]> {
   console.log('[Turnaround Scanner] 啟動海外機房備援快篩 (Yahoo 1Y K線並行過濾 + FinMind 個股真實營收/財報)...');
   const taiexChangePercent = await getTaiexChangePercent();
   const taiex1YCloses = await getTaiex1YHistoricalCloses();
 
-  // 1. 直接使用在 Render 暢行無阻的 Yahoo Finance Chart API (range=1y&interval=1d) 並行取得日 K 線與最新現價
   const parsedCandidates = await Promise.all(
     TURNAROUND_FALLBACK_CANDIDATE_CODES.map(async (code) => {
       const exts = ['.TW', '.TWO'];
@@ -4446,7 +5069,8 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
             const prevCloses = closes.slice(0, -1);
             const prevMa20 = Number((prevCloses.slice(-20).reduce((a, b) => a + b, 0) / 20).toFixed(2));
             const volumeAvg5d = Math.round(volumes.slice(-5).reduce((a, b) => a + b, 0) / 5) || 0;
-            if (volumeAvg5d < 1000) continue;
+            // v3.6.0 流動性門檻拉高至 2,000 張
+            if (volumeAvg5d < 2000) continue;
 
             const { atr20, atrPct } = calculateATR20Pct(closes, highs, lows, curPrice);
             const name = getStockName(code);
@@ -4488,14 +5112,11 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
 
   const validStocks = parsedCandidates.filter(Boolean) as Array<NonNullable<(typeof parsedCandidates)[0]>>;
 
-  // 篩選出符合低檔（位階 <= 35%、站上 20MA、ATR% >= 2.2%）的個股，並依位階由低至高放入「潛在價值轉型池 (allStocks)」
   let lowBasePool = validStocks.filter((s) => s.positionPct <= 35.0);
   if (lowBasePool.length < 8) {
-    // 若極端多頭市場位階普遍偏高，適度放寬至 38% 確保全池不為空
     lowBasePool = validStocks.filter((s) => s.positionPct <= 38.0);
   }
 
-  // 排序：符合「站上 20MA 且 ATR% >= 2.2%」之安全打底者優先，同條件下依近一年位階由低至高排序
   lowBasePool.sort((a, b) => {
     const aPrime = a.isSafeBottom && a.atrPct >= 2.2 ? 1 : 0;
     const bPrime = b.isSafeBottom && b.atrPct >= 2.2 ? 1 : 0;
@@ -4504,19 +5125,20 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
   });
 
   const targetCandidates = lowBasePool.slice(0, 25);
-  const d14m = new Date();
-  d14m.setMonth(d14m.getMonth() - 14);
-  const start14m = d14m.toISOString().split('T')[0];
+  const inst5dMap = await fetchStock5dInstMap(targetCandidates.map((c) => c.code));
+  const d24m = new Date();
+  d24m.setMonth(d24m.getMonth() - 24);
+  const start24m = d24m.toISOString().split('T')[0];
 
-  // 針對前 15 檔低基期股票並行查詢 FinMind 營收與近四季 EPS 驗證轉型條件
   const rawResults = await Promise.all(
     targetCandidates.map(async (item) => {
       let revenueYoY = 0;
+      let cumulativeRevenueYoY: number | null = null;
       let latestRevMonth = 9;
       let sumEps: number | null = null;
 
       try {
-        const revUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id=${item.code}&start_date=${start14m}&token=${FINMIND_TOKEN}`;
+        const revUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id=${item.code}&start_date=${start24m}&token=${FINMIND_TOKEN}`;
         const eUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${item.code}&start_date=2025-01-01&token=${FINMIND_TOKEN}`;
 
         const [revRes, eRes] = await Promise.all([
@@ -4533,20 +5155,35 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
           if (revRows.length > 0) {
             const lastRev = revRows[revRows.length - 1];
             const curRevVal = Number(lastRev.revenue || 0);
+            const curYear = Number(lastRev.revenue_year || (lastRev.date ? parseInt(String(lastRev.date).slice(0, 4), 10) : 2026));
             latestRevMonth = Number(lastRev.revenue_month || (lastRev.date ? parseInt(String(lastRev.date).slice(5, 7), 10) : 9));
 
             if (lastRev.revenue_yoy !== undefined || lastRev.YoY !== undefined) {
               revenueYoY = Number(lastRev.revenue_yoy || lastRev.YoY || 0);
             } else {
-              const lastDate = String(lastRev.date || '');
-              const lastYear = parseInt(lastDate.slice(0, 4), 10);
-              const lastMo = lastDate.slice(5, 7);
-              const prevYearStr = `${lastYear - 1}-${lastMo}`;
-              const prevRow = revRows.find((r: any) => String(r.date || '').startsWith(prevYearStr)) ||
-                              (revRows.length >= 13 ? revRows[revRows.length - 13] : null);
+              const prevRow =
+                revRows.find(
+                  (r: any) =>
+                    Number(r.revenue_year) === curYear - 1 && Number(r.revenue_month) === latestRevMonth
+                ) || (revRows.length >= 13 ? revRows[revRows.length - 13] : null);
               if (prevRow && Number(prevRow.revenue) > 0 && curRevVal > 0) {
                 const prevRevVal = Number(prevRow.revenue);
                 revenueYoY = Number((((curRevVal - prevRevVal) / prevRevVal) * 100).toFixed(1));
+              }
+            }
+
+            // 計算累計營收 YoY%
+            const ytdCurRows = revRows.filter(
+              (r: any) => Number(r.revenue_year) === curYear && Number(r.revenue_month) <= latestRevMonth
+            );
+            const ytdPrevRows = revRows.filter(
+              (r: any) => Number(r.revenue_year) === curYear - 1 && Number(r.revenue_month) <= latestRevMonth
+            );
+            if (ytdCurRows.length > 0 && ytdCurRows.length === ytdPrevRows.length) {
+              const ytdCurSum = ytdCurRows.reduce((acc: number, r: any) => acc + Number(r.revenue || 0), 0);
+              const ytdPrevSum = ytdPrevRows.reduce((acc: number, r: any) => acc + Number(r.revenue || 0), 0);
+              if (ytdPrevSum > 0) {
+                cumulativeRevenueYoY = Number((((ytdCurSum - ytdPrevSum) / ytdPrevSum) * 100).toFixed(2));
               }
             }
           }
@@ -4562,11 +5199,13 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         console.warn(`[Turnaround Fallback] FinMind details fetch failed for ${item.code}:`, err?.message || err);
       }
 
+      const inst5d = inst5dMap.get(item.code) || { foreignNet5d: 0, trustNet5d: 0 };
       const isLowBase = item.positionPct <= 35.0;
       const isProfitable = sumEps !== null && sumEps > 0;
-      const isRevGrowing = revenueYoY >= 8.0;
+      const isCumRevPositive = cumulativeRevenueYoY === null || cumulativeRevenueYoY > 0;
+      const isRevGrowing = revenueYoY >= 8.0 && isCumRevPositive;
+      const isLiquidityPass = item.volumeAvg5d >= 2000;
       const isAtrPass = item.atrPct >= 2.2;
-      const isTurnaroundMatched = isLowBase && item.isSafeBottom && isProfitable && isRevGrowing && isAtrPass;
 
       const kCloses = item.klines.closes;
       const ma5 = kCloses.length >= 5 ? Number((kCloses.slice(-5).reduce((a, b) => a + b, 0) / 5).toFixed(2)) : item.curPrice;
@@ -4579,10 +5218,24 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
       const weeklyLow = item.klines.lows && item.klines.lows.length >= 5 ? Math.min(...item.klines.lows.slice(-5)) : item.curPrice * 0.95;
       const priceAboveMa5 = item.curPrice >= ma5;
 
+      const tierInfo = classifyTurnaroundTier({
+        curPrice: item.curPrice,
+        ma5,
+        ma20: item.ma20,
+        closes: kCloses,
+        lows: item.klines.lows,
+        isLowBase,
+        isProfitable,
+        isRevGrowing,
+        isLiquidityPass,
+        isAtrPass,
+        foreignNet5d: inst5d.foreignNet5d,
+        trustNet5d: inst5d.trustNet5d,
+      });
+
       const rsi14 = calculateRSI14(kCloses, item.curPrice);
       const { adx14, plusDI, minusDI } = calculateADX14(item.klines.highs, item.klines.lows, kCloses, item.curPrice);
       const beta1Y = calculateBeta1Y(kCloses, taiex1YCloses);
-      // 排除 beta1Y < 0.5 的極低波動牛皮股
       if (beta1Y !== undefined && beta1Y < 0.5) return null;
       const isGoldenBreakout =
         rsi14 >= 45 &&
@@ -4607,6 +5260,7 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
 
       const buyRating = calculateBuyRatingScore({
         strategyType: 'turnaround',
+        turnaroundTier: tierInfo.turnaroundTier,
         curPrice: item.curPrice,
         ma20: item.ma20,
         changePercent,
@@ -4614,6 +5268,8 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         volumeAvg5d: item.volumeAvg5d,
         revenueYoY,
         eps4Q: sumEps,
+        foreignNetLots: inst5d.foreignNet5d,
+        trustNetLots: inst5d.trustNet5d,
         positionPct: item.positionPct,
         bias20ma,
         atrPct: item.atrPct,
@@ -4626,25 +5282,33 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         isEarlyRebound: tactic.entryTactic === 'EARLY_REBOUND',
       });
 
-      const stopLossPrice = tactic.stopLossPrice;
-      const targetPrice = tactic.targetPrice;
-      const suggestedEntryPrice = tactic.suggestedEntryPrice;
+      const stopLossPrice = tierInfo.trailingStopPrice;
+      const targetPrice =
+        tierInfo.turnaroundTier === 'LEFT_PROBE'
+          ? Number(Math.max(item.ma20, item.curPrice * 1.15).toFixed(1))
+          : tactic.targetPrice;
+      const suggestedEntryPrice =
+        tierInfo.turnaroundTier === 'LEFT_PROBE' ? Number(item.curPrice.toFixed(1)) : tactic.suggestedEntryPrice;
       const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(item.code, item.name);
 
       const maStatus = !item.isAboveMa20
-        ? `現價(${item.curPrice}元)仍在 20MA(${item.ma20}元)之下弱勢整理，尚未打底轉強`
+        ? `現價(${item.curPrice}元)在 20MA(${item.ma20}元)之下築底整理`
         : item.isMa20FlatOrRising
         ? `現價(${item.curPrice}元)站上 20MA(${item.ma20}元)打底成型且均線走平翻揚`
-        : `現價(${item.curPrice}元)站上 20MA(${item.ma20}元)，但 20MA 仍處扣高下彎整理中`;
+        : `現價(${item.curPrice}元)站上 20MA(${item.ma20}元)，但 20MA 仍處扣高整理中`;
 
       const posStatus = isLowBase
         ? `近一年處於 ${item.positionPct}% 低檔基期`
-        : `近一年位階達 ${item.positionPct}% (超過 35% 低基期門檻)`;
+        : `近一年位階達 ${item.positionPct}%`;
 
-      const dynamicCatalyst = `${industryTheme}，最新單月營收年增達 ${revenueYoY >= 0 ? '+' : ''}${revenueYoY}%，${posStatus}，${maStatus}。`;
-      const actionNote = isTurnaroundMatched
-        ? `💎 轉機低基期打底成型：位階近一年 ${item.positionPct}% 低檔、單月營收 YoY +${revenueYoY}%、站穩 20MA (${item.ma20}元) 翻揚、嚴守防守價 ${stopLossPrice} 元 [ATR% ${item.atrPct}%]`
-        : `🛡️ 潛在低基期轉型觀察：位階 ${item.positionPct}%，${maStatus}，近一年 EPS ${sumEps !== null ? sumEps.toFixed(2) : '--'}元 [ATR% ${item.atrPct}%]`;
+      const cumStr = cumulativeRevenueYoY !== null ? `・累計營收 YoY ${cumulativeRevenueYoY >= 0 ? '+' : ''}${cumulativeRevenueYoY}%` : '';
+      const dynamicCatalyst = `${industryTheme}，最新單月營收 YoY ${revenueYoY >= 0 ? '+' : ''}${revenueYoY}%${cumStr}，${posStatus}，${maStatus}。`;
+      const actionNote =
+        tierInfo.turnaroundTier === 'RIGHT_BUY'
+          ? `🟢 右側正式買點 [${tierInfo.holdingPeriodLabel}]：位階 ${item.positionPct}%、單月營收 +${revenueYoY}%${cumStr}、站穩 20MA 翻揚，嚴守 ${tierInfo.trailingStopLabel}`
+          : tierInfo.turnaroundTier === 'LEFT_PROBE'
+          ? `🟡 左側低接試單 [${tierInfo.positionSizingHint} / ${tierInfo.holdingPeriodLabel}]：位階 ${item.positionPct}% 且法人近5日買超 (外資 ${inst5d.foreignNet5d >= 0 ? '+' : ''}${inst5d.foreignNet5d} / 投信 ${inst5d.trustNet5d >= 0 ? '+' : ''}${inst5d.trustNet5d}張)，嚴守 ${tierInfo.trailingStopLabel}`
+          : `⏳ 基本面觀察池：位階 ${item.positionPct}%、單月營收 +${revenueYoY}%${cumStr}，等待止跌或站上 20MA 再進場`;
 
       return {
         symbol: item.code,
@@ -4664,19 +5328,28 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         positionLabel: `處於近一年 ${item.positionPct}% 低檔區`,
         latestRevenueMonth: latestRevMonth,
         revenueYoY,
+        cumulativeRevenueYoY,
         eps4Q: sumEps !== null ? Number(sumEps.toFixed(2)) : null,
         isProfitable,
         isRevGrowing,
         isLowBase,
-        isSafeBottom: item.isSafeBottom,
-        isTurnaroundMatched,
+        isSafeBottom: tierInfo.isSafeBottom,
+        isTurnaroundMatched: tierInfo.isTurnaroundMatched,
+        turnaroundTier: tierInfo.turnaroundTier,
+        turnaroundTierLabel: tierInfo.turnaroundTierLabel,
+        holdingPeriodLabel: tierInfo.holdingPeriodLabel,
+        trailingStopLabel: tierInfo.trailingStopLabel,
+        trailingStopPrice: tierInfo.trailingStopPrice,
+        positionSizingHint: tierInfo.positionSizingHint,
+        trustNet5d: inst5d.trustNet5d,
+        foreignNet5d: inst5d.foreignNet5d,
         catalyst: dynamicCatalyst,
         stopLossPrice,
         targetPrice,
         suggestedEntryPrice,
         entryTactic: tactic.entryTactic,
         entryTacticLabel: tactic.entryTacticLabel,
-        entryActionNote: tactic.entryActionNote,
+        entryActionNote: tierInfo.turnaroundTier === 'WATCH_POOL' ? '⏳ 基本面達標但尚未止跌/站回均線，等待止跌或站上 20MA 再進場。' : tactic.entryActionNote,
         buyRatingScore: buyRating.score,
         buyRatingLevel: buyRating.level,
         buyRatingLabel: buyRating.label,
@@ -4701,17 +5374,15 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
 
   const results = rawResults.filter((s): s is NonNullable<typeof s> => s !== null) as TurnaroundStockItem[];
 
-  // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」、5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股（保留 EARLY_REBOUND 早期反彈觀察標的）
+  // v3.6.0 嚴格過濾流動性 >= 2000 張與營收條件；RIGHT_BUY / LEFT_PROBE / WATCH_POOL 三分級皆保留在觀察池，matched 只放 RIGHT_BUY + LEFT_PROBE
   const qualifiedResults = results.filter(
-    (s) =>
-      (s.entryTactic === 'EARLY_REBOUND' || (s.entryTactic !== 'BEARISH_BROKEN' && s.price >= (s.ma20 ?? s.stopLossPrice))) &&
-      (s.buyRatingScore ?? 0) >= 50 &&
-      (s.volumeAvg5d ?? 0) >= 1000
+    (s) => (s.volumeAvg5d ?? 0) >= 2000 && s.isLowBase && s.isProfitable && s.isRevGrowing
   );
 
   qualifiedResults.sort((a, b) => {
-    if (a.isTurnaroundMatched && !b.isTurnaroundMatched) return -1;
-    if (!a.isTurnaroundMatched && b.isTurnaroundMatched) return 1;
+    const tierRank = (t?: TurnaroundTier) => (t === 'RIGHT_BUY' ? 3 : t === 'LEFT_PROBE' ? 2 : 1);
+    const rankDiff = tierRank(b.turnaroundTier) - tierRank(a.turnaroundTier);
+    if (rankDiff !== 0) return rankDiff;
     return (b.buyRatingScore ?? 0) - (a.buyRatingScore ?? 0);
   });
 
@@ -4729,35 +5400,28 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
 
   loadTurnaroundHistCache();
 
-  // -------------------------------------------------------------------------
-  // 第一階段（全市場單次營收快照，消耗 1 次請求）：
-  // 呼叫 FinMind TaiwanStockMonthRevenue，帶入最新月份，一次性撈出全市場最新單月營收
-  // -------------------------------------------------------------------------
+  // 第一階段：全市場單次營收快照
   const allRevenues = await fetchAllMarketLatestRevenue();
   if (allRevenues.length === 0) {
     console.warn('[Turnaround Scanner] 全市場營收快照為空，啟用海外機房備援快篩...');
     return await scanTurnaroundFallback(todayTaipeiDate, marketStatus.isIntradayTrading);
   }
 
-  // -------------------------------------------------------------------------
-  // 第二階段（剔除牛皮與極端股）：
-  // 1. 最新單月營收年增率 (YoY) > 8% 的股票
-  // 2. 自動過濾掉 28xx、58xx 金控股、電信三雄及公用事業油電燃氣
-  // -------------------------------------------------------------------------
+  // 第二階段：單月 YoY >= 8% 且 累計營收 YoY > 0%（避免單月暴衝曇花一現）
   const filteredCandidates = allRevenues.filter((item) => {
-    if (item.revenueYoY <= 8.0) return false;
+    if (item.revenueYoY < 8.0) return false;
+    if (item.cumulativeRevenueYoY !== null && item.cumulativeRevenueYoY !== undefined && item.cumulativeRevenueYoY <= 0) {
+      return false;
+    }
     if (isBlacklistedStock(item.code, item.name)) return false;
     return true;
   });
 
-  // 依全市場最新單月營收年增率 (YoY) 降序排序，確保不遺漏全台股真正轉機飆升的中小型股
   filteredCandidates.sort((a, b) => b.revenueYoY - a.revenueYoY);
 
-  // 取得候選股票代碼並批次查詢 TWSE MIS 報價，過濾股價 15 ~ 500 元
   const topCandidateCodes = filteredCandidates.slice(0, 100).map((c) => c.code);
   const realQuotes = await fetchBatchTWSEMisQuotes(topCandidateCodes);
 
-  // 剔除股價 > 500 元之千金股，只保留 15 ~ 500 元之標的（取得約 30~40 檔候選名單，嚴控 FinMind 呼叫在 35 次以內）
   const qualifiedCandidates: Array<
     MarketRevenueSnapshot & { price: number; prevClose: number; volumeLots: number; time: string }
   > = [];
@@ -4780,10 +5444,9 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
     return await scanTurnaroundFallback(todayTaipeiDate, marketStatus.isIntradayTrading);
   }
 
-  // -------------------------------------------------------------------------
-  // 第三階段（低基期與防守驗證）：
-  // 對這批候選標的計算近一年（250日）最高與最低價位階，驗證 20MA 安全閥
-  // -------------------------------------------------------------------------
+  // 預先抓取 35 檔候選股之近 5 日法人買賣超 (供 LEFT_PROBE 左側低接試單判定)
+  const inst5dMap = await fetchStock5dInstMap(qualifiedCandidates.map((c) => c.code));
+
   const results: TurnaroundStockItem[] = [];
 
   for (const item of qualifiedCandidates) {
@@ -4804,7 +5467,6 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
             const lows = rows.map((r: any) => Number(r.min || r.close));
             const volumes = rows.map((r: any) => Math.round(Number(r.Trading_Volume || r.volume || 0) / 1000));
 
-            // EPS
             let sumEps: number | null = null;
             try {
               const eUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${item.code}&start_date=2025-01-01&token=${FINMIND_TOKEN}`;
@@ -4814,9 +5476,7 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
               if (epsRows.length > 0) {
                 sumEps = epsRows.slice(-4).reduce((acc: number, r: any) => acc + Number(r.value || 0), 0);
               }
-            } catch (err) {
-              // optional eps fetch error
-            }
+            } catch {}
 
             cached = {
               code: item.code,
@@ -4838,7 +5498,6 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
           console.warn(`[Turnaround] FinMind K-line fetch error for ${item.code}:`, err);
         }
 
-        // 若無快取且 FinMind 呼叫失敗，嚴禁捏造任何假數據，直接跳過該檔股票
         if (!cached) {
           console.warn(`[Turnaround] 無法取得 ${item.code} ${item.name} 真實走勢數據，跳過該股`);
           continue;
@@ -4856,49 +5515,51 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
           ? curVolumeLots
           : 0;
 
-      // 剛性流動性防守閥：若 5 日均量 < 1,000 張，直接跳過，絕不加入結果（包括潛在池 allStocks）
-      if (volumeAvg5d < 1000) {
+      // v3.6.0 流動性門檻拉高至 >= 2,000 張
+      if (volumeAvg5d < 2000) {
         continue;
       }
 
-      // 波動度 ATR%
       const { atr20, atrPct } = calculateATR20Pct(cached.closes, cached.highs, cached.lows, curPrice);
-
-      // 位階計算：近一年 (250日) 最高與最低價
       const yearHigh = Math.max(...cached.highs, curPrice);
       const yearLow = Math.min(...cached.lows, curPrice);
       const range = yearHigh - yearLow;
       const positionPct = range > 0 ? Number((((curPrice - yearLow) / range) * 100).toFixed(1)) : 50;
-
-      // 位階條件：位階 = (現價 - 年最低) / (年最高 - 年最低) <= 35%（確認處於低檔區間）
       const isLowBase = positionPct <= 35.0;
 
-      // 剛性安全閥（精確區分盤中即時 vs 盤後結算，防止重複疊加現價）：
       const isIntraday = marketStatus.isIntradayTrading;
       const ma20 = calculateMovingAverage(cached.closes, 20, curPrice, isIntraday, cached.lastDataDate, todayTaipeiDate);
-      
-      // 計算前一日 20MA 檢視均線走勢
       const hasToday = Boolean(cached.lastDataDate && todayTaipeiDate && cached.lastDataDate === todayTaipeiDate);
       const prevHistory = hasToday ? cached.closes.slice(0, -1) : cached.closes;
       const prevMa20 = calculateMovingAverage(prevHistory, 20, prevHistory[prevHistory.length - 1] || curPrice, false);
-
       const ma5 = calculateMovingAverage(cached.closes, 5, curPrice, isIntraday, cached.lastDataDate, todayTaipeiDate);
       const change = Number((curPrice - prevClose).toFixed(2));
       const changePercent = prevClose > 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
 
-      // 現價必須站上 20MA 且 (20MA 走平或微揚 或 (站上5MA且當日收紅))
       const isAboveMa20 = curPrice >= ma20;
       const isMa20FlatOrRising = ma20 >= prevMa20 * 0.995;
-      const isSafeBottom = curPrice >= ma20 && (isMa20FlatOrRising || (curPrice >= ma5 && changePercent > 0));
-
-      // 客觀量化波動度門檻與流動性門檻（維持安全閥 atrPct >= 2.2%，兼顧底部量縮打底特性）
-      const isLiquidityPass = volumeAvg5d > 1000;
+      const isLiquidityPass = volumeAvg5d >= 2000;
       const isAtrPass = atrPct >= 2.2;
       const isProfitable = cached.sumEps !== null && cached.sumEps !== undefined && cached.sumEps > 0;
-      const isRevGrowing = cached.revenueYoY >= 8.0;
+      const isCumRevPositive =
+        item.cumulativeRevenueYoY === null || item.cumulativeRevenueYoY === undefined || item.cumulativeRevenueYoY > 0;
+      const isRevGrowing = cached.revenueYoY >= 8.0 && isCumRevPositive;
 
-      // 綜合量化驗證符合標準
-      const isTurnaroundMatched = isLowBase && isSafeBottom && isLiquidityPass && isAtrPass && isProfitable && isRevGrowing;
+      const inst5d = inst5dMap.get(item.code) || { foreignNet5d: 0, trustNet5d: 0 };
+      const tierInfo = classifyTurnaroundTier({
+        curPrice,
+        ma5,
+        ma20,
+        closes: cached.closes,
+        lows: cached.lows,
+        isLowBase,
+        isProfitable,
+        isRevGrowing,
+        isLiquidityPass,
+        isAtrPass,
+        foreignNet5d: inst5d.foreignNet5d,
+        trustNet5d: inst5d.trustNet5d,
+      });
 
       const ma10 = calculateMovingAverage(cached.closes, 10, curPrice, isIntraday, cached.lastDataDate, todayTaipeiDate);
       const bias20ma = ma20 > 0 ? Number((((curPrice - ma20) / ma20) * 100).toFixed(1)) : 0;
@@ -4914,7 +5575,6 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
       const rsi14 = calculateRSI14(cached.closes, curPrice);
       const { adx14, plusDI, minusDI } = calculateADX14(cached.highs, cached.lows, cached.closes, curPrice);
       const beta1Y = calculateBeta1Y(cached.closes, taiex1YCloses);
-      // 排除 beta1Y < 0.5 的極低波動牛皮股
       if (beta1Y !== undefined && beta1Y < 0.5) continue;
       const isGoldenBreakout =
         rsi14 >= 45 &&
@@ -4939,6 +5599,7 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
 
       const buyRating = calculateBuyRatingScore({
         strategyType: 'turnaround',
+        turnaroundTier: tierInfo.turnaroundTier,
         curPrice,
         ma20,
         changePercent,
@@ -4946,6 +5607,8 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
         volumeAvg5d,
         revenueYoY: cached.revenueYoY,
         eps4Q: cached.sumEps,
+        foreignNetLots: inst5d.foreignNet5d,
+        trustNetLots: inst5d.trustNet5d,
         positionPct,
         bias20ma,
         atrPct,
@@ -4958,37 +5621,39 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
         isEarlyRebound: tactic.entryTactic === 'EARLY_REBOUND',
       });
 
-      // 建議防守價：20MA 停損價
-      const stopLossPrice = tactic.stopLossPrice;
-
-      // 真實產業主題（雙層自動識別架構）
       const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(item.code, item.name);
 
-      // 【核心修復 2】：動態生成 20MA 均線與打底狀態文案（嚴禁寫死「突破 20MA 打底完成」）
       const maStatus = !isAboveMa20
-        ? `現價(${curPrice}元)仍在 20MA(${ma20}元)之下弱勢整理，尚未打底轉強`
+        ? `現價(${curPrice}元)在 20MA(${ma20}元)之下築底整理`
         : isMa20FlatOrRising
         ? `現價(${curPrice}元)站上 20MA(${ma20}元)打底成型且均線走平翻揚`
-        : `現價(${curPrice}元)站上 20MA(${ma20}元)，但 20MA 仍處扣高下彎整理中`;
+        : `現價(${curPrice}元)站上 20MA(${ma20}元)，但 20MA 仍處扣高整理中`;
 
       const posStatus = isLowBase
         ? `近一年處於 ${positionPct}% 低檔基期`
-        : `近一年位階達 ${positionPct}% (超過 35% 低基期門檻)`;
+        : `近一年位階達 ${positionPct}%`;
 
-      const catalyst = `${industryTheme}，最新單月營收年增達 +${cached.revenueYoY}%，${posStatus}，${maStatus}。`;
+      const cumStr =
+        item.cumulativeRevenueYoY !== null && item.cumulativeRevenueYoY !== undefined
+          ? `・累計營收 YoY ${item.cumulativeRevenueYoY >= 0 ? '+' : ''}${item.cumulativeRevenueYoY}%`
+          : '';
+      const catalyst = `${industryTheme}，最新單月營收 YoY +${cached.revenueYoY}%${cumStr}，${posStatus}，${maStatus}。`;
 
       let actionNote = '';
-      if (isTurnaroundMatched) {
-        actionNote = `💎全市場動態轉型精選：位階處於近一年 ${positionPct}% 低檔、單月營收 YoY +${cached.revenueYoY}% 脫離谷底、股價站上20MA(${ma20}元)且均線微揚、5日均量 ${volumeAvg5d} 張 [ATR% ${atrPct}%]`;
-      } else if (!isLowBase) {
-        actionNote = `⚠️位階 ${positionPct}% 超過 35% 低檔安全閥值，且${maStatus}，未達價值轉型標準 [ATR% ${atrPct}%]`;
-      } else if (!isAboveMa20) {
-        actionNote = `⚠️現價仍在 20MA(${ma20}元)之下弱勢整理，尚未打底轉強，切勿提早進場摸底 [ATR% ${atrPct}%]`;
-      } else if (!isMa20FlatOrRising) {
-        actionNote = `位階 ${positionPct}% 低檔且站上20MA(${ma20}元)，但20MA尚未走平翻揚，持續觀察打底進度 [ATR% ${atrPct}%]`;
+      if (tierInfo.turnaroundTier === 'RIGHT_BUY') {
+        actionNote = `🟢 右側正式買點 [${tierInfo.holdingPeriodLabel}]：位階 ${positionPct}%、單月營收 +${cached.revenueYoY}%${cumStr}、站穩 20MA(${ma20}元) 翻揚，嚴守 ${tierInfo.trailingStopLabel} [ATR% ${atrPct}%]`;
+      } else if (tierInfo.turnaroundTier === 'LEFT_PROBE') {
+        actionNote = `🟡 左側低接試單 [${tierInfo.positionSizingHint} / ${tierInfo.holdingPeriodLabel}]：位階 ${positionPct}% 且法人近5日逆勢買超 (外資 ${inst5d.foreignNet5d >= 0 ? '+' : ''}${inst5d.foreignNet5d} / 投信 ${inst5d.trustNet5d >= 0 ? '+' : ''}${inst5d.trustNet5d}張)，嚴守 ${tierInfo.trailingStopLabel} [ATR% ${atrPct}%]`;
       } else {
-        actionNote = `低檔打底整理中，建議以 20MA 防守價 ${ma20} 元為停損標準 [ATR% ${atrPct}%]`;
+        actionNote = `⏳ 基本面觀察池：位階 ${positionPct}%、單月營收 +${cached.revenueYoY}%${cumStr}，等待止跌或站上 20MA 再進場 [ATR% ${atrPct}%]`;
       }
+
+      const targetPrice =
+        tierInfo.turnaroundTier === 'LEFT_PROBE'
+          ? Number(Math.max(ma20, curPrice * 1.15).toFixed(1))
+          : tactic.targetPrice;
+      const suggestedEntryPrice =
+        tierInfo.turnaroundTier === 'LEFT_PROBE' ? Number(curPrice.toFixed(1)) : tactic.suggestedEntryPrice;
 
       const turnaroundItem: TurnaroundStockItem = {
         symbol: item.code,
@@ -5014,19 +5679,31 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
         positionLabel: `處於近一年 ${positionPct}% 低檔區`,
         latestRevenueMonth: cached.latestRevMonth,
         revenueYoY: cached.revenueYoY,
+        cumulativeRevenueYoY: item.cumulativeRevenueYoY ?? null,
         eps4Q: cached.sumEps !== null && cached.sumEps !== undefined ? Number(cached.sumEps.toFixed(2)) : null,
         isProfitable,
         isRevGrowing,
         isLowBase,
-        isSafeBottom,
-        isTurnaroundMatched,
+        isSafeBottom: tierInfo.isSafeBottom,
+        isTurnaroundMatched: tierInfo.isTurnaroundMatched,
+        turnaroundTier: tierInfo.turnaroundTier,
+        turnaroundTierLabel: tierInfo.turnaroundTierLabel,
+        holdingPeriodLabel: tierInfo.holdingPeriodLabel,
+        trailingStopLabel: tierInfo.trailingStopLabel,
+        trailingStopPrice: tierInfo.trailingStopPrice,
+        positionSizingHint: tierInfo.positionSizingHint,
+        trustNet5d: inst5d.trustNet5d,
+        foreignNet5d: inst5d.foreignNet5d,
         catalyst,
-        stopLossPrice: tactic.stopLossPrice,
-        targetPrice: tactic.targetPrice,
-        suggestedEntryPrice: tactic.suggestedEntryPrice,
+        stopLossPrice: tierInfo.trailingStopPrice,
+        targetPrice,
+        suggestedEntryPrice,
         entryTactic: tactic.entryTactic,
         entryTacticLabel: tactic.entryTacticLabel,
-        entryActionNote: tactic.entryActionNote,
+        entryActionNote:
+          tierInfo.turnaroundTier === 'WATCH_POOL'
+            ? '⏳ 基本面達標但尚未止跌/站回均線，等待止跌或站上 20MA 再進場。'
+            : tactic.entryActionNote,
         buyRatingScore: buyRating.score,
         buyRatingLevel: buyRating.level,
         buyRatingLabel: buyRating.label,
@@ -5048,19 +5725,15 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // -------------------------------------------------------------------------
-  // 修正 2 要求：低基期潛在價值股「評分低於 50 分自動剔除」、5 日均量需 >= 1000 張，且嚴禁納入跌破 20MA (BEARISH_BROKEN) 弱勢股（保留 EARLY_REBOUND 早期反彈觀察標的）
+  // v3.6.0：基本面與流動性 (>=2000張) 合格即留於觀察池 (allStocks)，RIGHT_BUY + LEFT_PROBE 列為可操作買點
   const qualifiedResults = results.filter(
-    (s) =>
-      (s.entryTactic === 'EARLY_REBOUND' || (s.entryTactic !== 'BEARISH_BROKEN' && s.price >= (s.ma20 ?? s.stopLossPrice))) &&
-      (s.buyRatingScore ?? 0) >= 50 &&
-      (s.volumeAvg5d ?? 0) >= 1000
+    (s) => (s.volumeAvg5d ?? 0) >= 2000 && s.isLowBase && s.isProfitable && s.isRevGrowing
   );
 
   qualifiedResults.sort((a, b) => {
-    if (a.isTurnaroundMatched && !b.isTurnaroundMatched) return -1;
-    if (!a.isTurnaroundMatched && b.isTurnaroundMatched) return 1;
+    const tierRank = (t?: TurnaroundTier) => (t === 'RIGHT_BUY' ? 3 : t === 'LEFT_PROBE' ? 2 : 1);
+    const rankDiff = tierRank(b.turnaroundTier) - tierRank(a.turnaroundTier);
+    if (rankDiff !== 0) return rankDiff;
     return (b.buyRatingScore ?? 0) - (a.buyRatingScore ?? 0);
   });
 
@@ -5076,7 +5749,6 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
 async function getScreenerData(force = false): Promise<ScreenerResponse> {
   const now = Date.now();
   const status = getTaipeiMarketStatus();
-  // 盤中 15 秒快取供即時撮合，盤後 30 分鐘快取
   const cacheTTL = status.isIntradayTrading ? 15 * 1000 : SCREENER_CACHE_TTL_MS;
 
   if (!force && screenerCache && now < screenerCache.expireAt) {
@@ -5099,11 +5771,9 @@ async function getScreenerData(force = false): Promise<ScreenerResponse> {
   lastScreenerRunTime = now;
 
   try {
-    const [scanResult, taiex] = await Promise.all([
-      scanAllMarketTrustBuys(),
-      fetchYahooTaiwanIndex('%5ETWII', '^TWII', '加權指數').catch(() => null),
-    ]);
+    const taiex = await fetchYahooTaiwanIndex('%5ETWII', '^TWII', '加權指數').catch(() => null);
     const marketRegime = await getMarketRegime(taiex?.price ?? marketCache?.data?.taiex?.price).catch(() => undefined);
+    const scanResult = await scanAllMarketTrustBuys(marketRegime);
 
     const responseData: ScreenerResponse = {
       cachedAt: new Date().toISOString(),
@@ -5117,6 +5787,8 @@ async function getScreenerData(force = false): Promise<ScreenerResponse> {
       isMarketOpen: scanResult.isMarketOpen,
       marketStatusText: scanResult.marketStatusText,
       marketRegime,
+      isBearMarketBrake: scanResult.isBearMarketBrake,
+      bearBrakeMessage: scanResult.bearBrakeMessage,
       lastUpdated: new Date().toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' }),
     };
 
@@ -5135,7 +5807,6 @@ async function getScreenerData(force = false): Promise<ScreenerResponse> {
 async function getTurnaroundData(force = false): Promise<TurnaroundScreenerResponse> {
   const now = Date.now();
   const status = getTaipeiMarketStatus();
-  // 盤中 15 秒快取直連撮合，盤後 30 分鐘快取
   const cacheTTL = status.isIntradayTrading ? 15 * 1000 : TURNAROUND_CACHE_TTL_MS;
 
   if (!force && turnaroundCache && now < turnaroundCache.expireAt) {
@@ -5163,8 +5834,10 @@ async function getTurnaroundData(force = false): Promise<TurnaroundScreenerRespo
       fetchYahooTaiwanIndex('%5ETWII', '^TWII', '加權指數').catch(() => null),
     ]);
     const marketRegime = await getMarketRegime(taiex?.price ?? marketCache?.data?.taiex?.price).catch(() => undefined);
-    const allStocks = rawStocks.filter((s) => (s.buyRatingScore ?? 0) >= 50 && (s.volumeAvg5d ?? 0) >= 1000);
-    const matchedList = allStocks.filter((s) => s.isTurnaroundMatched);
+    const allStocks = rawStocks.filter((s) => (s.volumeAvg5d ?? 0) >= 2000);
+    const matchedList = allStocks.filter(
+      (s) => s.turnaroundTier === 'RIGHT_BUY' || s.turnaroundTier === 'LEFT_PROBE' || s.isTurnaroundMatched
+    );
 
     const mode: ScreenerMode = status.isIntradayTrading ? 'intraday' : 'after_hours';
     const modeLabel = status.isIntradayTrading
@@ -5172,7 +5845,7 @@ async function getTurnaroundData(force = false): Promise<TurnaroundScreenerRespo
       : '🔵 盤後官方籌碼正式結算完成';
     const marketStatusText = status.isIntradayTrading
       ? `盤中直連撮合 (09:00~13:30)・開盤經過 ${status.elapsed} 分鐘・臺灣證交所 MIS 即時報價`
-      : `盤後官方結算完成 (15:30 後)・低基期價值轉型四大維度量化打底定調`;
+      : `盤後官方結算完成 (15:30 後)・低基期價值轉型分級買點量化定調`;
 
     const responseData: TurnaroundScreenerResponse = {
       cachedAt: new Date().toISOString(),
@@ -5659,35 +6332,135 @@ interface WatchlistStockChipData {
   settledDate: string;
   trustNetLots: number;
   foreignNetLots: number;
+  trustNet5d: number;
+  foreignNet5d: number;
   marginChangeLots: number;
 }
 
 const watchlistStockChipCache = new Map<string, WatchlistStockChipData>();
 const WATCHLIST_CHIP_CACHE_TTL = 30 * 60 * 1000; // 30 分鐘記憶體快取
 
+interface CachedNegativeNews {
+  timestamp: number;
+  hits: string[];
+}
+const stockNegativeNewsCache = new Map<string, CachedNegativeNews>();
+const NEGATIVE_NEWS_CACHE_TTL = 30 * 60 * 1000;
+
 /**
- * 單檔股票極速籌碼查詢（FinMind 法人買賣超 + 融資消長，支援 30 分鐘快取與 3500ms 超時保護）
- * 永遠直接抓取資料集中最新一筆已結算的真實日期與張數，絕不受 15:30 盤中尚未結算影響
+ * 計算自建倉日期至今的概算交易日數（計入週一至週五，最少回傳 1）
+ */
+function countTradingDaysSince(entryDateStr: string, todayDateStr: string): number {
+  if (!entryDateStr || !/^\d{4}-\d{2}-\d{2}$/.test(entryDateStr)) return 1;
+  const start = new Date(`${entryDateStr}T00:00:00+08:00`);
+  const end = new Date(`${todayDateStr}T00:00:00+08:00`);
+  if (isNaN(start.getTime()) || isNaN(end.getTime()) || end < start) return 1;
+
+  let days = 0;
+  const cursor = new Date(start.getTime());
+  while (cursor <= end && days < 500) {
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) {
+      days++;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return Math.max(1, days);
+}
+
+/**
+ * 搜尋近 7 日 Google News RSS 負面關鍵字（降評|下修|目標價|原料|毛利率|砍單|虧損）
+ */
+async function fetchStockNegativeNews7d(symbol: string, name: string): Promise<string[]> {
+  const cleanName = String(name || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, '');
+  const cacheKey = `${symbol}:${cleanName}`;
+  const cached = stockNegativeNewsCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < NEGATIVE_NEWS_CACHE_TTL) {
+    return cached.hits;
+  }
+
+  const hits: string[] = [];
+  try {
+    const query = encodeURIComponent(`${symbol} ${cleanName} when:7d`);
+    const url = `https://news.google.com/rss/search?q=${query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
+    const res = await fetchWithTimeout(
+      url,
+      { headers: { 'User-Agent': 'Mozilla/5.0' } },
+      3200
+    );
+    if (res.ok) {
+      const xml = await res.text();
+      const itemRegex = /<item>[\s\S]*?<title>([\s\S]*?)<\/title>/g;
+      const negKeywordRegex = /降評|下修|目標價|原料|毛利率|砍單|虧損/;
+      const purePositiveTargetRegex = /(調升目標價|上調目標價|上修目標價|看好目標價)/;
+      const hardNegRegex = /降評|下修|砍單|虧損|調降|衰退|侵蝕|承壓/;
+
+      let m;
+      while ((m = itemRegex.exec(xml)) !== null) {
+        const rawTitle = m[1]
+          .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&amp;/g, '&')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .trim();
+        if (!rawTitle) continue;
+        // 確認新聞與該標的名稱或代號相關，避免誤抓無關雜訊
+        if (!rawTitle.includes(symbol) && cleanName && !rawTitle.includes(cleanName)) continue;
+
+        if (negKeywordRegex.test(rawTitle)) {
+          // 過濾純粹正向「上調目標價」且無任何負面詞之新聞
+          if (purePositiveTargetRegex.test(rawTitle) && !hardNegRegex.test(rawTitle)) {
+            continue;
+          }
+          const cleanTitle = rawTitle.replace(/\s+-\s+[^-]+$/, '').trim().slice(0, 72);
+          if (!hits.includes(cleanTitle)) {
+            hits.push(cleanTitle);
+          }
+          if (hits.length >= 3) break;
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[NegativeNews7d] Failed for ${symbol}:`, err?.message || err);
+  }
+
+  stockNegativeNewsCache.set(cacheKey, { timestamp: Date.now(), hits });
+  return hits;
+}
+
+/**
+ * 單檔股票極速籌碼查詢（FinMind 近5日與最新日法人買賣超 + 融資消長，支援 30 分鐘快取與 3500ms 超時保護）
  */
 async function fetchSingleStockChips(symbol: string): Promise<{
   settledDate: string;
   trustNetLots: number;
   foreignNetLots: number;
+  trustNet5d: number;
+  foreignNet5d: number;
   marginChangeLots: number;
 }> {
   const now = Date.now();
   const cached = watchlistStockChipCache.get(symbol);
-  if (cached && now - cached.timestamp < WATCHLIST_CHIP_CACHE_TTL) {
+  if (
+    cached &&
+    now - cached.timestamp < WATCHLIST_CHIP_CACHE_TTL &&
+    typeof cached.trustNet5d === 'number'
+  ) {
     return {
       settledDate: cached.settledDate,
       trustNetLots: cached.trustNetLots,
       foreignNetLots: cached.foreignNetLots,
+      trustNet5d: cached.trustNet5d,
+      foreignNet5d: cached.foreignNet5d,
       marginChangeLots: cached.marginChangeLots,
     };
   }
 
   let trustNetLots = 0;
   let foreignNetLots = 0;
+  let trustNet5d = 0;
+  let foreignNet5d = 0;
   let marginChangeLots = 0;
   let settledDate = '';
 
@@ -5708,26 +6481,28 @@ async function fetchSingleStockChips(symbol: string): Promise<{
         .catch(() => null),
     ]);
 
-    // Parse Institutional Buy/Sell: 抓取最新一筆已結算的真實日期與張數 (FinMind 回傳股數，除以 1000 換算張數)
+    // Parse Institutional Buy/Sell: 抓取最新一筆與近 5 日累計張數
     if (instRes && Array.isArray(instRes.data) && instRes.data.length > 0) {
       const rows = instRes.data;
       const distinctDates: string[] = Array.from(new Set<string>(rows.map((r: any) => String(r.date || ''))))
         .filter((d): d is string => Boolean(d))
         .sort();
+      const last5Dates = new Set(distinctDates.slice(-5));
       const latestInstDate = distinctDates[distinctDates.length - 1];
       if (latestInstDate) {
         settledDate = latestInstDate;
-        const latestRows = rows.filter((r: any) => r.date === latestInstDate);
-        for (const r of latestRows) {
-          const buy = Number(r.buy || 0);
-          const sell = Number(r.sell || 0);
-          const netLots = Math.round((buy - sell) / 1000);
+      }
 
-          if (r.name === 'Investment_Trust') {
-            trustNetLots += netLots;
-          } else if (r.name === 'Foreign_Investor' || r.name === 'Foreign_Dealer_Self') {
-            foreignNetLots += netLots;
-          }
+      for (const r of rows) {
+        const dStr = String(r.date || '');
+        if (!last5Dates.has(dStr)) continue;
+        const netLots = Math.round((Number(r.buy || 0) - Number(r.sell || 0)) / 1000);
+        if (r.name === 'Investment_Trust') {
+          trustNet5d += netLots;
+          if (dStr === latestInstDate) trustNetLots += netLots;
+        } else if (r.name === 'Foreign_Investor' || r.name === 'Foreign_Dealer_Self') {
+          foreignNet5d += netLots;
+          if (dStr === latestInstDate) foreignNetLots += netLots;
         }
       }
     }
@@ -5751,13 +6526,15 @@ async function fetchSingleStockChips(symbol: string): Promise<{
       settledDate,
       trustNetLots,
       foreignNetLots,
+      trustNet5d,
+      foreignNet5d,
       marginChangeLots,
     });
   } catch (err: any) {
     console.warn(`[WatchlistChips] Error fetching chips for ${symbol}:`, err?.message || err);
   }
 
-  return { settledDate, trustNetLots, foreignNetLots, marginChangeLots };
+  return { settledDate, trustNetLots, foreignNetLots, trustNet5d, foreignNet5d, marginChangeLots };
 }
 
 /**
@@ -5768,7 +6545,8 @@ async function fetchSingleStockChips(symbol: string): Promise<{
  * 2. 🚨 確實驗證出貨 (CONFIRMED_STOP_LOSS，堅決停損)
  */
 async function getWatchlistStockDiagnostics(
-  symbols: string[]
+  symbols: string[],
+  portfolioItems?: any[]
 ): Promise<Record<string, WatchlistStockDiagnostic>> {
   const result: Record<string, WatchlistStockDiagnostic> = {};
   if (!symbols || symbols.length === 0) return result;
@@ -5777,21 +6555,47 @@ async function getWatchlistStockDiagnostics(
   const todayTaipeiDate = marketStatus.dateString;
   const isIntraday = marketStatus.isIntradayTrading;
 
-  // 1. 即時報價：極速抓取批次 TWSE MIS 行情
-  const quoteMap = await fetchBatchTWSEMisQuotes(symbols);
+  let resolvedPortfolio = portfolioItems;
+  if (!resolvedPortfolio) {
+    try {
+      const uData = await getUserData();
+      resolvedPortfolio = Array.isArray(uData?.portfolio) ? uData.portfolio : [];
+    } catch {
+      resolvedPortfolio = [];
+    }
+  }
+  const portfolioBySym = new Map<string, any>();
+  for (const item of resolvedPortfolio) {
+    const s = String(item?.symbol || '').trim();
+    if (s && !portfolioBySym.has(s)) {
+      portfolioBySym.set(s, item);
+    }
+  }
 
-  // 2. 單股極速併發查詢 (Parallel Single-Stock Query)：不再下載全市場 1800 檔大表，解決 Render 8s timeout 瓶頸
+  // 1. 即時報價與官方最新營收並行取得
+  const [quoteMap, allRevs] = await Promise.all([
+    fetchBatchTWSEMisQuotes(symbols),
+    fetchAllMarketLatestRevenue().catch(() => [] as Awaited<ReturnType<typeof fetchAllMarketLatestRevenue>>),
+  ]);
+  const revBySym = new Map<string, (typeof allRevs)[number]>();
+  for (const r of allRevs) {
+    if (r?.code) revBySym.set(r.code, r);
+  }
+
+  // 2. 單股極速併發查詢 (Parallel Single-Stock Query)
   await Promise.all(
     symbols.map(async (sym) => {
       try {
         const q = quoteMap.get(sym);
-        const name = getStockName(sym, q?.name);
+        const pItem = portfolioBySym.get(sym);
+        const name = getStockName(sym, q?.name || pItem?.name);
         let curPrice = q?.price || 0;
 
-        // 併發查詢 K 線歷史 (Yahoo/FinMind 0.2s) 與單股籌碼 (FinMind 0.3s)
-        const [klines, chips] = await Promise.all([
+        // 併發查詢 K 線歷史、單股籌碼與近 7 日負面財經新聞關鍵字
+        const [klines, chips, negativeNewsHits] = await Promise.all([
           getStockHistoricalKlines(sym, todayTaipeiDate),
           fetchSingleStockChips(sym),
+          fetchStockNegativeNews7d(sym, name).catch(() => [] as string[]),
         ]);
 
         const histCloses = klines?.closes && klines.closes.length >= 5 ? klines.closes : [];
@@ -5821,6 +6625,8 @@ async function getWatchlistStockDiagnostics(
 
         const trustNetLots = chips.trustNetLots;
         const foreignNetLots = chips.foreignNetLots;
+        const trustNet5d = chips.trustNet5d;
+        const foreignNet5d = chips.foreignNet5d;
         const marginChangeLots = chips.marginChangeLots;
 
         const isBrokenMa20 = ma20 > 0 && curPrice < ma20;
@@ -5850,17 +6656,14 @@ async function getWatchlistStockDiagnostics(
           const isMarginSurging = marginChangeLots > 50;
 
           if (isIntraday) {
-            // 【盤中風控模式】：09:00~13:30 當日三大法人與融資尚未出爐，instMap 為昨日籌碼
             if (isVolumeExploding && dropBelowMa20Pct >= 1.5) {
-              // 盤中跌破 20MA 且伴隨爆量下殺，不可拿昨日法人買超當作今日護盤，直接給予停損警戒
               decisionRating = 'CONFIRMED_STOP_LOSS';
               diagnosticTitle = '🚨 盤中爆量破線・執行停損警戒';
               diagnosticNote = `盤中跌破 20MA 達 ${dropBelowMa20Pct}%（現價 $${curPrice.toFixed(
                 2
-              )} < 20MA $${ma20.toFixed(1)}），且預估全日量比暴增至 ${volumeRatio}x 爆量下殺，即使昨日法人買超亦不可視為護盤，建議嚴格執行停損紀律！（註：盤中即時風控，嚴防主力倒貨）`;
+              )} < 20MA $${ma20.toFixed(1)}），且預估全日量比暴增至 ${volumeRatio}x 爆量下殺，建議嚴格執行停損紀律！`;
               severity = 'danger';
             } else if (isVolumeShrinking && isInstBuying) {
-              // 唯有盤中明顯「量縮回測 (volumeRatio < 0.85)」且昨日法人為買超時，才可在盤中暫判為洗盤觀察
               decisionRating = 'SHAKEOUT_HOLD';
               diagnosticTitle = '🛡️ 主力洗盤甩轎・建議續抱 (盤中觀察)';
               const instText =
@@ -5869,19 +6672,17 @@ async function getWatchlistStockDiagnostics(
                   : `昨日外資買超 +${foreignNetLots} 張`;
               diagnosticNote = `雖跌破 20MA（現價 $${curPrice.toFixed(2)}，20MA $${ma20.toFixed(
                 1
-              )}），但盤中預估全日量能縮至 ${volumeRatio}x 均量（未見恐慌倒貨），且${instText}，暫判為主力量縮洗盤，給予 1~2 日防守緩衝，暫不停損。（註：盤中暫以昨日法人籌碼與今日量縮狀態評估，待 21:30 結算確認）`;
+              )}），但盤中量縮至 ${volumeRatio}x 且${instText}，暫判為主力量縮洗盤。`;
               severity = 'warning';
             } else {
               decisionRating = 'TRIM';
               diagnosticTitle = '⚠️ 盤中跌破月線・減碼防守';
               diagnosticNote = `盤中跌破 20MA ($${ma20.toFixed(
                 1
-              )})，預估量比 ${volumeRatio}x，多空換手整理中，建議先行減碼縮減持股水位至防守配置。（註：盤中即時風控，待 21:30 籌碼結算）`;
+              )})，預估量比 ${volumeRatio}x，建議減碼縮減持股水位。`;
               severity = 'warning';
             }
           } else {
-            // 【盤後籌碼結算模式】：晚間 21:30 官方結算三大法人與融資籌碼雙重驗證
-            // 【升級一判定 2：確實驗證出貨（CONFIRMED_STOP_LOSS，堅決停損）】
             if (dropBelowMa20Pct >= 1.5 && isInstHeavySelling && (isVolumeExploding || isMarginSurging)) {
               decisionRating = 'CONFIRMED_STOP_LOSS';
               diagnosticTitle = '🚨 破線出貨・執行停損';
@@ -5891,11 +6692,9 @@ async function getWatchlistStockDiagnostics(
               const alertReason = isVolumeExploding ? '成交量爆量下殺出貨' : `融資單日暴增 ${marginChangeLots} 張浮額沉重`;
               diagnosticNote = `跌破 20MA 防守點超過 ${dropBelowMa20Pct}%（現價 $${curPrice.toFixed(
                 2
-              )} < 20MA $${ma20.toFixed(1)}），且伴隨法人大額出貨（賣超 ${sellText}），${alertReason}，多頭架構已破壞，請嚴格執行紀律出場。`;
+              )} < 20MA $${ma20.toFixed(1)}），且伴隨法人大額出貨（賣超 ${sellText}），${alertReason}，請嚴格執行紀律出場。`;
               severity = 'danger';
-            }
-            // 【升級一判定 1：主力洗盤甩轎（SHAKEOUT_HOLD，建議續抱）】
-            else if (isInstBuying || isVolumeShrinking || isMarginDecreasing) {
+            } else if (isInstBuying || isVolumeShrinking || isMarginDecreasing) {
               decisionRating = 'SHAKEOUT_HOLD';
               diagnosticTitle = '🛡️ 主力洗盤甩轎・建議續抱';
               const instText =
@@ -5907,36 +6706,104 @@ async function getWatchlistStockDiagnostics(
               const floatText = isMarginDecreasing
                 ? `融資大減 ${Math.abs(marginChangeLots)} 張浮額沉澱`
                 : isVolumeShrinking
-                ? `成交量顯著量縮至 5MA 量之 ${volumeRatio}x (主力未倒貨)`
+                ? `成交量顯著量縮至 ${volumeRatio}x 均量`
                 : '散戶籌碼安定';
               diagnosticNote = `雖跌破 20MA（現價 $${curPrice.toFixed(2)}，20MA $${ma20.toFixed(
                 1
-              )}），但${instText}，${floatText}，判定為主力量縮洗盤，給予 1~2 日防守緩衝，暫不停損。`;
+              )}），但${instText}，${floatText}，判定為主力量縮洗盤。`;
               severity = 'warning';
             } else {
               decisionRating = 'TRIM';
               diagnosticTitle = '⚠️ 跌破月線・減碼防守';
               diagnosticNote = `現價已跌破 20MA ($${ma20.toFixed(
                 1
-              )})，多空換手整理中，建議先行減碼縮減持股水位至防守配置。`;
+              )})，多空換手整理中，建議先行減碼縮減水位。`;
               severity = 'warning';
             }
           }
         } else if (curPrice < ma20 && ma5 < ma10 && ma10 < ma20) {
           decisionRating = 'TRIM';
           diagnosticTitle = '⚠️ 均線走空・減碼防守';
-          diagnosticNote = `現價在月線之下且均線呈空頭排列 (5MA < 10MA < 20MA)，趨勢轉弱建議逢高分批調節。`;
+          diagnosticNote = `現價在月線之下且均線呈空頭排列 (5MA < 10MA < 20MA)，趨勢轉弱建議分批調節。`;
           severity = 'warning';
         } else if (curPrice >= ma20 && curPrice >= ma5) {
           decisionRating = 'BUY';
           diagnosticTitle = '🎯 均線多頭發散・強勢續攻';
-          diagnosticNote = `現價守穩 20MA ($${ma20.toFixed(1)}) 與 5MA ($${ma5.toFixed(1)}) 之上，突破起漲多頭結構良好。`;
+          diagnosticNote = `現價守穩 20MA ($${ma20.toFixed(1)}) 與 5MA ($${ma5.toFixed(1)}) 之上，波段攻擊多頭架構良好。`;
           severity = 'success';
         } else if (curPrice < ma5) {
           decisionRating = 'HOLD';
           diagnosticTitle = '⏳ 短線回測・持股續抱';
           diagnosticNote = `守穩 20MA，短期均線正常回測，波段籌碼穩定持股續抱。`;
           severity = 'info';
+        }
+
+        // v3.6.0 每日 21:30 持股續抱/減碼/出場三色燈號診斷
+        const entryDate = String(pItem?.entryDate || '');
+        const entryPrice = Number(pItem?.entryPrice || 0);
+        const stopLossPrice = Number(pItem?.stopLossPrice || 0);
+        const strategyType = pItem?.strategyType === 'turnaround' ? 'turnaround' : 'momentum';
+        const holdingTradingDays = entryDate ? countTradingDaysSince(entryDate, todayTaipeiDate) : 1;
+        const unrealizedPnlPct =
+          entryPrice > 0 && curPrice > 0
+            ? Number((((curPrice - entryPrice) / entryPrice) * 100).toFixed(2))
+            : changePercent;
+
+        const officialRev = revBySym.get(sym);
+        const cachedTurnaround = turnaroundHistCache.get(sym);
+        const revenueYoY: number | null =
+          officialRev && typeof officialRev.revenueYoY === 'number' && !isNaN(officialRev.revenueYoY)
+            ? Number(officialRev.revenueYoY.toFixed(2))
+            : cachedTurnaround && typeof cachedTurnaround.revenueYoY === 'number'
+            ? Number(cachedTurnaround.revenueYoY.toFixed(2))
+            : null;
+
+        const isHardStopBreached = stopLossPrice > 0 && curPrice > 0 && curPrice <= stopLossPrice;
+        const isRevNegative = revenueYoY !== null && revenueYoY < 0;
+        const isDualInstSell5d = foreignNet5d < 0 && trustNet5d < 0;
+        const isTurnaroundStagnant =
+          strategyType === 'turnaround' &&
+          holdingTradingDays >= 20 &&
+          Math.abs(unrealizedPnlPct) < 5 &&
+          volumeRatio < 1.1;
+
+        let dispositionLight: 'GREEN_HOLD' | 'YELLOW_TRIM' | 'RED_EXIT' = 'GREEN_HOLD';
+        let dispositionLabel = '🟢 續抱發酵';
+        let dispositionReason = `守穩防線且基本面/籌碼正常${
+          revenueYoY !== null ? ` (營收 YoY ${revenueYoY >= 0 ? '+' : ''}${revenueYoY}%)` : ''
+        }，依移動停利線續抱`;
+
+        if (isHardStopBreached || decisionRating === 'CONFIRMED_STOP_LOSS' || isRevNegative) {
+          dispositionLight = 'RED_EXIT';
+          dispositionLabel = '🔴 建議出場';
+          const redReasons: string[] = [];
+          if (isHardStopBreached) redReasons.push(`跌破設定停損價 $${stopLossPrice}`);
+          if (decisionRating === 'CONFIRMED_STOP_LOSS') redReasons.push(`跌破 20MA (${dropBelowMa20Pct}%) 且籌碼出貨`);
+          if (isRevNegative) redReasons.push(`最新營收 YoY 轉負 (${revenueYoY}%)`);
+          dispositionReason = redReasons.join('；') || '觸及停損出場條件，嚴守紀律退場';
+        } else if (
+          isDualInstSell5d ||
+          negativeNewsHits.length > 0 ||
+          isTurnaroundStagnant ||
+          decisionRating === 'TRIM' ||
+          decisionRating === 'SHAKEOUT_HOLD'
+        ) {
+          dispositionLight = 'YELLOW_TRIM';
+          dispositionLabel = '🟡 減碼觀察 / 縮短週期';
+          const yellowReasons: string[] = [];
+          if (isDualInstSell5d) {
+            yellowReasons.push(`近 5 日外資(${foreignNet5d}張)與投信(${trustNet5d}張)同步賣超`);
+          }
+          if (negativeNewsHits.length > 0) {
+            yellowReasons.push(`近 7 日負面新聞關鍵字警戒 (${negativeNewsHits[0].slice(0, 24)})`);
+          }
+          if (isTurnaroundStagnant) {
+            yellowReasons.push(`低基期轉型持有滿 ${holdingTradingDays} 交易日仍量縮橫盤 (${volumeRatio}x)`);
+          }
+          if (decisionRating === 'TRIM' || decisionRating === 'SHAKEOUT_HOLD') {
+            yellowReasons.push(isBrokenMa20 ? `跌破 20MA ($${ma20.toFixed(1)}) 縮短觀察緩衝` : '均線整理降減碼防守');
+          }
+          dispositionReason = yellowReasons.join('；');
         }
 
         result[sym] = {
@@ -5960,6 +6827,15 @@ async function getWatchlistStockDiagnostics(
           diagnosticTitle,
           diagnosticNote,
           severity,
+          holdingTradingDays,
+          unrealizedPnlPct,
+          foreignNet5d,
+          trustNet5d,
+          revenueYoY,
+          negativeNewsHits,
+          dispositionLight,
+          dispositionLabel,
+          dispositionReason,
         };
       } catch (err: any) {
         console.warn(`Error diagnosing stock ${sym}:`, err?.message || err);
@@ -5971,7 +6847,7 @@ async function getWatchlistStockDiagnostics(
 }
 
 /**
- * 升級三：自選持股每日量化晨會戰報 (Gemini 2.5 Pro 旗艦推理)
+ * 升級三：自選持股每日 21:30 量化健檢戰報 (Gemini 2.5 Pro 旗艦推理 + 三色續抱燈號)
  */
 async function generateWatchlistBriefing(
   symbols: string[],
@@ -5993,47 +6869,53 @@ async function generateWatchlistBriefing(
     .map((sym) => {
       const d = diagnostics[sym];
       if (!d) return `- 股票 ${sym}：查無即時資料`;
-      const instStr = `投信 ${d.trustNetLots >= 0 ? '+' : ''}${d.trustNetLots} 張, 外資 ${
+      const inst1dStr = `當日投信 ${d.trustNetLots >= 0 ? '+' : ''}${d.trustNetLots} 張, 外資 ${
         d.foreignNetLots >= 0 ? '+' : ''
       }${d.foreignNetLots} 張`;
-      const marginStr = `融資 ${d.marginChangeLots >= 0 ? '+' : ''}${d.marginChangeLots} 張`;
-      const maStr = `現價 $${d.price} (變動: ${d.change >= 0 ? '+' : ''}${d.change} 元 / ${d.changePercent}%), 5MA: $${
-        d.ma5
-      }, 10MA: $${d.ma10}, 20MA: $${d.ma20}`;
-      const volStr = `今日量 ${d.volumeLots.toLocaleString()} 張 (5日均量 ${d.volumeAvg5d.toLocaleString()} 張, 倍數: ${
-        d.volumeRatio
-      }x)`;
-      const ratingStr = `【評級：${d.diagnosticTitle}】${d.diagnosticNote}`;
-      return `### 📌 ${d.name} (${d.symbol})\n- 價格與均線：${maStr}\n- 成交量動態：${volStr}\n- 法人與融資：${instStr} / ${marginStr}\n- 診斷狀態：${ratingStr}`;
+      const inst5dStr = `近5日累計：投信 ${
+        (d.trustNet5d ?? 0) >= 0 ? '+' : ''
+      }${d.trustNet5d ?? 0} 張, 外資 ${(d.foreignNet5d ?? 0) >= 0 ? '+' : ''}${d.foreignNet5d ?? 0} 張`;
+      const marginStr = `融資消長 ${d.marginChangeLots >= 0 ? '+' : ''}${d.marginChangeLots} 張`;
+      const maStr = `現價 $${d.price} (今日 ${d.change >= 0 ? '+' : ''}${d.change} / ${d.changePercent}%), 5MA $${d.ma5}, 10MA $${d.ma10}, 20MA $${d.ma20}`;
+      const holdStr = `已持有 ${d.holdingTradingDays ?? 1} 交易日｜未實現損益 ${(d.unrealizedPnlPct ?? 0) >= 0 ? '+' : ''}${d.unrealizedPnlPct ?? 0}%`;
+      const revStr =
+        d.revenueYoY !== null && d.revenueYoY !== undefined
+          ? `最新營收 YoY ${d.revenueYoY >= 0 ? '+' : ''}${d.revenueYoY}%`
+          : '營收 YoY 待更新';
+      const newsStr =
+        d.negativeNewsHits && d.negativeNewsHits.length > 0
+          ? `⚠️ 近7日負面新聞警戒：${d.negativeNewsHits.join(' / ')}`
+          : '近7日無降評/下修/砍單/虧損新聞';
+      const volStr = `今日量 ${d.volumeLots.toLocaleString()} 張 (5日均量 ${d.volumeAvg5d.toLocaleString()} 張, 量比 ${d.volumeRatio}x)`;
+      const lightStr = `${d.dispositionLabel || '🟢 續抱發酵'}｜${d.dispositionReason || d.diagnosticNote}`;
+      return `### 📌 ${d.name} (${d.symbol})\n- 處置燈號：**${lightStr}**\n- 持股損益：${holdStr}\n- 價格均線：${maStr}\n- 量能變化：${volStr}\n- 籌碼對帳：${inst1dStr}；${inst5dStr}；${marginStr}\n- 基本面與新聞：${revStr}｜${newsStr}\n- 技術狀態：${d.diagnosticTitle}`;
     })
     .join('\n\n');
 
-  const prompt = `你是一位頂尖的資深台股量化操盤手與總經首席分析師。請針對使用者目前追蹤的【${symbols.length} 檔自選持股清單】，結合最新即時現價、20MA 防守點、三大法人籌碼（投信/外資真實買賣超張數）與證交所融資消長數據，進行深刻量化體檢，撰寫今日開盤前的【自選持股每日量化晨會戰報】。嚴禁憑空捏造任何虛構數據！
+  const prompt = `你是一位頂尖的資深台股量化操盤手與風險控制官。請針對使用者目前持有的【${symbols.length} 檔自選持股】，結合今日最新收盤價、持有交易天數、未實現損益%、5MA/10MA/20MA 狀態、近 5 日外資與投信累計買賣超、融資消長、最新營收 YoY% 與近 7 日財經新聞負面關鍵字掃描結果，撰寫今日 21:30 結算之【每日持股續抱診斷戰報】。嚴禁憑空捏造任何數據或篡改既定處置燈號！
 
-【自選持股最新量化與籌碼診斷數據】：
+【自選持股 21:30 全方位量化體檢數據】：
 ${stockLines}
 
-請嚴格依照以下 4 大核心板塊輸出具備深刻金融因果推演、專業量化操盤手口吻且排版優雅的繁體中文 Markdown 戰報：
+請嚴格依照以下 4 大板塊輸出繁體中文 Markdown 戰報，並在報告中清楚標註每檔股票的處置燈號（🟢 續抱發酵 / 🟡 減碼觀察 / 🔴 建議出場）：
 
-# 📊 自選持股每日量化晨會戰報
+# 📊 自選持股每日 21:30 量化診斷戰報
 
 ---
 
-### A. 自選持股健康度總結
-- 清楚統計並歸納：多頭強勢幾檔、主力洗盤觀察幾檔、破線危險幾檔。
-- 對整體自選組合的總體風險與持股防守狀態給予宏觀定調。
+### A. 持股續抱診斷總覽（三色燈號總結）
+- 統計：🟢 續抱發酵幾檔、🟡 減碼觀察 / 縮短週期幾檔、🔴 建議出場幾檔。
+- 針對整體組合之風險暴露與明日開盤應對給予明確總結。
 
-### B. 昨日法人與融資籌碼深層對帳
-- 逐檔剖析外資、投信在昨天的具體進出態度（特別指出哪幾檔法人逆勢買超護盤？哪幾檔法人趁破線出貨？）。
-- 結合融資餘額增減，剖析散戶浮額是否沉澱（融資大減代表浮額洗淨沉澱；融資暴增代表散戶套牢承接）。
+### B. 近 5 日法人籌碼、營收與負面新聞風險掃描
+- 逐檔檢視近 5 日外資/投信累計方向（點出是否出現土洋同步賣超）、最新營收 YoY% 動能是否健康、以及近 7 日新聞掃描是否觸及「降評／下修／目標價／原料／毛利率／砍單／虧損」警訊。
 
-### C. 今日各檔關鍵防守價與停損提醒
-- 精準列出每檔股票今日不可跌破之 20MA 價位或週低點防守價。
-- 特別提醒哪些股票處於「主力洗盤觀察期（給予 1~2 日防守緩衝暫不停損）」、哪些股票已觸發「🚨 確實驗證出貨停損條件」。
+### C. 個股處置燈號與持有週期評估
+- 逐檔明確條列「標的名稱｜損益%｜持有交易天數｜燈號結論｜一句具體原因」（低基期標的若持有滿 20 交易日仍量縮橫盤須提醒縮短觀察週期）。
+- 明確指出明日不可跌破之 5MA / 10MA / 20MA 移動防守價位。
 
-### D. 今日個別操作策略 SOP
-- 逐檔提供明確指引（續抱、逢拉回 5MA 低接、或高檔逢反彈分批減碼出場）。
-- 字句鏗鏘有力、具備可執行性，提供專業量化操盤手水準之決策指引。`;
+### D. 明日開盤執行紀律 SOP
+- 針對 🔴 建議出場 標的給出開盤執行紀律；針對 🟡 減碼觀察 標的給出減碼或反彈調節價位；針對 🟢 續抱發酵 標的給出移動停利上移守則。`;
 
   const candidateModels = [
     'gemini-2.5-pro',
@@ -6061,13 +6943,27 @@ ${stockLines}
   }
 
   if (!generatedMarkdown) {
-    generatedMarkdown = `# 📊 自選持股每日量化晨會戰報\n\n---\n\n### A. 自選持股健康度總結\n目前追蹤共 ${symbols.length} 檔自選股，依據 20MA 剛性防守線與三大法人籌碼結算，多數持股維持波段格局，重點防守 20MA 關鍵價位。\n\n### B. 昨日法人與融資籌碼深層對帳\n法人進出分歧，投信重押之動能個股維持籌碼保護傘，跌破 20MA 但融資減少之個股具備主力洗盤浮額清洗特徵。\n\n### C. 今日各檔關鍵防守價與停損提醒\n請密切留意各檔 20MA 支撐，若出現破線超過 1.5% 且伴隨法人大額出貨，務必嚴守紀律停損出場。\n\n### D. 今日個別操作策略 SOP\n站穩 20MA 個股續抱，量縮洗盤股觀察 1~2 日防守回測，嚴禁盲目追高或逆勢凹單。`;
+    const greenCount = symbols.filter((s) => diagnostics[s]?.dispositionLight === 'GREEN_HOLD').length;
+    const yellowCount = symbols.filter((s) => diagnostics[s]?.dispositionLight === 'YELLOW_TRIM').length;
+    const redCount = symbols.filter((s) => diagnostics[s]?.dispositionLight === 'RED_EXIT').length;
+    const detailBullets = symbols
+      .map((sym) => {
+        const d = diagnostics[sym];
+        if (!d) return `- **${sym}**：暫無數據`;
+        const pnlStr = `${(d.unrealizedPnlPct ?? 0) >= 0 ? '+' : ''}${d.unrealizedPnlPct ?? 0}%`;
+        return `- **${d.name} (${sym})**｜損益 \`${pnlStr}\`｜持有 \`${d.holdingTradingDays ?? 1}\` 交易日｜**${d.dispositionLabel}**\n  - 原因：${d.dispositionReason}\n  - 均線與籌碼：現價 $${d.price} / 20MA $${d.ma20}｜近5日投信 ${(d.trustNet5d ?? 0) >= 0 ? '+' : ''}${d.trustNet5d ?? 0} 張、外資 ${(d.foreignNet5d ?? 0) >= 0 ? '+' : ''}${d.foreignNet5d ?? 0} 張`;
+      })
+      .join('\n');
+
+    generatedMarkdown = `# 📊 自選持股每日 21:30 量化診斷戰報\n\n---\n\n### A. 持股續抱診斷總覽（三色燈號總結）\n目前追蹤共 **${symbols.length}** 檔持股：🟢 續抱發酵 **${greenCount}** 檔｜🟡 減碼觀察 **${yellowCount}** 檔｜🔴 建議出場 **${redCount}** 檔。\n\n### B. 個股處置燈號與持有週期評估\n${detailBullets}\n\n### C. 明日開盤執行紀律 SOP\n- 🔴 建議出場：開盤嚴守紀律停損或了結，嚴禁凹單。\n- 🟡 減碼觀察：反彈未站回關鍵均線前先行縮減部位或縮短持有週期。\n- 🟢 續抱發酵：依 5MA / 10MA / 20MA 移動防守線續抱讓獲利奔跑。`;
   }
 
   watchlistBriefingDiskCache[sortedKey] = {
     markdown: generatedMarkdown,
     date: todayTaipeiDate,
     model: usedModel,
+    diagnostics,
+    status: 'COMPLETED',
     generatedAt: new Date().toISOString(),
   };
   saveWatchlistBriefingDiskCache();
@@ -7167,33 +8063,56 @@ app.get('/api/stocks/:symbol/strategy-audit', async (req: Request, res: Response
       }
     }
 
-    // 營收與 EPS
+    // 營收與 EPS：優先從 fetchAllMarketLatestRevenue() 官方快取比對最新單月 YoY%，未命中時才打 FinMind 14 個月歷史對比去年同月
     let revenueYoY = 0;
+    let hasMatchedRevenueYoY = false;
     let eps4Q: number | null = null;
     const cachedTurnaround = turnaroundHistCache.get(symbol);
     if (cachedTurnaround) {
       revenueYoY = cachedTurnaround.revenueYoY;
+      hasMatchedRevenueYoY = true;
       eps4Q = cachedTurnaround.sumEps;
-    } else {
+    }
+
+    if (!hasMatchedRevenueYoY || revenueYoY === 0) {
       try {
-        const d60 = new Date();
-        d60.setDate(d60.getDate() - 60);
+        const allRevs = await fetchAllMarketLatestRevenue();
+        const officialRev = allRevs.find((r) => r.code === symbol);
+        if (officialRev && typeof officialRev.revenueYoY === 'number' && !isNaN(officialRev.revenueYoY)) {
+          revenueYoY = officialRev.revenueYoY;
+          hasMatchedRevenueYoY = true;
+        }
+      } catch {}
+    }
+
+    if (!hasMatchedRevenueYoY) {
+      try {
+        const d430 = new Date();
+        d430.setDate(d430.getDate() - 430);
         const rRes = await fetchWithTimeout(
-          `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id=${symbol}&start_date=${d60.toISOString().split('T')[0]}&token=${FINMIND_TOKEN}`,
+          `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id=${symbol}&start_date=${d430.toISOString().split('T')[0]}&token=${FINMIND_TOKEN}`,
           {},
           5000
         );
         const rJson = await safeParseJsonResponse(rRes, `Audit-Rev-${symbol}`);
         if (Array.isArray(rJson?.data) && rJson.data.length > 0) {
-          const latestRev = rJson.data[rJson.data.length - 1];
+          const rows = rJson.data;
+          const latestRev = rows[rows.length - 1];
           const curRev = Number(latestRev.revenue || 0);
-          const lastYearRev = Number(latestRev.last_year_revenue || 0);
-          if (lastYearRev > 0) {
-            revenueYoY = Number((((curRev - lastYearRev) / lastYearRev) * 100).toFixed(2));
+          const targetYear = Number(latestRev.revenue_year) - 1;
+          const targetMonth = Number(latestRev.revenue_month);
+          const prevYearRow = rows.find(
+            (r: any) => Number(r.revenue_year) === targetYear && Number(r.revenue_month) === targetMonth
+          );
+          const prevYearRev = Number(prevYearRow?.revenue || 0);
+          if (curRev > 0 && prevYearRev > 0) {
+            revenueYoY = Number((((curRev - prevYearRev) / prevYearRev) * 100).toFixed(2));
           }
         }
       } catch {}
+    }
 
+    if (eps4Q === null) {
       try {
         const eRes = await fetchWithTimeout(
           `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${symbol}&start_date=2025-01-01&token=${FINMIND_TOKEN}`,
@@ -7447,38 +8366,105 @@ async function sendLinePushMessage(text: string): Promise<boolean> {
 }
 
 /**
- * 從 7 大模組早報 Markdown 擷取核心重點精簡版供 LINE 推播
+ * 從 7 大模組早報 Markdown 擷取完整 7 大模組高密度精華版供 LINE 推播
+ * 控制在 1,500 ~ 2,500 字內（遠低於 LINE 5,000 字上限），兼顧手機易讀性
  */
 function formatMorningBriefingForLine(dateStr: string, markdown: string): string {
   const extractSection = (num: number): string => {
-    const regex = new RegExp(`###\\s*${num}\\.[^\\n]*\\n([\\s\\S]*?)(?=\\n###\\s*\\d+\\.|$)`);
+    const regex = new RegExp(`#{2,4}\\s*${num}[\\.、:\\s][^\\n]*\\n([\\s\\S]*?)(?=\\n#{2,4}\\s*\\d+[\\.、:\\s]|$)`);
     const match = markdown.match(regex);
     if (!match || !match[1]) return '';
     return match[1]
       .replace(/\*\*/g, '')
       .replace(/^\s*[-*]\s+/gm, '• ')
-      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{2,}/g, '\n')
       .trim();
   };
 
-  const sec1 = extractSection(1);
-  const sec3 = extractSection(3);
-  const sec5 = extractSection(5);
-
-  if (sec1 || sec3 || sec5) {
-    const parts: string[] = [`📅 ${dateStr} 台股早盤戰略精華`];
-    if (sec1) parts.push(`【1. 開盤定調與台指期價差】\n${sec1.slice(0, 900)}`);
-    if (sec3) parts.push(`【3. 今日多空分水嶺、壓力與支撐】\n${sec3.slice(0, 900)}`);
-    if (sec5) {
-      // 優先保留建議持股水位與 SOP 前段重點
-      parts.push(`【5. 建議持股水位與作戰紀律】\n${sec5.slice(0, 900)}`);
+  const condenseText = (text: string, maxLen: number): string => {
+    if (!text) return '';
+    if (text.length <= maxLen) return text;
+    const lines = text.split('\n');
+    const kept: string[] = [];
+    let len = 0;
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (len + trimmed.length + 1 <= maxLen) {
+        kept.push(trimmed);
+        len += trimmed.length + 1;
+      } else {
+        if (kept.length === 0) {
+          kept.push(trimmed.slice(0, maxLen - 1) + '…');
+        }
+        break;
+      }
     }
-    parts.push(`🔗 完整早報與量化選股雷達：\n${SITE_PUBLIC_URL}`);
-    return parts.join('\n\n');
+    return kept.join('\n');
+  };
+
+  const sectionSpecs: Array<{ num: number; label: string; maxLen: number }> = [
+    { num: 1, label: '1️⃣【美股與 08:45 台指期定調】', maxLen: 280 },
+    { num: 2, label: '2️⃣【籌碼對帳・融資維持率與投信焦點】', maxLen: 340 },
+    { num: 3, label: '3️⃣【大盤多空分水嶺・壓力與支撐】', maxLen: 280 },
+    { num: 4, label: '4️⃣【台幣匯率與外資熱錢風向】', maxLen: 200 },
+    { num: 5, label: '5️⃣【建議持股水位與開盤 30 分鐘 SOP】', maxLen: 340 },
+    { num: 6, label: '6️⃣【產業重大訊息與外資評等】', maxLen: 320 },
+    { num: 7, label: '7️⃣【今明與本週重大財經行事曆】', maxLen: 320 },
+  ];
+
+  const blocks: string[] = [];
+  for (const spec of sectionSpecs) {
+    const raw = extractSection(spec.num);
+    if (raw) {
+      const body = condenseText(raw, spec.maxLen);
+      if (body) {
+        blocks.push(`${spec.label}\n${body}`);
+      }
+    }
   }
 
-  const fallbackSummary = markdown.replace(/\*\*/g, '').replace(/^#+\s*/gm, '').trim().slice(0, 1500);
-  return `📅 ${dateStr} 台股早盤戰略精華\n\n${fallbackSummary}\n\n🔗 完整報告請見：\n${SITE_PUBLIC_URL}`;
+  const footer = `🔗 完整報告與量化選股雷達：\n${SITE_PUBLIC_URL}`;
+  if (blocks.length > 0) {
+    const header = `📅 ${dateStr} 台股早盤 7 大戰略精華`;
+    let combined = `${header}\n\n${blocks.join('\n\n')}`;
+    const maxBodyLen = 2400 - footer.length - 4;
+    if (combined.length > maxBodyLen) {
+      combined = combined.slice(0, maxBodyLen).replace(/\n[^\n]*$/, '') + '\n…';
+    }
+    return `${combined}\n\n${footer}`;
+  }
+
+  const fallbackSummary = markdown.replace(/\*\*/g, '').replace(/^#+\s*/gm, '').trim().slice(0, 2000);
+  return `📅 ${dateStr} 台股早盤戰略精華\n\n${fallbackSummary}\n\n${footer}`;
+}
+
+/**
+ * 將晚間 21:30 自選持股診斷濃縮為「名稱 + 損益% + 燈號結論 + 一句原因」LINE 精華推播
+ */
+function formatWatchlistBriefingForLine(
+  dateStr: string,
+  symbols: string[],
+  diagnostics: Record<string, WatchlistStockDiagnostic>
+): string {
+  const greenCount = symbols.filter((s) => diagnostics[s]?.dispositionLight === 'GREEN_HOLD').length;
+  const yellowCount = symbols.filter((s) => diagnostics[s]?.dispositionLight === 'YELLOW_TRIM').length;
+  const redCount = symbols.filter((s) => diagnostics[s]?.dispositionLight === 'RED_EXIT').length;
+
+  const lines = symbols.map((sym) => {
+    const d = diagnostics[sym];
+    if (!d) return `• ${sym}｜查無診斷數據`;
+    const pnlNum = d.unrealizedPnlPct ?? 0;
+    const pnlStr = `${pnlNum >= 0 ? '+' : ''}${pnlNum}%`;
+    const light = d.dispositionLabel || '🟢 續抱發酵';
+    const reason = (d.dispositionReason || d.diagnosticNote || '').replace(/\s+/g, ' ').slice(0, 90);
+    return `• ${d.name}(${sym})｜損益 ${pnlStr}｜${light}\n  原因：${reason}`;
+  });
+
+  const header = `🌙 ${dateStr} 21:30 持股續抱診斷 (${symbols.length}檔)\n統計：🟢${greenCount} 續抱 / 🟡${yellowCount} 觀察 / 🔴${redCount} 出場`;
+  const footer = `🔗 完整籌碼診斷與操作明細：\n${SITE_PUBLIC_URL}`;
+  return `${header}\n\n${lines.join('\n\n')}\n\n${footer}`;
 }
 
 /**
@@ -7713,9 +8699,9 @@ function setupQuantCronSchedulers() {
           return;
         }
 
-        // 有持股時：抓取當日三大法人與融資消長，呼叫 generateWatchlistBriefing 進行深度體檢
+        // 有持股時：抓取當日三大法人與融資消長，呼叫 generateWatchlistBriefing 進行深度體檢並推播 LINE 精華
         console.log(`[Cron Scheduler 21:30] 📊 正在為 ${symbols.length} 檔自選持股抓取結算籌碼並呼叫 Gemini 推理...`);
-        const diagnostics = await getWatchlistStockDiagnostics(symbols);
+        const diagnostics = await getWatchlistStockDiagnostics(symbols, userData.portfolio);
         const gen = await generateWatchlistBriefing(symbols, diagnostics, true);
         await saveWatchlistBriefingToSupabaseAndCache({
           date: gen.date,
@@ -7725,6 +8711,12 @@ function setupQuantCronSchedulers() {
           status: 'COMPLETED',
         });
         console.log(`[Cron Scheduler 21:30] ✅ 自選持股健診戰報已定稿並鎖定：${gen.date} (${symbols.length} 檔)`);
+
+        const lineDigest = formatWatchlistBriefingForLine(gen.date || todayTaipeiDate, symbols, diagnostics);
+        const pushed = await sendLinePushMessage(lineDigest);
+        if (pushed) {
+          console.log(`[Cron Scheduler 21:30] 📲 已推播持股診斷三色燈號精華至 LINE (${gen.date})`);
+        }
       } catch (err: any) {
         console.error('[Cron Scheduler 21:30] ❌ 產出自選持股健診戰報失敗:', err?.message || err);
       }
@@ -7734,7 +8726,7 @@ function setupQuantCronSchedulers() {
     }
   );
 
-  console.log('[Cron] ✅ Quant scheduled jobs registered for 09:00 (Market + LINE), */5 09:00-13:35 (Portfolio Alert), and 21:30 (Watchlist) Asia/Taipei.');
+  console.log('[Cron] ✅ Quant scheduled jobs registered for 09:00 (Market + LINE), */5 09:00-13:35 (Portfolio Alert), and 21:30 (Watchlist + LINE) Asia/Taipei.');
 }
 
 // Start Server and Mount Vite
@@ -7770,14 +8762,37 @@ async function startServer() {
   }
 
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
+    let viteHandler: any = null;
+    const viteInitPromise = createViteServer({
       server: {
         middlewareMode: true,
         hmr: false,
+        ws: false,
       },
       appType: 'spa',
+    })
+      .then((vite) => {
+        viteHandler = vite.middlewares;
+        console.log('[Vite] Dev middleware initialized (hmr/ws disabled)');
+      })
+      .catch((err) => {
+        console.error('[Vite] Failed to initialize dev middleware, falling back to dist:', err?.message || err);
+        const distPath = path.resolve(process.cwd(), 'dist');
+        if (fs.existsSync(distPath)) {
+          app.use(express.static(distPath));
+        }
+      });
+
+    app.use(async (req, res, next) => {
+      if (req.path.startsWith('/api/')) return next();
+      if (!viteHandler) {
+        await viteInitPromise;
+      }
+      if (viteHandler) {
+        return viteHandler(req, res, next);
+      }
+      next();
     });
-    app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distPath));

@@ -39,6 +39,10 @@ export interface MarketRegime {
   isBullish: boolean;
   taiexPrice: number;
   taiexMa20: number;
+  taiexMa5?: number;
+  taiexPrevMa5?: number;
+  isBearMarketBrake?: boolean;
+  bearBrakeReason?: string;
   biasPct: number;
   suggestionText: string;
 }
@@ -118,6 +122,15 @@ export interface ScreenerStockItem {
   entryTactic?: EntryTactic;
   entryTacticLabel?: string;
   entryActionNote?: string;
+  // v3.6.0 持有週期、移動停利線與進階籌碼門檻
+  holdingPeriodLabel?: string;
+  trailingStopLabel?: string;
+  trailingStopPrice?: number;
+  hardStopPct?: number;
+  trustNet10d?: number;
+  foreignNet5d?: number;
+  instNet5d?: number;
+  consecutiveForeignDays?: number;
 }
 
 export type EntryTactic = 'PULLBACK_BUY' | 'BREAKOUT_BUY' | 'WAIT_PULLBACK' | 'BEARISH_BROKEN' | 'EARLY_REBOUND';
@@ -147,8 +160,12 @@ export interface ScreenerResponse {
   isMarketOpen: boolean;
   marketStatusText: string;
   marketRegime?: MarketRegime;
+  isBearMarketBrake?: boolean;
+  bearBrakeMessage?: string;
   lastUpdated?: string;
 }
+
+export type TurnaroundTier = 'RIGHT_BUY' | 'LEFT_PROBE' | 'WATCH_POOL';
 
 export interface TurnaroundStockItem {
   symbol: string;
@@ -203,6 +220,16 @@ export interface TurnaroundStockItem {
   entryTactic?: EntryTactic;
   entryTacticLabel?: string;
   entryActionNote?: string;
+  // v3.6.0 低基期分級買點、持有週期、停損線與累計營收
+  turnaroundTier?: TurnaroundTier;
+  turnaroundTierLabel?: string;
+  holdingPeriodLabel?: string;
+  trailingStopLabel?: string;
+  trailingStopPrice?: number;
+  positionSizingHint?: string;
+  cumulativeRevenueYoY?: number | null;
+  trustNet5d?: number;
+  foreignNet5d?: number;
 }
 
 export interface TurnaroundScreenerResponse {
@@ -275,6 +302,12 @@ export interface PortfolioStockItem {
   volumeAvg5d?: number;
   foreignNetLots?: number;
   marginChangeLots?: number;
+  dispositionLight?: 'GREEN_HOLD' | 'YELLOW_TRIM' | 'RED_EXIT';
+  dispositionLabel?: string;
+  dispositionReason?: string;
+  holdingTradingDays?: number;
+  revenueYoY?: number | null;
+  negativeNewsHits?: string[];
 }
 
 export interface WatchlistAlertDetail {
@@ -305,6 +338,16 @@ export interface WatchlistStockDiagnostic {
   diagnosticTitle: string;
   diagnosticNote: string;
   severity: 'danger' | 'warning' | 'info' | 'success';
+  // v3.6.0 每日 21:30 續抱/減碼/出場燈號診斷
+  holdingTradingDays?: number;
+  unrealizedPnlPct?: number;
+  foreignNet5d?: number;
+  trustNet5d?: number;
+  revenueYoY?: number | null;
+  negativeNewsHits?: string[];
+  dispositionLight?: 'GREEN_HOLD' | 'YELLOW_TRIM' | 'RED_EXIT';
+  dispositionLabel?: string;
+  dispositionReason?: string;
 }
 
 export interface WatchlistBriefingResponse {

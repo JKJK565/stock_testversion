@@ -5,7 +5,6 @@ import {
   Target,
   Briefcase,
   Search,
-  Bell,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -13,12 +12,9 @@ interface NavbarProps {
   setActiveModule: (m: 'market' | 'screener' | 'watchlist') => void;
   searchQuery: string;
   setSearchQuery: (q: string) => void;
-  unreadAlertCount: number;
   screenerMatchedCount: number;
   watchlistCount: number;
   alertWatchlistCount: number;
-  onToggleNotificationCenter: () => void;
-  isNotificationCenterOpen: boolean;
   onOpenStrategyAudit?: () => void;
 }
 
@@ -27,12 +23,9 @@ export function Navbar({
   setActiveModule,
   searchQuery,
   setSearchQuery,
-  unreadAlertCount,
   screenerMatchedCount,
   watchlistCount,
   alertWatchlistCount,
-  onToggleNotificationCenter,
-  isNotificationCenterOpen,
   onOpenStrategyAudit,
 }: NavbarProps) {
   return (
@@ -55,7 +48,7 @@ export function Navbar({
                   <span className="sm:hidden">台股雷達</span>
                 </span>
                 <span className="text-[9px] sm:text-[10px] font-mono px-1 sm:px-1.5 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 font-bold flex-shrink-0">
-                  v3.4.0
+                  v3.6.0
                 </span>
               </div>
             </div>
@@ -118,7 +111,7 @@ export function Navbar({
             </button>
           </div>
 
-          {/* Right Actions: 個股健檢 Shortcut Button & Notification Center Bell */}
+          {/* Right Actions: 個股健檢 Shortcut Button */}
           <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
             {/* 🔍 個股健檢快捷按鈕 (桌機圖示+文字，手機只顯示放大鏡圖示) */}
             <button
@@ -128,26 +121,6 @@ export function Navbar({
             >
               <Search className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span className="hidden sm:inline">個股健檢</span>
-            </button>
-
-            {/* Notification Bell */}
-            <button
-              onClick={onToggleNotificationCenter}
-              className={`relative p-2 sm:p-2.5 rounded-xl border transition-all cursor-pointer ${
-                isNotificationCenterOpen
-                  ? 'bg-rose-600/20 border-rose-500 text-rose-300'
-                  : unreadAlertCount > 0
-                  ? 'bg-slate-800 border-rose-500/40 text-slate-200 hover:border-rose-400'
-                  : 'bg-slate-800/80 border-slate-700 text-slate-400 hover:text-white hover:border-slate-600'
-              }`}
-              title="通知中心"
-            >
-              <Bell className={`w-5 h-5 ${unreadAlertCount > 0 ? 'text-rose-400' : ''}`} />
-              {unreadAlertCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 min-w-4 px-1 items-center justify-center rounded-full bg-rose-600 text-white text-[10px] font-bold shadow-sm animate-bounce">
-                  {unreadAlertCount > 99 ? '99+' : unreadAlertCount}
-                </span>
-              )}
             </button>
           </div>
         </div>
