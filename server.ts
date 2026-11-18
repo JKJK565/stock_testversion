@@ -1271,7 +1271,9 @@ async function fetchYahooTaiwanIndex(
   symbolLabel: string,
   displayName: string
 ): Promise<MarketIndexItem | null> {
-  // 1. 先嘗試 Yahoo Finance v8 chart API (改為 interval=1d&range=5d 取得真實完整日K，嚴防 chartPreviousClose 錯位)
+  const todayTaipeiDate = getTaipeiDateString();
+
+  // 1. 優先使用 Yahoo Finance v8 Chart JSON API（以台北日期比對 bars 最後一根 K 線，確保 price / prevClose / change / changePercent 基準 100% 一致）
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbolEncoded}?interval=1d&range=5d`;
     const res = await fetchWithTimeout(
@@ -1287,48 +1289,74 @@ async function fetchYahooTaiwanIndex(
     );
     if (res.ok) {
       const data = await safeParseJsonResponse(res, 'Yahoo-TaiwanIndex');
-      const meta = data?.chart?.result?.[0]?.meta;
-      const rawCloses = data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || [];
-      const dailyCloses = rawCloses.filter(
-        (c: any): c is number => typeof c === 'number' && !isNaN(c) && c > 0
-      );
+      const result = data?.chart?.result?.[0];
+      const meta = result?.meta;
+      const timestamps: number[] = Array.isArray(result?.timestamp) ? result.timestamp : [];
+      const rawCloses: any[] = result?.indicators?.quote?.[0]?.close || [];
+
+      const bars: Array<{ dateStr: string; close: number }> = [];
+      for (let i = 0; i < timestamps.length; i++) {
+        const ts = timestamps[i];
+        const c = rawCloses[i];
+        if (typeof ts === 'number' && typeof c === 'number' && !isNaN(c) && c > 0) {
+          bars.push({
+            dateStr: getTaipeiDateString(new Date(ts * 1000)),
+            close: c,
+          });
+        }
+      }
 
       if (meta) {
         const price =
           typeof meta.regularMarketPrice === 'number' && meta.regularMarketPrice > 0
             ? meta.regularMarketPrice
-            : dailyCloses.length > 0
-            ? dailyCloses[dailyCloses.length - 1]
+            : bars.length > 0
+            ? bars[bars.length - 1].close
             : null;
 
-        // 嚴格禁止優先使用 chartPreviousClose！
-        // 取法：優先從 5 日日K中取前一個已完成交易日的正式收盤價（倒數第二根）
         let prevClose: number | null = null;
-        if (dailyCloses.length >= 2) {
-          prevClose = dailyCloses[dailyCloses.length - 2];
-        } else if (typeof meta.previousClose === 'number' && meta.previousClose > 0) {
-          prevClose = meta.previousClose;
+        if (bars.length > 0) {
+          const lastBar = bars[bars.length - 1];
+          if (lastBar.dateStr === todayTaipeiDate) {
+            if (bars.length >= 2) {
+              prevClose = bars[bars.length - 2].close;
+            }
+          } else {
+            prevClose = lastBar.close;
+          }
         }
 
-        // 若日K取不到但有正規漲跌點數，亦可由現價推導昨收
+        if ((!prevClose || prevClose <= 0) && typeof meta.previousClose === 'number' && meta.previousClose > 0) {
+          prevClose = meta.previousClose;
+        }
         if (
           (!prevClose || prevClose <= 0) &&
-          price !== null &&
-          typeof meta.regularMarketChange === 'number' &&
-          Math.abs(meta.regularMarketChange) < price * 0.15
+          typeof meta.chartPreviousClose === 'number' &&
+          meta.chartPreviousClose > 0
         ) {
-          prevClose = Number((price - meta.regularMarketChange).toFixed(2));
+          prevClose = meta.chartPreviousClose;
         }
 
         if (price !== null && prevClose !== null && prevClose > 0) {
-          const change =
-            typeof meta.regularMarketChange === 'number'
-              ? meta.regularMarketChange
-              : Number((price - prevClose).toFixed(2));
-          const changePercent =
-            typeof meta.regularMarketChangePercent === 'number'
-              ? Number(meta.regularMarketChangePercent.toFixed(2))
-              : Number(((change / prevClose) * 100).toFixed(2));
+          const safePrice = Number(price.toFixed(2));
+          let safePrevClose = Number(prevClose.toFixed(2));
+          let change = Number((safePrice - safePrevClose).toFixed(2));
+          let changePercent = Number(((change / safePrevClose) * 100).toFixed(2));
+
+          // 若 Yahoo 日K 因前日缺值 (close: null) 抓到更早期收盤，以 meta.regularMarketChangePercent 校驗誤差 > 0.2% 時反推正確昨收並重算點數
+          if (
+            typeof meta.regularMarketChangePercent === 'number' &&
+            !isNaN(meta.regularMarketChangePercent) &&
+            1 + meta.regularMarketChangePercent / 100 > 0
+          ) {
+            const metaPct = meta.regularMarketChangePercent;
+            const impliedPct = ((safePrice - safePrevClose) / safePrevClose) * 100;
+            if (Math.abs(impliedPct - metaPct) > 0.2) {
+              safePrevClose = Number((safePrice / (1 + metaPct / 100)).toFixed(2));
+              change = Number((safePrice - safePrevClose).toFixed(2));
+              changePercent = Number(((change / safePrevClose) * 100).toFixed(2));
+            }
+          }
           const high =
             typeof meta.regularMarketDayHigh === 'number'
               ? meta.regularMarketDayHigh
@@ -1338,16 +1366,19 @@ async function fetchYahooTaiwanIndex(
               ? meta.regularMarketDayLow
               : undefined;
           const updateTime = meta.regularMarketTime
-            ? new Date(meta.regularMarketTime * 1000).toLocaleTimeString('zh-TW', { hour12: false })
-            : new Date().toLocaleTimeString('zh-TW', { hour12: false });
+            ? new Date(meta.regularMarketTime * 1000).toLocaleTimeString('zh-TW', {
+                hour12: false,
+                timeZone: 'Asia/Taipei',
+              })
+            : new Date().toLocaleTimeString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' });
 
           return {
             symbol: symbolLabel,
             name: displayName,
-            price: Number(price.toFixed(2)),
-            change: Number(change.toFixed(2)),
+            price: safePrice,
+            change,
             changePercent,
-            prevClose: Number(prevClose.toFixed(2)),
+            prevClose: safePrevClose,
             high,
             low,
             updateTime,
@@ -1359,7 +1390,7 @@ async function fetchYahooTaiwanIndex(
     // chart endpoint failed, try HTML quote page next
   }
 
-  // 2. 備援嘗試 Yahoo 台灣證券報價頁面 (針對櫃買指數 %5ETWOII 等)
+  // 2. 若 Chart JSON API 失敗，退回 Yahoo 台灣證券 HTML 報價頁面，並執行百分比一致性校驗
   try {
     const quoteUrl = `https://tw.stock.yahoo.com/quote/${symbolEncoded}`;
     const qRes = await fetchWithTimeout(
@@ -1377,38 +1408,51 @@ async function fetchYahooTaiwanIndex(
       const html = await qRes.text();
       const price = parseYahooQuoteNumber(html, 'regularMarketPrice');
       const rawChange = parseYahooQuoteNumber(html, 'regularMarketChange');
+      const rawChangePercent = parseYahooQuoteNumber(html, 'regularMarketChangePercent');
       let prevClose =
         parseYahooQuoteNumber(html, 'previousClose') ||
         parseYahooQuoteNumber(html, 'regularMarketPreviousClose');
 
-      if (
-        price !== null &&
-        rawChange !== null &&
-        (!prevClose || Math.abs(price - prevClose) > price * 0.15)
-      ) {
-        prevClose = Number((price - rawChange).toFixed(2));
-      }
+      if (price !== null) {
+        if ((!prevClose || prevClose <= 0) && rawChange !== null) {
+          prevClose = Number((price - rawChange).toFixed(2));
+        } else if ((!prevClose || prevClose <= 0) && rawChangePercent !== null && 1 + rawChangePercent / 100 > 0) {
+          prevClose = Number((price / (1 + rawChangePercent / 100)).toFixed(2));
+        }
 
-      if (price !== null && prevClose !== null && prevClose > 0) {
-        const change =
-          rawChange ?? Number((price - prevClose).toFixed(2));
-        const changePercent =
-          parseYahooQuoteNumber(html, 'regularMarketChangePercent') ??
-          Number(((change / prevClose) * 100).toFixed(2));
-        const high = parseYahooQuoteNumber(html, 'regularMarketDayHigh') ?? undefined;
-        const low = parseYahooQuoteNumber(html, 'regularMarketDayLow') ?? undefined;
+        if (prevClose !== null && prevClose > 0) {
+          let change = Number((price - prevClose).toFixed(2));
+          let changePercent =
+            rawChangePercent !== null
+              ? Number(rawChangePercent.toFixed(2))
+              : Number(((change / prevClose) * 100).toFixed(2));
 
-        return {
-          symbol: symbolLabel,
-          name: displayName,
-          price: Number(price.toFixed(2)),
-          change: Number(change.toFixed(2)),
-          changePercent: Number(changePercent.toFixed(2)),
-          prevClose: Number(prevClose.toFixed(2)),
-          high,
-          low,
-          updateTime: new Date().toLocaleTimeString('zh-TW', { hour12: false }),
-        };
+          // 百分比一致性校驗：若同時抓到 regularMarketChangePercent 與 prevClose，誤差超過 0.2% 代表抓到錯位舊值
+          if (rawChangePercent !== null) {
+            const impliedPct = ((price - prevClose) / prevClose) * 100;
+            if (Math.abs(impliedPct - changePercent) > 0.2 && 1 + changePercent / 100 > 0) {
+              prevClose = Number((price / (1 + changePercent / 100)).toFixed(2));
+              change = Number((price - prevClose).toFixed(2));
+            } else {
+              changePercent = Number(impliedPct.toFixed(2));
+            }
+          }
+
+          const high = parseYahooQuoteNumber(html, 'regularMarketDayHigh') ?? undefined;
+          const low = parseYahooQuoteNumber(html, 'regularMarketDayLow') ?? undefined;
+
+          return {
+            symbol: symbolLabel,
+            name: displayName,
+            price: Number(price.toFixed(2)),
+            change,
+            changePercent,
+            prevClose: Number(prevClose.toFixed(2)),
+            high,
+            low,
+            updateTime: new Date().toLocaleTimeString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' }),
+          };
+        }
       }
     }
   } catch (err) {
@@ -1416,6 +1460,109 @@ async function fetchYahooTaiwanIndex(
   }
 
   return null;
+}
+
+async function fetchFugleTaiwanIndex(
+  fugleSymbol: 'IX0001' | 'IX0043',
+  symbolLabel: string,
+  displayName: string,
+  fugleKey: string
+): Promise<MarketIndexItem | null> {
+  try {
+    const url = `https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/${fugleSymbol}`;
+    const res = await fetchWithTimeout(
+      url,
+      {
+        headers: {
+          'X-API-KEY': fugleKey,
+          Accept: 'application/json',
+        },
+      },
+      4500
+    );
+    if (!res.ok) {
+      return null;
+    }
+
+    const d = await safeParseJsonResponse(res, `Fugle-Index-${fugleSymbol}`);
+    if (!d || typeof d !== 'object') {
+      return null;
+    }
+
+    const lastP = Number(d.lastPrice);
+    const closeP = Number(d.closePrice);
+    const refP = Number(d.referencePrice);
+    const price =
+      !isNaN(lastP) && lastP > 0
+        ? lastP
+        : !isNaN(closeP) && closeP > 0
+        ? closeP
+        : !isNaN(refP) && refP > 0
+        ? refP
+        : 0;
+
+    if (price <= 0) {
+      return null;
+    }
+
+    const rawPrevClose = Number(d.previousClose);
+    const prevClose =
+      !isNaN(rawPrevClose) && rawPrevClose > 0
+        ? rawPrevClose
+        : !isNaN(refP) && refP > 0
+        ? refP
+        : price;
+
+    const rawChange = d.change !== undefined && d.change !== null ? Number(d.change) : NaN;
+    const change = !isNaN(rawChange)
+      ? Number(rawChange.toFixed(2))
+      : Number((price - prevClose).toFixed(2));
+
+    const rawChangePercent =
+      d.changePercent !== undefined && d.changePercent !== null ? Number(d.changePercent) : NaN;
+    const changePercent = !isNaN(rawChangePercent)
+      ? Number(rawChangePercent.toFixed(2))
+      : prevClose > 0
+      ? Number(((change / prevClose) * 100).toFixed(2))
+      : 0;
+
+    const rawHigh = Number(d.highPrice);
+    const high = !isNaN(rawHigh) && rawHigh > 0 ? Number(rawHigh.toFixed(2)) : undefined;
+
+    const rawLow = Number(d.lowPrice);
+    const low = !isNaN(rawLow) && rawLow > 0 ? Number(rawLow.toFixed(2)) : undefined;
+
+    let updateTime = '';
+    if (typeof d.lastUpdated === 'number' && d.lastUpdated > 0) {
+      // Fugle MarketData v1.0 lastUpdated may be in microseconds (> 1e14) or milliseconds
+      const ms = d.lastUpdated > 1e14 ? Math.floor(d.lastUpdated / 1000) : d.lastUpdated;
+      const dt = new Date(ms);
+      if (!isNaN(dt.getTime())) {
+        const dStr = getTaipeiDateString(dt);
+        const tStr = dt.toLocaleTimeString('zh-TW', { hour12: false, timeZone: 'Asia/Taipei' });
+        updateTime = `${dStr} ${tStr}`;
+      }
+    }
+    if (!updateTime) {
+      const marketStatus = getTaipeiMarketStatus();
+      updateTime = `${d.date || marketStatus.dateString} ${marketStatus.timeString}`.trim();
+    }
+
+    return {
+      symbol: symbolLabel,
+      name: displayName,
+      price: Number(price.toFixed(2)),
+      change,
+      changePercent,
+      prevClose: Number(prevClose.toFixed(2)),
+      high,
+      low,
+      updateTime,
+    };
+  } catch (err: any) {
+    console.warn(`[Fugle Index] Failed to fetch ${fugleSymbol}:`, err?.message || err);
+    return null;
+  }
 }
 
 async function fetchRealtimeTWSEIndices(): Promise<{
@@ -1429,7 +1576,23 @@ async function fetchRealtimeTWSEIndices(): Promise<{
   let tpexPreOpen = false;
 
   const marketStatus = getTaipeiMarketStatus();
+  const fugleKey = (process.env.FUGLE_API_KEY || '').trim();
 
+  // 1. 若 FUGLE_API_KEY 已設定，優先並行呼叫富果 MarketData v1.0 官方即時指數端點 (IX0001 加權 / IX0043 櫃買)
+  if (fugleKey) {
+    const [fugleTaiex, fugleTpex] = await Promise.all([
+      fetchFugleTaiwanIndex('IX0001', '^TWII', '加權指數', fugleKey),
+      fetchFugleTaiwanIndex('IX0043', '^TWOII', '櫃買指數', fugleKey),
+    ]);
+    if (fugleTaiex) taiex = fugleTaiex;
+    if (fugleTpex) tpex = fugleTpex;
+
+    if (taiex && tpex) {
+      return { taiex, tpex, isPreOpen: false };
+    }
+  }
+
+  // 2. 僅在 FUGLE_API_KEY 未設定或 Fugle 請求失敗時，才退回原本的 TWSE MIS 與 Yahoo 備援
   try {
     const timestamp = Date.now();
     const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw|otc_o00.tw&json=1&delay=0&_=${timestamp}`;
@@ -1456,6 +1619,8 @@ async function fetchRealtimeTWSEIndices(): Promise<{
         const isTpex = code === 'o00' || item.ch === 'o00.tw' || item.ex === 'otc';
 
         if (!isTaiex && !isTpex) continue;
+        if (isTaiex && taiex) continue; // 保留 Fugle 成功結果
+        if (isTpex && tpex) continue;   // 保留 Fugle 成功結果
 
         const prevClose = parseFloat(item.y);
         const spotZ = parseFloat(item.z);
@@ -1520,7 +1685,7 @@ async function fetchRealtimeTWSEIndices(): Promise<{
     console.error('Error fetching TWSE MIS realtime indices, attempting Yahoo Finance fallback:', err);
   }
 
-  // 若為 09:00 開盤後但 TWSE MIS 仍回傳 z === '-' (尚未撮合或海外延遲)，補抓 Yahoo 即時報價比對
+  // 若仍缺失或 09:00 開盤後 TWSE MIS 仍回傳 z === '-'，補抓 Yahoo 即時報價比對
   if (!taiex || taiex.price <= 0 || (taiexPreOpen && marketStatus.isWeekday && marketStatus.timeInMinutes >= 540)) {
     const yahooTaiex = await fetchYahooTaiwanIndex('%5ETWII', '^TWII', '加權指數');
     if (yahooTaiex && yahooTaiex.price > 0 && (!taiex || taiex.price <= 0 || yahooTaiex.price !== taiex.prevClose)) {
@@ -4086,12 +4251,39 @@ function calculateBuyRatingScore(params: {
   // -------------------------------------------------------------
   // 總分計算與破線強制封頂（規則 A）：真實加總，嚴禁強行灌水保送 50 分
   // -------------------------------------------------------------
-  let totalScore = chipScore + techScore + safetyScore + momentumScore;
+  const rawTotal = chipScore + techScore + safetyScore + momentumScore;
+  let totalScore = rawTotal;
   if (isBroken && !params.isEarlyRebound && !isLeftProbe) {
     // 破線無買點股總分強制壓在 45 分以下
     totalScore = Math.min(45, totalScore);
+  } else if (params.turnaroundTier === 'WATCH_POOL') {
+    // 觀察池尚未達成買點條件，總分封頂 49 分
+    totalScore = Math.min(49, totalScore);
   }
   totalScore = Math.min(100, Math.max(0, totalScore));
+
+  // 確保四維度分數 (chip + tech + safety + momentum) 加總永遠嚴格等於 score
+  let excessPenalty = rawTotal - totalScore;
+  if (excessPenalty > 0) {
+    const techCut = Math.min(techScore, excessPenalty);
+    techScore -= techCut;
+    excessPenalty -= techCut;
+  }
+  if (excessPenalty > 0) {
+    const safetyCut = Math.min(safetyScore, excessPenalty);
+    safetyScore -= safetyCut;
+    excessPenalty -= safetyCut;
+  }
+  if (excessPenalty > 0) {
+    const momCut = Math.min(momentumScore, excessPenalty);
+    momentumScore -= momCut;
+    excessPenalty -= momCut;
+  }
+  if (excessPenalty > 0) {
+    const chipCut = Math.min(chipScore, excessPenalty);
+    chipScore -= chipCut;
+    excessPenalty -= chipCut;
+  }
 
   let level: 'STRONG_BUY' | 'BUY' | 'ACCUMULATE' | 'HOLD_WATCH';
   let label: string;
@@ -5279,7 +5471,7 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         isVolumeExpanding: false,
         volumeRatio: 1.0,
         isGoldenBreakout,
-        isEarlyRebound: tactic.entryTactic === 'EARLY_REBOUND',
+        isEarlyRebound: tierInfo.turnaroundTier !== 'WATCH_POOL' && tactic.entryTactic === 'EARLY_REBOUND',
       });
 
       const stopLossPrice = tierInfo.trailingStopPrice;
@@ -5334,7 +5526,9 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
         isRevGrowing,
         isLowBase,
         isSafeBottom: tierInfo.isSafeBottom,
-        isTurnaroundMatched: tierInfo.isTurnaroundMatched,
+        isTurnaroundMatched:
+          (tierInfo.turnaroundTier === 'RIGHT_BUY' || tierInfo.turnaroundTier === 'LEFT_PROBE') &&
+          buyRating.score >= 50,
         turnaroundTier: tierInfo.turnaroundTier,
         turnaroundTierLabel: tierInfo.turnaroundTierLabel,
         holdingPeriodLabel: tierInfo.holdingPeriodLabel,
@@ -5374,10 +5568,23 @@ async function scanTurnaroundFallback(todayTaipeiDate: string, isIntraday: boole
 
   const results = rawResults.filter((s): s is NonNullable<typeof s> => s !== null) as TurnaroundStockItem[];
 
-  // v3.6.0 嚴格過濾流動性 >= 2000 張與營收條件；RIGHT_BUY / LEFT_PROBE / WATCH_POOL 三分級皆保留在觀察池，matched 只放 RIGHT_BUY + LEFT_PROBE
-  const qualifiedResults = results.filter(
-    (s) => (s.volumeAvg5d ?? 0) >= 2000 && s.isLowBase && s.isProfitable && s.isRevGrowing
-  );
+  // v3.6.2 嚴格分級底線：
+  // 1. 可操作買點 (RIGHT_BUY / LEFT_PROBE)：buyRatingScore >= 50 才能進入主清單
+  // 2. 基本面觀察池 (WATCH_POOL)：允許 40 <= buyRatingScore < 50 且 籌碼分 >= 20；低於 40 或籌碼不足直接剔除
+  const qualifiedResults = results.filter((s) => {
+    if ((s.volumeAvg5d ?? 0) < 2000 || !s.isLowBase || !s.isProfitable || !s.isRevGrowing) {
+      return false;
+    }
+    const score = s.buyRatingScore ?? 0;
+    const chip = s.buyRatingBreakdown?.chip ?? 0;
+    if (s.turnaroundTier === 'RIGHT_BUY' || s.turnaroundTier === 'LEFT_PROBE') {
+      return score >= 50;
+    }
+    if (s.turnaroundTier === 'WATCH_POOL') {
+      return score >= 40 && score < 50 && chip >= 20;
+    }
+    return false;
+  });
 
   qualifiedResults.sort((a, b) => {
     const tierRank = (t?: TurnaroundTier) => (t === 'RIGHT_BUY' ? 3 : t === 'LEFT_PROBE' ? 2 : 1);
@@ -5618,7 +5825,7 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
         isVolumeExpanding,
         volumeRatio,
         isGoldenBreakout,
-        isEarlyRebound: tactic.entryTactic === 'EARLY_REBOUND',
+        isEarlyRebound: tierInfo.turnaroundTier !== 'WATCH_POOL' && tactic.entryTactic === 'EARLY_REBOUND',
       });
 
       const { industryTheme, isPriorityWhiteList } = getStockIndustryTheme(item.code, item.name);
@@ -5685,7 +5892,9 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
         isRevGrowing,
         isLowBase,
         isSafeBottom: tierInfo.isSafeBottom,
-        isTurnaroundMatched: tierInfo.isTurnaroundMatched,
+        isTurnaroundMatched:
+          (tierInfo.turnaroundTier === 'RIGHT_BUY' || tierInfo.turnaroundTier === 'LEFT_PROBE') &&
+          buyRating.score >= 50,
         turnaroundTier: tierInfo.turnaroundTier,
         turnaroundTierLabel: tierInfo.turnaroundTierLabel,
         holdingPeriodLabel: tierInfo.holdingPeriodLabel,
@@ -5725,10 +5934,23 @@ async function scanTurnaroundStocks(): Promise<TurnaroundStockItem[]> {
     }
   }
 
-  // v3.6.0：基本面與流動性 (>=2000張) 合格即留於觀察池 (allStocks)，RIGHT_BUY + LEFT_PROBE 列為可操作買點
-  const qualifiedResults = results.filter(
-    (s) => (s.volumeAvg5d ?? 0) >= 2000 && s.isLowBase && s.isProfitable && s.isRevGrowing
-  );
+  // v3.6.2 嚴格分級底線：
+  // 1. 可操作買點 (RIGHT_BUY / LEFT_PROBE)：buyRatingScore >= 50 才能進入主清單
+  // 2. 基本面觀察池 (WATCH_POOL)：允許 40 <= buyRatingScore < 50 且 籌碼分 >= 20；低於 40 或籌碼不足直接剔除
+  const qualifiedResults = results.filter((s) => {
+    if ((s.volumeAvg5d ?? 0) < 2000 || !s.isLowBase || !s.isProfitable || !s.isRevGrowing) {
+      return false;
+    }
+    const score = s.buyRatingScore ?? 0;
+    const chip = s.buyRatingBreakdown?.chip ?? 0;
+    if (s.turnaroundTier === 'RIGHT_BUY' || s.turnaroundTier === 'LEFT_PROBE') {
+      return score >= 50;
+    }
+    if (s.turnaroundTier === 'WATCH_POOL') {
+      return score >= 40 && score < 50 && chip >= 20;
+    }
+    return false;
+  });
 
   qualifiedResults.sort((a, b) => {
     const tierRank = (t?: TurnaroundTier) => (t === 'RIGHT_BUY' ? 3 : t === 'LEFT_PROBE' ? 2 : 1);
@@ -5834,9 +6056,22 @@ async function getTurnaroundData(force = false): Promise<TurnaroundScreenerRespo
       fetchYahooTaiwanIndex('%5ETWII', '^TWII', '加權指數').catch(() => null),
     ]);
     const marketRegime = await getMarketRegime(taiex?.price ?? marketCache?.data?.taiex?.price).catch(() => undefined);
-    const allStocks = rawStocks.filter((s) => (s.volumeAvg5d ?? 0) >= 2000);
+    const allStocks = rawStocks.filter((s) => {
+      if ((s.volumeAvg5d ?? 0) < 2000) return false;
+      const score = s.buyRatingScore ?? 0;
+      const chip = s.buyRatingBreakdown?.chip ?? 0;
+      if (s.turnaroundTier === 'RIGHT_BUY' || s.turnaroundTier === 'LEFT_PROBE') {
+        return score >= 50;
+      }
+      if (s.turnaroundTier === 'WATCH_POOL') {
+        return score >= 40 && score < 50 && chip >= 20;
+      }
+      return false;
+    });
     const matchedList = allStocks.filter(
-      (s) => s.turnaroundTier === 'RIGHT_BUY' || s.turnaroundTier === 'LEFT_PROBE' || s.isTurnaroundMatched
+      (s) =>
+        (s.turnaroundTier === 'RIGHT_BUY' || s.turnaroundTier === 'LEFT_PROBE') &&
+        (s.buyRatingScore ?? 0) >= 50
     );
 
     const mode: ScreenerMode = status.isIntradayTrading ? 'intraday' : 'after_hours';
